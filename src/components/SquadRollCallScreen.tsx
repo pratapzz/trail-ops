@@ -1,0 +1,3317 @@
+import React, { useState, useEffect, useRef } from 'react';
+import {
+  Compass,
+  MapPin,
+  CheckCircle2,
+  Clock,
+  Battery,
+  Navigation as NavIcon,
+  Phone,
+  MessageSquare,
+  Mic,
+  MicOff,
+  Radio,
+  RotateCw,
+  X,
+  Check,
+  Shield,
+  AlertTriangle,
+  UserCheck,
+  Edit2,
+  Camera,
+  Users,
+  PlusCircle,
+  ArrowRight,
+  Crown,
+  Folder,
+  PieChart,
+  Layers,
+  LogOut,
+  Megaphone,
+  HelpCircle,
+  ClipboardCheck,
+  Settings,
+  Palette,
+  Send,
+  Database,
+  Smartphone,
+  Wifi,
+  Server,
+  Sparkles,
+  CheckSquare,
+  Plus,
+  Bell,
+  RefreshCcw,
+  Trash2,
+  Lock,
+  Unlock,
+  Image,
+  Film,
+  Download,
+  Share2,
+  Upload,
+  Minus,
+  Eye,
+  UserX,
+  ShieldCheck,
+  Search,
+} from 'lucide-react';
+import { SquadMember, ExcursionRequest, ScreenType, UserRole } from '../types';
+import { CallModal } from './modals/CallModal';
+import { ChatModal } from './modals/ChatModal';
+import { CreateTripModal } from './modals/CreateTripModal';
+
+interface SquadRollCallScreenProps {
+  onNavigate: (screen: ScreenType) => void;
+  onShowToast: (message: string) => void;
+  hasJoinedGroup: boolean;
+  onSetJoinedGroup: (joined: boolean) => void;
+  userRole?: UserRole;
+  onUpdateRole?: (role: UserRole) => void;
+  onOpenFacultyDrive?: () => void;
+  onOpenSplitwise?: () => void;
+  currentUserName?: string;
+  currentUserAvatar?: string;
+}
+
+export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
+  onNavigate,
+  onShowToast,
+  hasJoinedGroup,
+  onSetJoinedGroup,
+  userRole = 'member',
+  onUpdateRole,
+  onOpenFacultyDrive,
+  onOpenSplitwise,
+  currentUserName = 'Pratap Paul',
+  currentUserAvatar,
+}) => {
+  const [isCheckedIn, setIsCheckedIn] = useState(false);
+  const [activeFilter, setActiveFilter] = useState<'all' | 'present' | 'missing' | 'excursion' | 'scout' | 'medical'>('all');
+  const [countdownSecs, setCountdownSecs] = useState(165); // 02:45
+  const [isPushToTalk, setIsPushToTalk] = useState(false);
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+
+  // Quick Action Circular Tab Modals
+  const [isEditGroupModalOpen, setIsEditGroupModalOpen] = useState(false);
+  const [isCreateSubGroupModalOpen, setIsCreateSubGroupModalOpen] = useState(false);
+  const [isAnnouncementModalOpen, setIsAnnouncementModalOpen] = useState(false);
+  const [isAdminDashboardModalOpen, setIsAdminDashboardModalOpen] = useState(false);
+  const [isMissingItemModalOpen, setIsMissingItemModalOpen] = useState(false);
+  const [isJourneyChecklistModalOpen, setIsJourneyChecklistModalOpen] = useState(false);
+  const [isCloudSyncModalOpen, setIsCloudSyncModalOpen] = useState(false);
+  const [isHDMediaModalOpen, setIsHDMediaModalOpen] = useState(false);
+  const [isUploadingMedia, setIsUploadingMedia] = useState(false);
+  const [selectedHDMediaFilter, setSelectedHDMediaFilter] = useState<'all' | 'photo' | 'video'>('all');
+
+  // All Members separate window modal state
+  const [isAllMembersModalOpen, setIsAllMembersModalOpen] = useState(false);
+  const [allMembersSearchQuery, setAllMembersSearchQuery] = useState('');
+  const [allMembersRoleFilter, setAllMembersRoleFilter] = useState<'all' | 'admins' | 'members'>('all');
+
+  // Super Admin Member Verification Queue state (Request 7)
+  const [isVerificationRequired, setIsVerificationRequired] = useState(true);
+  const [pendingMembers, setPendingMembers] = useState<Array<{
+    id: string;
+    name: string;
+    avatar: string;
+    phone: string;
+    emergencyContact: string;
+    bloodGroup: string;
+    requestedAt: string;
+    roleRequested: string;
+  }>>([
+    {
+      id: 'p-1',
+      name: 'Rohan Sharma',
+      avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=120&q=80',
+      phone: '+91 98112 33445',
+      emergencyContact: '+91 98112 33446',
+      bloodGroup: 'B+',
+      requestedAt: '10m ago',
+      roleRequested: 'Scout Trekker',
+    },
+    {
+      id: 'p-2',
+      name: 'Ananya Verma',
+      avatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=120&q=80',
+      phone: '+91 98223 44556',
+      emergencyContact: '+91 98223 44557',
+      bloodGroup: 'O+',
+      requestedAt: '25m ago',
+      roleRequested: 'Medical Assistant',
+    },
+  ]);
+
+  // Real device media file input reference for user uploads (Request 11)
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleMediaFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    setIsUploadingMedia(true);
+    const newItems: any[] = [];
+
+    Array.from(files).forEach((file, index) => {
+      const isVideo = file.type.startsWith('video');
+      const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
+      const url = URL.createObjectURL(file);
+      const formatExt = file.name.split('.').pop()?.toUpperCase() || (isVideo ? 'MP4' : 'RAW');
+
+      newItems.push({
+        id: `user-upload-${Date.now()}-${index}`,
+        title: file.name.replace(/\.[^/.]+$/, ''),
+        type: isVideo ? ('video' as const) : ('photo' as const),
+        resolution: isVideo ? '3840 × 2160 (4K 60fps HDR)' : '8256 × 5504 (45.4 MP)',
+        size: `${sizeMB} MB ${isVideo ? 'ProRes/MP4' : 'Lossless RAW'}`,
+        format: `${formatExt} (Original Lossless)`,
+        author: 'Chris Walker (You)',
+        timestamp: 'Just now',
+        altitude: '2,150m ASL',
+        url: url,
+        isLosslessRaw: true,
+      });
+    });
+
+    setTimeout(() => {
+      setSharedHDMedia((prev) => [...newItems, ...prev]);
+      setIsUploadingMedia(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+      onShowToast(`Uploaded ${files.length} high-definition file(s) directly to squad vault!`);
+    }, 600);
+  };
+
+  // High-Definition RAW Media Stream (Better than WhatsApp - Zero Compression, Lossless RAW, 4K HDR)
+  const [sharedHDMedia, setSharedHDMedia] = useState<Array<{
+    id: string;
+    title: string;
+    type: 'photo' | 'video';
+    resolution: string;
+    size: string;
+    format: string;
+    author: string;
+    timestamp: string;
+    altitude: string;
+    url: string;
+    isLosslessRaw: boolean;
+  }>>([
+    {
+      id: 'm-1',
+      title: 'Sunrise Ridge Cloud Inversion',
+      type: 'photo',
+      resolution: '8256 × 5504 (45.4 MP)',
+      size: '48.2 MB RAW',
+      format: 'DNG (Lossless RAW)',
+      author: 'Arjun Sen (Scout Lead)',
+      timestamp: '15m ago',
+      altitude: '2,150m ASL',
+      url: 'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=1200&q=95',
+      isLosslessRaw: true,
+    },
+    {
+      id: 'm-2',
+      title: 'Solang Pass Ice Ridge Traverse 4K',
+      type: 'video',
+      resolution: '3840 × 2160 (4K 60fps HDR)',
+      size: '142.8 MB ProRes',
+      format: 'Apple ProRes 422 HQ',
+      author: 'Sarah Chen (Medic)',
+      timestamp: '42m ago',
+      altitude: '2,320m ASL',
+      url: 'https://images.unsplash.com/photo-1486870591958-9b9d0d1dda99?auto=format&fit=crop&w=1200&q=95',
+      isLosslessRaw: true,
+    },
+    {
+      id: 'm-3',
+      title: 'Kanchenjunga Golden Summit Panorama',
+      type: 'photo',
+      resolution: '9504 × 6336 (60.2 MP)',
+      size: '62.4 MB RAW',
+      format: 'Sony ARW RAW',
+      author: 'Prof. Roy (Faculty Admin)',
+      timestamp: '2h ago',
+      altitude: '2,190m ASL',
+      url: 'https://images.unsplash.com/photo-1519681393784-d120267933ba?auto=format&fit=crop&w=1200&q=95',
+      isLosslessRaw: true,
+    },
+    {
+      id: 'm-4',
+      title: 'Basecamp Dusk Twilight & Tent Lanterns',
+      type: 'photo',
+      resolution: '8192 × 5464 (44.7 MP)',
+      size: '39.6 MB RAW',
+      format: 'Canon CR3 RAW',
+      author: 'Liam Zhang',
+      timestamp: 'Yesterday',
+      altitude: '1,980m ASL',
+      url: 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=1200&q=95',
+      isLosslessRaw: true,
+    },
+  ]);
+
+  // Edit Group Form state
+  const [editFromLocation, setEditFromLocation] = useState('Siliguri Transit Base');
+  const [editDestination, setEditDestination] = useState('Pelling High Ridge');
+  const [editDepartureDate, setEditDepartureDate] = useState('2026-10-25');
+
+  // Subgroup creator state
+  const [subGroupNameInput, setSubGroupNameInput] = useState('');
+  const [subGroupColorInput, setSubGroupColorInput] = useState('#ef4444');
+  const [selectedSubGroupMembers, setSelectedSubGroupMembers] = useState<string[]>(['1', '2']);
+  const [subGroups, setSubGroups] = useState<Array<{
+    id: string;
+    name: string;
+    color: string;
+    leadName: string;
+    memberCount: number;
+  }>>([
+    { id: 'sub-1', name: 'Scout Team Alpha', color: '#ef4444', leadName: 'Arjun Sen', memberCount: 14 },
+    { id: 'sub-2', name: 'Medical Vanguard', color: '#3b82f6', leadName: 'Sarah Chen', memberCount: 8 },
+    { id: 'sub-3', name: 'Camp & Logistics Core', color: '#10b981', leadName: 'Prof. Roy', memberCount: 12 },
+    { id: 'sub-4', name: 'Rearguard & Sweepers', color: '#f59e0b', leadName: 'Liam Zhang', memberCount: 8 },
+  ]);
+
+  // Quick announcement composer
+  const [quickAnnounceTitle, setQuickAnnounceTitle] = useState('');
+  const [quickAnnounceText, setQuickAnnounceText] = useState('');
+  const [quickAnnouncePriority, setQuickAnnouncePriority] = useState<'critical' | 'advisory' | 'info'>('critical');
+  const [announcements, setAnnouncements] = useState<Array<{
+    id: string;
+    title: string;
+    text: string;
+    priority: 'critical' | 'advisory' | 'info';
+    author: string;
+    timestamp: string;
+  }>>([
+    {
+      id: 'a-1',
+      title: 'Mandatory Dusk Roll Call at 18:00',
+      text: 'All scout excursions must return to perimeter boundary before sunset. Headlamps inspection following roll call.',
+      priority: 'critical',
+      author: 'Prof. Roy (Faculty Super Admin)',
+      timestamp: '10m ago',
+    },
+    {
+      id: 'a-2',
+      title: 'Weather Advisory: Ridge Frost Drop',
+      text: 'Night temperatures at 2,150m ASL projected at 4°C. Ensure thermal base layers and windbreakers are unpackaged.',
+      priority: 'advisory',
+      author: 'Arjun Sen (Scout Lead)',
+      timestamp: '1h ago',
+    },
+  ]);
+
+  // Missing item requester state
+  const [missingItemName, setMissingItemName] = useState('');
+  const [missingItemLocation, setMissingItemLocation] = useState('Ridge Viewpoint / Trail Marker 3');
+  const [missingItemUrgency, setMissingItemUrgency] = useState<'critical' | 'moderate' | 'routine'>('critical');
+  const [missingItems, setMissingItems] = useState<Array<{
+    id: string;
+    itemName: string;
+    reportedBy: string;
+    urgency: 'critical' | 'moderate' | 'routine';
+    location: string;
+    timestamp: string;
+    status: 'open' | 'found';
+  }>>([
+    {
+      id: 'm-1',
+      itemName: 'Petzl Screwgate Carabiner (Green Gate)',
+      reportedBy: 'Arjun Sen',
+      urgency: 'critical',
+      location: 'Near Rock Bivouac Marker 4',
+      timestamp: '15m ago',
+      status: 'open',
+    },
+    {
+      id: 'm-2',
+      itemName: 'Electrolyte ORS Sachets (Box of 10)',
+      reportedBy: 'Sarah Chen',
+      urgency: 'moderate',
+      location: 'Basecamp Kitchen Tent',
+      timestamp: '1h ago',
+      status: 'open',
+    },
+  ]);
+
+  // Shared Journey Checklist State
+  const [newJourneyTask, setNewJourneyTask] = useState('');
+  const [newJourneyCategory, setNewJourneyCategory] = useState('Permits & Entry');
+  const [journeyChecklist, setJourneyChecklist] = useState<Array<{
+    id: string;
+    title: string;
+    category: string;
+    completed: boolean;
+    assignedRole: string;
+  }>>([
+    { id: 'j-1', title: 'Forest Department Alpine Entry Permits', category: 'Permits & Entry', completed: true, assignedRole: 'Super Admin' },
+    { id: 'j-2', title: 'Check Satellite GPS Beacon battery & firmware', category: 'Gear & Navigation', completed: true, assignedRole: 'Scout Team' },
+    { id: 'j-3', title: 'Verify High-Altitude First Aid & Diamox kits', category: 'Medical', completed: false, assignedRole: 'Medic Vanguard' },
+    { id: 'j-4', title: 'Calibrate VHF Walkie-Talkies to 142.500 MHz', category: 'Communication', completed: false, assignedRole: 'All Leads' },
+    { id: 'j-5', title: 'Emergency Rations & Hydration Bladders packed', category: 'Supplies', completed: false, assignedRole: 'All Squad' },
+  ]);
+
+  // Admin Governance Permissions State
+  const [adminPermissions, setAdminPermissions] = useState({
+    lockCheckIn: false,
+    requireExcursionClearance: true,
+    requireMedicalClearance: true,
+    allowMemberInvite: true,
+  });
+
+  // Simulated Multi-Phone Realtime Sync Telemetry
+  const [simulatedSyncPhones, setSimulatedSyncPhones] = useState([
+    { id: 'phone-1', device: 'Admin Pixel 9 Pro', role: 'Faculty Super Admin', user: 'Prof. Roy', status: 'Synced', latency: '42ms', lastSync: 'Just now' },
+    { id: 'phone-2', device: 'iPhone 16 Pro', role: 'Trekker Lead', user: 'Chris Walker (You)', status: 'Synced', latency: '68ms', lastSync: 'Just now' },
+    { id: 'phone-3', device: 'Galaxy S25 Ultra', role: 'Medic Vanguard', user: 'Sarah Chen', status: 'Synced', latency: '95ms', lastSync: 'Just now' },
+    { id: 'phone-4', device: 'OnePlus 13', role: 'Scout Lead', user: 'Arjun Sen', status: 'Synced', latency: '124ms', lastSync: 'Just now' },
+  ]);
+  const [isSimulatingSync, setIsSimulatingSync] = useState(false);
+
+  // Editable Trip Header
+  const [tripName, setTripName] = useState('Denali Base Alpha Expedition');
+  const [isEditingTripName, setIsEditingTripName] = useState(false);
+  const [coverBg, setCoverBg] = useState(
+    'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=1200&q=80'
+  );
+  const [isCoverPickerOpen, setIsCoverPickerOpen] = useState(false);
+
+  const presetCovers = [
+    {
+      name: 'Alpine Sunrise',
+      url: 'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=1200&q=80',
+    },
+    {
+      name: 'Misty Pine Forest',
+      url: 'https://images.unsplash.com/photo-1511497584788-87676104235f?auto=format&fit=crop&w=1200&q=80',
+    },
+    {
+      name: 'Glacial Pass',
+      url: 'https://images.unsplash.com/photo-1519681393784-d120267933ba?auto=format&fit=crop&w=1200&q=80',
+    },
+    {
+      name: 'Rocky Ridge Trail',
+      url: 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=1200&q=80',
+    },
+  ];
+
+  // Call / Chat Modals
+  const [callModalContact, setCallModalContact] = useState<{
+    name: string;
+    title: string;
+    phone: string;
+    avatar?: string;
+  } | null>(null);
+  const [chatModalContact, setChatModalContact] = useState<{
+    name: string;
+    title: string;
+    avatar?: string;
+  } | null>(null);
+
+  // Excursion requests
+  const [excursionRequests, setExcursionRequests] = useState<ExcursionRequest[]>([
+    {
+      id: '1',
+      trailName: 'Ridge Viewpoint Trail',
+      leadName: 'Maya Patel',
+      membersCount: 3,
+      returnTime: '17:30',
+      distance: '1.2 km away',
+      batteryAvg: 85,
+      avatars: [
+        'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=120&q=80',
+        'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?auto=format&fit=crop&w=120&q=80',
+      ],
+      status: 'pending',
+    },
+  ]);
+
+  // Squad Members with Role Hierarchy & Sub-Group Highlights
+  const [members, setMembers] = useState<SquadMember[]>(() => {
+    const saved = localStorage.getItem('trailoPS_squad_members');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.map((m: any) =>
+            m.id === '1' || (m.name && m.name.includes('(You)'))
+              ? { ...m, roleHierarchy: userRole }
+              : m
+          );
+        }
+      } catch {}
+    }
+    return [
+    {
+      id: '0',
+      name: 'Prof. Roy',
+      role: 'Faculty Super Admin',
+      roleHierarchy: 'super_admin',
+      status: 'present',
+      avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=120&q=80',
+      distance: '20m',
+      battery: 98,
+      lastPing: 'Just now',
+    },
+    {
+      id: '1',
+      name: 'Chris Walker (You)',
+      role: 'Trekker Lead',
+      roleHierarchy: userRole,
+      status: isCheckedIn ? 'present' : 'missing',
+      avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=120&q=80',
+      distance: '0m',
+      battery: 92,
+      lastPing: 'Just now',
+      subGroupId: 'sub-1',
+      subGroupName: 'Scout Team Alpha',
+      subGroupColor: '#ef4444',
+    },
+    {
+      id: '2',
+      name: 'Arjun Sen',
+      role: 'Scout Sub-Admin',
+      roleHierarchy: 'subgroup_admin',
+      status: 'present',
+      avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=120&q=80',
+      distance: '45m',
+      battery: 88,
+      lastPing: '1m ago',
+      channel: 1,
+      subGroupId: 'sub-1',
+      subGroupName: 'Scout Team Alpha',
+      subGroupColor: '#ef4444',
+    },
+    {
+      id: '3',
+      name: 'Sarah Chen',
+      role: 'Medic Sub-Admin',
+      roleHierarchy: 'subgroup_admin',
+      status: 'present',
+      avatar: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&w=120&q=80',
+      distance: '12m',
+      battery: 94,
+      lastPing: 'Just now',
+      channel: 3,
+      subGroupId: 'sub-2',
+      subGroupName: 'Medical Vanguard',
+      subGroupColor: '#3b82f6',
+    },
+    {
+      id: '4',
+      name: 'Liam Zhang',
+      role: 'Rear Guard Trekker',
+      roleHierarchy: 'member',
+      status: 'missing',
+      avatar: 'https://images.unsplash.com/photo-1522075469751-3a6694fb2f61?auto=format&fit=crop&w=120&q=80',
+      distance: '480m (Echo delay)',
+      battery: 34,
+      lastPing: '8m ago',
+      subGroupId: 'sub-1',
+      subGroupName: 'Scout Team Alpha',
+      subGroupColor: '#ef4444',
+    },
+    {
+      id: '5',
+      name: 'Maya Patel',
+      role: 'Ridge Excursion Lead',
+      roleHierarchy: 'member',
+      status: 'excursion',
+      avatar: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=120&q=80',
+      distance: '1.2km',
+      battery: 85,
+      lastPing: '2m ago',
+      subGroupId: 'sub-2',
+      subGroupName: 'Medical Vanguard',
+      subGroupColor: '#3b82f6',
+    },
+  ];
+});
+
+  // Synchronize current user's name, avatar, and role hierarchy with active user session
+  useEffect(() => {
+    setMembers((prev) =>
+      prev.map((m) =>
+        m.id === '1'
+          ? {
+              ...m,
+              name: currentUserName ? `${currentUserName} (You)` : m.name,
+              avatar: currentUserAvatar || m.avatar,
+              roleHierarchy: userRole,
+              role:
+                userRole === 'super_admin'
+                  ? 'Faculty Super Admin (You)'
+                  : userRole === 'subgroup_admin'
+                  ? 'Sub-Group Lead (You)'
+                  : 'Trekker Member (You)',
+            }
+          : m
+      )
+    );
+  }, [userRole, currentUserName, currentUserAvatar]);
+
+  // Countdown timer
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCountdownSecs((prev) => (prev > 0 ? prev - 1 : 180));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const formatCountdown = (secs: number) => {
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  };
+
+  const handleCheckIn = () => {
+    setIsCheckedIn(!isCheckedIn);
+    if (!isCheckedIn) {
+      onShowToast('GPS Verified: Pelling Basecamp check-in confirmed!');
+    } else {
+      onShowToast('Check-in status toggled.');
+    }
+  };
+
+  const handleApproveExcursion = (id: string) => {
+    setExcursionRequests((prev) =>
+      prev.map((r) => (r.id === id ? { ...r, status: 'approved' } : r))
+    );
+    onShowToast('Excursion request approved for Maya Patel (3 members). Return due 17:30.');
+  };
+
+  const handleRejectExcursion = (id: string) => {
+    setExcursionRequests((prev) =>
+      prev.map((r) => (r.id === id ? { ...r, status: 'rejected' } : r))
+    );
+    onShowToast('Excursion request declined. Squad directed to remain in camp perimeter.');
+  };
+
+  // Super Admin Verification Handlers (Request 7)
+  const handleVerifyPendingMember = (id: string) => {
+    const target = pendingMembers.find((p) => p.id === id);
+    if (!target) return;
+
+    const newSquadMember: SquadMember = {
+      id: `m-${Date.now()}`,
+      name: target.name,
+      role: target.roleRequested,
+      roleHierarchy: 'member',
+      status: 'present',
+      avatar: target.avatar,
+      distance: '15m',
+      battery: 95,
+      lastPing: 'Just now',
+    };
+
+    setMembers((prev) => [...prev, newSquadMember]);
+    setPendingMembers((prev) => prev.filter((p) => p.id !== id));
+    onShowToast(`✓ ${target.name} verified as genuine! Added to active squad.`);
+  };
+
+  const handleKickPendingMember = (id: string, name: string) => {
+    setPendingMembers((prev) => prev.filter((p) => p.id !== id));
+    onShowToast(`✕ ${name} verification rejected. Kicked from join queue.`);
+  };
+
+  const handleKickActiveMember = (id: string, name: string) => {
+    setMembers((prev) => prev.filter((m) => m.id !== id));
+    onShowToast(`User ${name} was kicked from squad expedition.`);
+  };
+
+  // Sub-Group minus deletion (Request 8)
+  const handleDeleteSubGroup = (subGroupId: string, subGroupName: string) => {
+    setSubGroups((prev) => prev.filter((sg) => sg.id !== subGroupId));
+    setMembers((prev) =>
+      prev.map((m) =>
+        m.subGroupId === subGroupId
+          ? { ...m, subGroupId: undefined, subGroupName: undefined, subGroupColor: undefined }
+          : m
+      )
+    );
+    onShowToast(`Sub-Group "${subGroupName}" removed. Members unassigned.`);
+  };
+
+  // Shared Checklist minus deletion (Request 10)
+  const handleDeleteJourneyTask = (id: string, title: string) => {
+    setJourneyChecklist((prev) => prev.filter((t) => t.id !== id));
+    onShowToast(`Removed task "${title}" from squad checklist.`);
+  };
+
+  const filteredMembers = members.filter((m) => {
+    if (activeFilter === 'present') return m.status === 'present';
+    if (activeFilter === 'missing') return m.status === 'missing';
+    if (activeFilter === 'excursion') return m.status === 'excursion';
+    if (activeFilter === 'scout') return m.subGroupName === 'Scout Team Alpha';
+    if (activeFilter === 'medical') return m.subGroupName === 'Medical Vanguard';
+    return true;
+  });
+
+  const presentCount = isCheckedIn ? 39 : 38;
+  const missingCount = isCheckedIn ? 3 : 4;
+  const confirmedRate = Math.round((presentCount / 42) * 100);
+
+  return (
+    <div className="max-w-md mx-auto min-h-screen bg-[#f8faf9] text-slate-900 pb-32">
+      {/* 1ST: EDITABLE TRIP NAME WITH CUSTOMIZABLE BACKGROUND BANNER */}
+      <div className="relative w-full h-48 overflow-hidden border-b border-slate-200">
+        <img
+          src={coverBg}
+          alt="Trip Cover Background"
+          className="w-full h-full object-cover transition-all duration-500 brightness-75"
+        />
+        <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/40 to-black/20" />
+
+        {/* Change Cover Button */}
+        <button
+          type="button"
+          onClick={() => setIsCoverPickerOpen(true)}
+          className="absolute top-3 right-3 px-2.5 py-1 rounded-full bg-black/60 hover:bg-black/80 backdrop-blur-md text-white text-[11px] font-bold flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer border border-white/20"
+        >
+          <Camera className="w-3.5 h-3.5" />
+          <span>Edit Background</span>
+        </button>
+
+        {/* Trip Name & Editable title */}
+        <div className="absolute bottom-3 left-4 right-4 text-white z-10">
+          <div className="flex items-center gap-2 mb-1">
+            <span className="px-2 py-0.5 rounded-md bg-emerald-500/80 text-white text-[10px] font-extrabold uppercase tracking-wider backdrop-blur-xs">
+              Expedition Squad
+            </span>
+            <span className="text-emerald-300 text-xs font-semibold">Siliguri → Pelling Ridge</span>
+          </div>
+
+          <div className="flex items-center justify-between">
+            {isEditingTripName ? (
+              <div className="flex items-center gap-2 w-full">
+                <input
+                  type="text"
+                  value={tripName}
+                  onChange={(e) => setTripName(e.target.value)}
+                  onBlur={() => setIsEditingTripName(false)}
+                  onKeyDown={(e) => e.key === 'Enter' && setIsEditingTripName(false)}
+                  autoFocus
+                  className="bg-black/60 text-white font-black text-lg px-2.5 py-1 rounded-lg border border-emerald-400 w-full outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => setIsEditingTripName(false)}
+                  className="px-2.5 py-1 bg-emerald-600 rounded-lg text-xs font-bold"
+                >
+                  Save
+                </button>
+              </div>
+            ) : (
+              <div
+                onClick={() => setIsEditingTripName(true)}
+                className="flex items-center gap-2 cursor-pointer group"
+                title="Tap to rename expedition"
+              >
+                <h1 className="text-xl font-black tracking-tight text-white drop-shadow-sm">
+                  {tripName}
+                </h1>
+                <Edit2 className="w-4 h-4 text-emerald-400 opacity-80 group-hover:opacity-100 transition-opacity" />
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* 2ND: TRIP COUNTDOWN BANNER */}
+      <div className="bg-gradient-to-r from-emerald-950 via-[#0f5238] to-emerald-900 text-white px-4 py-2.5 flex items-center justify-between shadow-xs">
+        <div className="flex items-center gap-2">
+          <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
+          <span className="text-xs font-bold tracking-wide">Squad Dusk Briefing:</span>
+        </div>
+        <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-400/20 border border-amber-300/40 text-amber-300 font-mono text-xs font-black shadow-xs">
+          <Clock className="w-3.5 h-3.5 animate-spin" />
+          <span>{formatCountdown(countdownSecs)} left</span>
+        </div>
+      </div>
+
+      {/* SQUAD OPERATIONS CIRCULAR ACTION TAB (Circular Icons for Group Edit, Sub-Group, Announce, Admin Board, Missing Item, Checklist) */}
+      {hasJoinedGroup && (
+        <div className="px-4 pt-3.5 pb-1">
+          <div className="flex items-center justify-between pb-1.5">
+            <span className="text-[10px] font-extrabold text-slate-500 uppercase tracking-wider">
+              Squad Operations &amp; Tools
+            </span>
+            <span className="text-[10px] font-bold text-emerald-800 bg-emerald-100/60 px-2 py-0.5 rounded-full border border-emerald-300">
+              Quick Actions
+            </span>
+          </div>
+
+          <div className="flex items-center gap-3 overflow-x-auto no-scrollbar py-1">
+            {/* Circle 1: Group Edit */}
+            <button
+              type="button"
+              onClick={() => setIsEditGroupModalOpen(true)}
+              className="flex flex-col items-center gap-1 group shrink-0 active:scale-90 transition-transform cursor-pointer"
+            >
+              <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-slate-800 to-slate-700 text-white flex items-center justify-center shadow-md group-hover:ring-2 ring-emerald-500 transition-all">
+                <Settings className="w-5 h-5 group-hover:rotate-45 transition-transform" />
+              </div>
+              <span className="text-[10px] font-bold text-slate-700">Edit Group</span>
+            </button>
+
+            {/* Circle 2: Create Sub-Group */}
+            <button
+              type="button"
+              onClick={() => setIsCreateSubGroupModalOpen(true)}
+              className="flex flex-col items-center gap-1 group shrink-0 active:scale-90 transition-transform cursor-pointer"
+            >
+              <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-emerald-700 to-teal-600 text-white flex items-center justify-center shadow-md group-hover:ring-2 ring-emerald-400 transition-all">
+                <Layers className="w-5 h-5" />
+              </div>
+              <span className="text-[10px] font-bold text-slate-700">Sub-Group</span>
+            </button>
+
+            {/* Circle 3: Announcement */}
+            <button
+              type="button"
+              onClick={() => setIsAnnouncementModalOpen(true)}
+              className="flex flex-col items-center gap-1 group shrink-0 active:scale-90 transition-transform cursor-pointer"
+            >
+              <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-amber-600 to-orange-500 text-white flex items-center justify-center shadow-md group-hover:ring-2 ring-amber-400 transition-all">
+                <Megaphone className="w-5 h-5" />
+              </div>
+              <span className="text-[10px] font-bold text-slate-700">Announce</span>
+            </button>
+
+            {/* Circle 4: Admin Dashboard (Promote / Demote Roles) */}
+            <button
+              type="button"
+              onClick={() => setIsAdminDashboardModalOpen(true)}
+              className="flex flex-col items-center gap-1 group shrink-0 active:scale-90 transition-transform cursor-pointer"
+            >
+              <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-indigo-700 to-purple-600 text-white flex items-center justify-center shadow-md group-hover:ring-2 ring-indigo-400 transition-all">
+                <Crown className="w-5 h-5" />
+              </div>
+              <span className="text-[10px] font-bold text-slate-700">Admin Board</span>
+            </button>
+
+            {/* Circle 5: Missing Item Request */}
+            <button
+              type="button"
+              onClick={() => setIsMissingItemModalOpen(true)}
+              className="flex flex-col items-center gap-1 group shrink-0 active:scale-90 transition-transform cursor-pointer"
+            >
+              <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-rose-600 to-red-500 text-white flex items-center justify-center shadow-md group-hover:ring-2 ring-rose-400 transition-all">
+                <HelpCircle className="w-5 h-5" />
+              </div>
+              <span className="text-[10px] font-bold text-slate-700">Missing Item</span>
+            </button>
+
+            {/* Circle 6: Shared Journey Checklist */}
+            <button
+              type="button"
+              onClick={() => setIsJourneyChecklistModalOpen(true)}
+              className="flex flex-col items-center gap-1 group shrink-0 active:scale-90 transition-transform cursor-pointer"
+            >
+              <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-teal-700 to-emerald-600 text-white flex items-center justify-center shadow-md group-hover:ring-2 ring-teal-400 transition-all">
+                <ClipboardCheck className="w-5 h-5" />
+              </div>
+              <span className="text-[10px] font-bold text-slate-700">Checklist</span>
+            </button>
+
+            {/* Circle 7: Cloud Sync & Persistence Center */}
+            <button
+              type="button"
+              onClick={() => setIsCloudSyncModalOpen(true)}
+              className="flex flex-col items-center gap-1 group shrink-0 active:scale-90 transition-transform cursor-pointer"
+            >
+              <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-sky-600 to-blue-600 text-white flex items-center justify-center shadow-md group-hover:ring-2 ring-sky-400 transition-all relative">
+                <Database className="w-5 h-5" />
+                <span className="absolute -top-0.5 -right-0.5 w-3 h-3 bg-emerald-400 rounded-full ring-2 ring-white animate-pulse" />
+              </div>
+              <span className="text-[10px] font-bold text-slate-700">Sync Hub</span>
+            </button>
+
+            {/* Circle 8: High Definition RAW & 4K Media Vault (Better than WhatsApp) */}
+            <button
+              type="button"
+              onClick={() => setIsHDMediaModalOpen(true)}
+              className="flex flex-col items-center gap-1 group shrink-0 active:scale-90 transition-transform cursor-pointer"
+              title="Share Lossless 48MP RAW Photos & 4K Video without compression"
+            >
+              <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-fuchsia-600 via-purple-600 to-indigo-600 text-white flex items-center justify-center shadow-md group-hover:ring-2 ring-fuchsia-400 transition-all relative">
+                <Image className="w-5 h-5" />
+                <span className="absolute -top-1 -right-1 px-1 py-0.2 rounded-full bg-gradient-to-r from-amber-400 to-pink-500 text-[7.5px] font-black tracking-tight text-white shadow-xs">
+                  4K RAW
+                </span>
+              </div>
+              <span className="text-[10px] font-bold text-slate-700">HD Share</span>
+            </button>
+
+            {/* Circle 9: All Members Roster (Separate Window) */}
+            <button
+              type="button"
+              onClick={() => setIsAllMembersModalOpen(true)}
+              className="flex flex-col items-center gap-1 group shrink-0 active:scale-90 transition-transform cursor-pointer"
+              title="Open full squad members roster in separate window"
+            >
+              <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-cyan-700 to-teal-800 text-white flex items-center justify-center shadow-md group-hover:ring-2 ring-cyan-400 transition-all relative">
+                <Users className="w-5 h-5" />
+                <span className="absolute -top-0.5 -right-0.5 px-1 py-0.2 rounded-full bg-emerald-500 text-[8px] font-black text-white ring-2 ring-white">
+                  {members.length}
+                </span>
+              </div>
+              <span className="text-[10px] font-bold text-slate-700">View All</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* DUAL SHORTCUTS: FACULTY DRIVE & SPLITWISE (Active Only When Joined to a Group) */}
+      {hasJoinedGroup && (
+        <div className="px-4 pt-3 grid grid-cols-2 gap-2.5">
+          <button
+            type="button"
+            onClick={onOpenFacultyDrive}
+            className="p-2.5 rounded-2xl bg-white border border-purple-200 hover:border-purple-400 text-left shadow-2xs transition-all flex items-center gap-2.5 active:scale-98 cursor-pointer"
+          >
+            <div className="w-8 h-8 rounded-xl bg-purple-100 text-purple-800 flex items-center justify-center shrink-0">
+              <Folder className="w-4 h-4 fill-current" />
+            </div>
+            <div className="overflow-hidden">
+              <span className="text-xs font-bold text-slate-900 block truncate">Faculty Drive</span>
+              <span className="text-[10px] text-purple-700 font-semibold">Tickets &amp; Permits</span>
+            </div>
+          </button>
+
+          <button
+            type="button"
+            onClick={onOpenSplitwise}
+            className="p-2.5 rounded-2xl bg-white border border-emerald-200 hover:border-emerald-400 text-left shadow-2xs transition-all flex items-center gap-2.5 active:scale-98 cursor-pointer"
+          >
+            <div className="w-8 h-8 rounded-xl bg-emerald-100 text-emerald-800 flex items-center justify-center shrink-0">
+              <PieChart className="w-4 h-4" />
+            </div>
+            <div className="overflow-hidden">
+              <span className="text-xs font-bold text-slate-900 block truncate">Splitwise</span>
+              <span className="text-[10px] text-emerald-700 font-semibold">Shared Ledger</span>
+            </div>
+          </button>
+        </div>
+      )}
+
+      {/* Main Operational Workspace */}
+      <main className="flex-1 px-4 pt-3.5 space-y-4">
+        {!hasJoinedGroup ? (
+          <div className="bg-white rounded-3xl p-6 border-2 border-emerald-500/30 text-center space-y-4 shadow-sm">
+            <div className="w-16 h-16 rounded-2xl bg-emerald-100 text-[#0f5238] mx-auto flex items-center justify-center shadow-xs">
+              <Users className="w-8 h-8" />
+            </div>
+            <div>
+              <h2 className="text-lg font-bold text-slate-900">No Active Squad Group</h2>
+              <p className="text-xs text-slate-500 max-w-xs mx-auto mt-1">
+                You are not connected to a squad group yet. Join an existing team route or launch your own expedition.
+              </p>
+            </div>
+
+            <div className="space-y-2 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  onNavigate('gateway');
+                  onShowToast('Enter your 6-character squad code or scan QR to join!');
+                }}
+                className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-[#0f5238] to-emerald-600 text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-md hover:brightness-105 active:scale-95 transition-all cursor-pointer"
+              >
+                <Users className="w-4 h-4" />
+                <span>Join with Code / Scan QR</span>
+                <ArrowRight className="w-4 h-4" />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setIsCreateModalOpen(true)}
+                className="w-full py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <PlusCircle className="w-4 h-4 text-emerald-800" />
+                <span>Create New Squad Route</span>
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            {/* Basecamp Check-In */}
+            <section className="rounded-3xl p-4 bg-gradient-to-br from-emerald-50/70 via-teal-50/40 to-blue-50/40 border border-emerald-200/60 card-glow-mint relative overflow-hidden">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-start gap-3">
+                  <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-emerald-600 to-teal-500 flex items-center justify-center text-white shrink-0 shadow-sm shadow-emerald-700/20">
+                    <MapPin className="w-5 h-5 fill-current" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[11px] text-emerald-800 font-bold uppercase tracking-wider">
+                        Basecamp Check-In
+                      </span>
+                      <span className="inline-flex w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping" />
+                    </div>
+                    <h2 className="text-sm sm:text-base text-slate-900 mt-0.5 font-bold">
+                      Assembly: Pelling Basecamp
+                    </h2>
+                    <p className="text-xs text-slate-600 mt-0.5">
+                      Please check in near Ridge Marker #3 for dusk briefing.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Check-In Button */}
+              <div className="mt-3.5">
+                <button
+                  type="button"
+                  onClick={handleCheckIn}
+                  className={`w-full py-3 px-4 rounded-full text-white text-xs sm:text-sm font-bold flex items-center justify-center gap-2 shadow-md active:scale-95 transition-all cursor-pointer ${
+                    isCheckedIn
+                      ? 'bg-emerald-800 border-2 border-emerald-500'
+                      : 'pulse-wave-btn bg-gradient-to-r from-emerald-600 via-teal-600 to-[#0f5238] shadow-emerald-700/25'
+                  }`}
+                >
+                  <CheckCircle2 className="w-5 h-5 fill-white text-emerald-700" />
+                  <span>
+                    {isCheckedIn ? 'YOU ARE MARKED PRESENT (GPS VERIFIED)' : 'I AM PRESENT (GPS Verified)'}
+                  </span>
+                </button>
+              </div>
+            </section>
+
+            {/* Squad Roll Call Card */}
+            <section className="bg-white rounded-3xl p-4 border border-emerald-100 custom-shadow-soft">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                <div>
+                  <span className="text-[10px] text-emerald-700 uppercase font-bold tracking-wider">
+                    Role Hierarchy &amp; Roll Call
+                  </span>
+                  <h3 className="text-base font-bold text-slate-900">Active Squad Presence</h3>
+                </div>
+
+                <div className="text-right">
+                  <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 rounded-full">
+                    LoRa 868MHz
+                  </span>
+                </div>
+              </div>
+
+              {/* Telemetry Visualizer */}
+              <div className="grid grid-cols-12 gap-3 items-center py-4">
+                {/* Circular Ring Gauge */}
+                <div className="col-span-5 flex flex-col items-center justify-center">
+                  <div className="relative w-28 h-28 flex items-center justify-center">
+                    <svg className="w-full h-full transform -rotate-90" viewBox="0 0 100 100">
+                      <circle
+                        cx="50"
+                        cy="50"
+                        fill="transparent"
+                        r="40"
+                        stroke="#f0f2f1"
+                        strokeWidth="9"
+                      />
+                      <circle
+                        className="progress-animated"
+                        cx="50"
+                        cy="50"
+                        fill="transparent"
+                        r="40"
+                        stroke="#10b981"
+                        strokeDasharray="251.2"
+                        strokeDashoffset={251.2 - (251.2 * confirmedRate) / 100}
+                        strokeLinecap="round"
+                        strokeWidth="9"
+                      />
+                      <circle
+                        cx="50"
+                        cy="50"
+                        fill="transparent"
+                        r="40"
+                        stroke="#f87171"
+                        strokeDasharray="251.2"
+                        strokeDashoffset={226}
+                        strokeLinecap="round"
+                        strokeWidth="9"
+                      />
+                    </svg>
+
+                    <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
+                      <span className="text-2xl text-slate-900 leading-none font-extrabold">
+                        {confirmedRate}%
+                      </span>
+                      <span className="text-[11px] text-emerald-700 font-semibold mt-0.5">
+                        {presentCount} / 42
+                      </span>
+                    </div>
+                  </div>
+                  <span className="text-xs text-slate-500 font-medium mt-1">Confirmed Rate</span>
+                </div>
+
+                {/* Numeric Split-Cells */}
+                <div className="col-span-7 grid grid-cols-2 gap-2">
+                  <div
+                    onClick={() => setActiveFilter('present')}
+                    className={`p-2.5 rounded-2xl border transition-all cursor-pointer ${
+                      activeFilter === 'present'
+                        ? 'bg-emerald-100 border-emerald-400 ring-2 ring-emerald-300'
+                        : 'bg-emerald-50/70 border-emerald-200/70'
+                    }`}
+                  >
+                    <span className="text-[11px] text-emerald-800 font-semibold block">Present</span>
+                    <span className="text-xl text-emerald-700 font-extrabold">{presentCount}</span>
+                    <div className="flex items-center text-[10px] text-emerald-700 font-semibold mt-0.5">
+                      <CheckCircle2 className="w-3 h-3 mr-0.5 fill-current" />
+                      <span>In Perimeter</span>
+                    </div>
+                  </div>
+
+                  <div
+                    onClick={() => setActiveFilter('missing')}
+                    className={`p-2.5 rounded-2xl border transition-all cursor-pointer ${
+                      activeFilter === 'missing'
+                        ? 'bg-rose-100 border-rose-400 ring-2 ring-rose-300'
+                        : 'bg-rose-50/80 border-rose-200/80'
+                    }`}
+                  >
+                    <span className="text-[11px] text-rose-700 font-semibold block">Missing</span>
+                    <span className="text-xl text-rose-600 font-extrabold">{missingCount}</span>
+                    <div className="flex items-center text-[10px] text-rose-700 font-semibold mt-0.5">
+                      <AlertTriangle className="w-3 h-3 mr-0.5 fill-current" />
+                      <span>Unverified</span>
+                    </div>
+                  </div>
+
+                  <div
+                    onClick={() => setActiveFilter('excursion')}
+                    className={`col-span-2 p-2.5 rounded-2xl border flex items-center justify-between cursor-pointer transition-all ${
+                      activeFilter === 'excursion'
+                        ? 'bg-sky-100 border-sky-400 ring-2 ring-sky-300'
+                        : 'bg-sky-50/70 border-sky-200/70'
+                    }`}
+                  >
+                    <div>
+                      <span className="text-[10px] text-sky-800 font-semibold block">
+                        Approved Excursion
+                      </span>
+                      <span className="text-xs font-bold text-sky-950">
+                        2 Members (Ridge View)
+                      </span>
+                    </div>
+                    <div className="w-8 h-8 rounded-full bg-sky-100 text-sky-700 flex items-center justify-center">
+                      <NavIcon className="w-4 h-4" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Filter Pills Bar including Sub-Groups with Minus Deletion (Request 8) */}
+              <div className="flex items-center gap-1.5 overflow-x-auto pb-1 pt-0.5 no-scrollbar">
+                <button
+                  type="button"
+                  onClick={() => setActiveFilter('all')}
+                  className={`h-7 px-3 rounded-full text-xs font-bold shrink-0 transition-all cursor-pointer ${
+                    activeFilter === 'all'
+                      ? 'bg-emerald-800 text-white shadow-2xs'
+                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                  }`}
+                >
+                  All ({members.length})
+                </button>
+
+                {/* Dynamic Active Sub-Groups with Minus Button */}
+                {subGroups.map((sg) => (
+                  <div
+                    key={sg.id}
+                    className="flex items-center gap-1 shrink-0 rounded-full border px-2 py-0.5 text-xs font-bold bg-white shadow-2xs"
+                    style={{ borderColor: sg.color }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setActiveFilter(sg.id as any)}
+                      className="flex items-center gap-1 cursor-pointer"
+                    >
+                      <span className="w-2 h-2 rounded-full" style={{ backgroundColor: sg.color }} />
+                      <span style={{ color: sg.color }}>{sg.name}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteSubGroup(sg.id, sg.name);
+                      }}
+                      className="w-3.5 h-3.5 rounded-full bg-rose-100 hover:bg-rose-200 text-rose-700 flex items-center justify-center cursor-pointer transition-colors ml-0.5"
+                      title={`Remove sub-group ${sg.name}`}
+                    >
+                      <Minus className="w-2.5 h-2.5 stroke-[3]" />
+                    </button>
+                  </div>
+                ))}
+
+                <button
+                  type="button"
+                  onClick={() => setActiveFilter('present')}
+                  className={`h-7 px-3 rounded-full text-xs font-semibold shrink-0 transition-all cursor-pointer ${
+                    activeFilter === 'present'
+                      ? 'bg-emerald-800 text-white'
+                      : 'bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100'
+                  }`}
+                >
+                  Present ({presentCount})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveFilter('missing')}
+                  className={`h-7 px-3 rounded-full text-xs font-bold shrink-0 transition-all cursor-pointer ${
+                    activeFilter === 'missing'
+                      ? 'bg-rose-700 text-white'
+                      : 'bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100'
+                  }`}
+                >
+                  Missing ({missingCount})
+                </button>
+              </div>
+
+              {/* SUPER ADMIN MEMBER VERIFICATION & APPROVAL TOGGLE (Request 7) */}
+              <div className="mt-3 p-3 rounded-2xl bg-slate-50 border border-slate-200 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <ShieldCheck className="w-4 h-4 text-[#0f5238]" />
+                    <div>
+                      <span className="text-[11px] font-bold text-slate-800 block">
+                        Super Admin Verification Required
+                      </span>
+                      <span className="text-[9px] text-slate-500 block">
+                        Verify genuine members before admitting to squad
+                      </span>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsVerificationRequired(!isVerificationRequired);
+                      onShowToast(
+                        !isVerificationRequired
+                          ? 'Member Verification Required: Super admin must approve new members!'
+                          : 'Member Verification disabled: New members can join directly.'
+                      );
+                    }}
+                    className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors cursor-pointer ${
+                      isVerificationRequired ? 'bg-[#0f5238]' : 'bg-slate-300'
+                    }`}
+                    title="Toggle Member Verification Required"
+                  >
+                    <span
+                      className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
+                        isVerificationRequired ? 'translate-x-5' : 'translate-x-1'
+                      }`}
+                    />
+                  </button>
+                </div>
+
+                {/* Pending Verification Approvals */}
+                {isVerificationRequired && pendingMembers.length > 0 && (
+                  <div className="pt-2 border-t border-slate-200/80 space-y-1.5">
+                    <span className="text-[10px] font-bold text-amber-900 flex items-center gap-1 uppercase tracking-wider">
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping" />
+                      Pending Verification Queue ({pendingMembers.length})
+                    </span>
+
+                    {pendingMembers.map((p) => (
+                      <div
+                        key={p.id}
+                        className="p-2 rounded-xl bg-white border border-amber-200 shadow-2xs flex items-center justify-between gap-2"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <img
+                            src={p.avatar}
+                            alt={p.name}
+                            className="w-7 h-7 rounded-full object-cover border border-amber-300 shrink-0"
+                          />
+                          <div className="min-w-0">
+                            <span className="text-xs font-bold text-slate-900 truncate block">{p.name}</span>
+                            <span className="text-[10px] text-slate-500 block truncate">
+                              {p.phone} · Req: {p.roleRequested}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => handleVerifyPendingMember(p.id)}
+                            className="px-2 py-1 rounded-lg bg-[#0f5238] hover:bg-[#1b5e3f] text-white text-[10px] font-bold flex items-center gap-0.5 cursor-pointer shadow-2xs"
+                            title="Verify and Add to Squad"
+                          >
+                            <Check className="w-3 h-3" />
+                            <span>Verify</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleKickPendingMember(p.id, p.name)}
+                            className="px-2 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-[10px] font-bold flex items-center gap-0.5 cursor-pointer"
+                            title="Kick / Decline"
+                          >
+                            <UserX className="w-3 h-3" />
+                            <span>Kick</span>
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Header with Separate Window Button (Request 9) */}
+              <div className="mt-3 pt-2 flex items-center justify-between border-t border-slate-100">
+                <span className="text-[11px] font-bold text-slate-800">
+                  Squad Roster ({filteredMembers.length})
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setIsAllMembersModalOpen(true)}
+                  className="px-2.5 py-1 rounded-xl bg-cyan-50 hover:bg-cyan-100 text-cyan-900 border border-cyan-300 text-[10px] font-bold flex items-center gap-1 transition-colors cursor-pointer shadow-2xs"
+                  title="Open full members directory in separate window"
+                >
+                  <Eye className="w-3 h-3 text-cyan-700" />
+                  <span>View All</span>
+                </button>
+              </div>
+
+              {/* Member Roster List with Role Hierarchy, Contact & Kick Actions */}
+              <div className="mt-2 space-y-2 max-h-56 overflow-y-auto no-scrollbar">
+                {filteredMembers.map((member) => (
+                  <div
+                    key={member.id}
+                    className="flex items-center justify-between p-2.5 rounded-xl border-2 transition-all text-xs shadow-2xs"
+                    style={{
+                      borderColor: member.subGroupColor ? `${member.subGroupColor}55` : '#e2e8f0',
+                      backgroundColor: member.subGroupColor ? `${member.subGroupColor}08` : '#ffffff',
+                    }}
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="relative shrink-0">
+                        <img
+                          src={member.avatar}
+                          alt={member.name}
+                          className="w-8 h-8 rounded-full object-cover border border-slate-200"
+                        />
+                        {member.roleHierarchy === 'super_admin' ? (
+                          <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-amber-400 text-slate-950 flex items-center justify-center shadow-xs">
+                            <Crown className="w-2.5 h-2.5 fill-current" />
+                          </span>
+                        ) : member.roleHierarchy === 'subgroup_admin' ? (
+                          <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-sky-500 text-white flex items-center justify-center shadow-xs">
+                            <Shield className="w-2.5 h-2.5 fill-current" />
+                          </span>
+                        ) : null}
+                      </div>
+
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span
+                            className="font-black text-xs truncate"
+                            style={{ color: member.subGroupColor || '#1e293b' }}
+                          >
+                            {member.name}
+                          </span>
+
+                          {member.roleHierarchy === 'super_admin' && (
+                            <span className="px-1.5 py-0.2 rounded text-[9px] font-black uppercase bg-amber-100 text-amber-900 border border-amber-300">
+                              SUPER ADMIN
+                            </span>
+                          )}
+
+                          {member.roleHierarchy === 'subgroup_admin' && (
+                            <span className="px-1.5 py-0.2 rounded text-[9px] font-bold uppercase bg-sky-100 text-sky-900 border border-sky-300">
+                              SUB-ADMIN
+                            </span>
+                          )}
+
+                          {member.subGroupName && (
+                            <span
+                              className="px-1.5 py-0.2 rounded text-[9px] font-bold text-white shadow-2xs"
+                              style={{ backgroundColor: member.subGroupColor }}
+                            >
+                              {member.subGroupName}
+                            </span>
+                          )}
+                        </div>
+
+                        <span className="text-[10px] text-slate-500 block truncate">
+                          {member.role} · {member.distance} · {member.battery}% bat
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <span
+                        className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                          member.status === 'present'
+                            ? 'bg-emerald-100 text-emerald-800'
+                            : member.status === 'missing'
+                            ? 'bg-rose-100 text-rose-700'
+                            : 'bg-sky-100 text-sky-800'
+                        }`}
+                      >
+                        {member.status.toUpperCase()}
+                      </span>
+
+                      {/* Super Admin Kick Member Button (Request 7) */}
+                      {member.roleHierarchy !== 'super_admin' && (
+                        <button
+                          type="button"
+                          onClick={() => handleKickActiveMember(member.id, member.name)}
+                          className="w-6 h-6 rounded-lg bg-slate-100 hover:bg-rose-100 text-slate-400 hover:text-rose-600 flex items-center justify-center cursor-pointer transition-colors"
+                          title={`Kick ${member.name} from squad`}
+                        >
+                          <UserX className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            {/* Excursion Requests */}
+            <section className="bg-white rounded-3xl p-4 border border-slate-200 custom-shadow-soft">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-lg bg-teal-100 text-teal-800 flex items-center justify-center">
+                    <NavIcon className="w-4 h-4" />
+                  </div>
+                  <h3 className="text-sm font-bold text-slate-900">Excursion Requests</h3>
+                </div>
+                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                  {excursionRequests.filter((r) => r.status === 'pending').length} Pending
+                </span>
+              </div>
+
+              {excursionRequests.map((req) => (
+                <div
+                  key={req.id}
+                  className="rounded-2xl p-3 bg-gradient-to-b from-slate-50 to-slate-100 border border-slate-200 space-y-2.5"
+                >
+                  <div className="flex items-start justify-between">
+                    <div className="flex gap-2.5">
+                      <div className="flex -space-x-2 shrink-0 pt-0.5">
+                        {req.avatars.map((av, idx) => (
+                          <img
+                            key={idx}
+                            alt="Teammate"
+                            className="w-7 h-7 rounded-full object-cover ring-2 ring-white"
+                            src={av}
+                          />
+                        ))}
+                        <span className="w-7 h-7 rounded-full bg-emerald-100 text-emerald-800 text-[10px] flex items-center justify-center ring-2 ring-white font-bold">
+                          +1
+                        </span>
+                      </div>
+                      <div>
+                        <h4 className="text-xs font-semibold text-slate-900 leading-snug">
+                          {req.trailName}
+                        </h4>
+                        <p className="text-[11px] text-slate-500">
+                          Lead: {req.leadName} · {req.membersCount} members
+                        </p>
+                      </div>
+                    </div>
+                    <span className="text-[10px] font-bold text-amber-900 bg-amber-100 px-2 py-0.5 rounded-md border border-amber-200">
+                      Return {req.returnTime}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-between text-xs text-slate-600 px-1">
+                    <span className="flex items-center gap-1 font-semibold text-[#0f5238]">
+                      <NavIcon className="w-3.5 h-3.5" /> {req.distance}
+                    </span>
+                    <span className="flex items-center gap-1 text-slate-500">
+                      <Battery className="w-3.5 h-3.5 text-emerald-600" /> {req.batteryAvg}% avg
+                    </span>
+                  </div>
+
+                  {req.status === 'pending' ? (
+                    <div className="grid grid-cols-2 gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => handleRejectExcursion(req.id)}
+                        className="py-2 px-3 rounded-full bg-white border border-slate-300 text-xs font-semibold text-rose-700 hover:bg-rose-50 active:scale-95 transition-transform flex items-center justify-center gap-1 cursor-pointer"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                        <span>Reject</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleApproveExcursion(req.id)}
+                        className="py-2 px-3 rounded-full bg-emerald-700 text-xs font-semibold text-white hover:bg-emerald-800 active:scale-95 transition-transform flex items-center justify-center gap-1 shadow-xs cursor-pointer"
+                      >
+                        <Check className="w-3.5 h-3.5" />
+                        <span>Approve ({req.membersCount})</span>
+                      </button>
+                    </div>
+                  ) : (
+                    <div
+                      className={`py-1.5 px-3 rounded-xl text-center text-xs font-bold ${
+                        req.status === 'approved'
+                          ? 'bg-emerald-100 text-emerald-900'
+                          : 'bg-rose-100 text-rose-900'
+                      }`}
+                    >
+                      {req.status === 'approved' ? '✓ Approved by Command' : '✕ Declined'}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </section>
+
+            {/* Field Intercom */}
+            <section className="bg-white rounded-3xl p-4 border border-slate-200 custom-shadow-soft">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-lg bg-emerald-100 text-emerald-800 flex items-center justify-center">
+                    <Radio className="w-4 h-4" />
+                  </div>
+                  <h3 className="text-sm font-bold text-slate-900">Field Intercom</h3>
+                </div>
+                <span className="text-[10px] text-emerald-700 font-bold flex items-center gap-1.5 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
+                  4 Connected
+                </span>
+              </div>
+
+              {/* Push to Talk Broadcast Button */}
+              <button
+                type="button"
+                onMouseDown={() => {
+                  setIsPushToTalk(true);
+                  onShowToast('🎙 Transmitting to All Channels...');
+                }}
+                onMouseUp={() => {
+                  setIsPushToTalk(false);
+                  onShowToast('Transmission sent over LoRa mesh.');
+                }}
+                onTouchStart={() => {
+                  setIsPushToTalk(true);
+                  onShowToast('🎙 Transmitting to All Channels...');
+                }}
+                onTouchEnd={() => {
+                  setIsPushToTalk(false);
+                  onShowToast('Transmission sent over LoRa mesh.');
+                }}
+                className={`relative overflow-hidden w-full py-3.5 px-4 rounded-full border text-xs sm:text-sm font-bold transition-all flex items-center justify-center gap-2 mb-3 shadow-xs cursor-pointer ${
+                  isPushToTalk
+                    ? 'bg-emerald-600 text-white border-emerald-700 ring-4 ring-emerald-300'
+                    : 'bg-gradient-to-r from-emerald-50 via-teal-50 to-emerald-100 border-emerald-300 text-emerald-900 hover:bg-emerald-100 active:scale-95'
+                }`}
+              >
+                {isPushToTalk ? <MicOff className="w-5 h-5 animate-pulse" /> : <Mic className="w-5 h-5 text-emerald-700" />}
+                <span>{isPushToTalk ? 'Transmitting Live Audio (Release to Send)' : 'Hold to Talk to All'}</span>
+              </button>
+
+              {/* Squad Leads Quick Contact */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between p-2.5 rounded-2xl bg-slate-50 border border-slate-200">
+                  <div className="flex items-center gap-2.5">
+                    <div className="relative">
+                      <img
+                        alt="Arjun"
+                        className="w-9 h-9 rounded-full object-cover"
+                        src="https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=120&q=80"
+                      />
+                      <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-500 rounded-full ring-2 ring-white" />
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold text-slate-900 leading-tight">
+                        Arjun Sen (Scout Lead)
+                      </p>
+                      <p className="text-[10px] text-slate-500">North Ridge · Channel 1</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setCallModalContact({
+                          name: 'Arjun Sen',
+                          title: 'Scout Lead - North Ridge',
+                          phone: '+91 98000 00003',
+                          avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=120&q=80',
+                        })
+                      }
+                      className="w-8 h-8 rounded-full bg-emerald-100/70 flex items-center justify-center text-emerald-800 hover:bg-emerald-700 hover:text-white transition-colors cursor-pointer"
+                    >
+                      <Phone className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setChatModalContact({
+                          name: 'Arjun Sen',
+                          title: 'Scout Lead',
+                          avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=120&q=80',
+                        })
+                      }
+                      className="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center text-slate-700 hover:bg-slate-300 transition-colors cursor-pointer"
+                    >
+                      <MessageSquare className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between p-2.5 rounded-2xl bg-slate-50 border border-slate-200">
+                  <div className="flex items-center gap-2.5">
+                    <div className="relative">
+                      <img
+                        alt="Sarah"
+                        className="w-9 h-9 rounded-full object-cover"
+                        src="https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&w=120&q=80"
+                      />
+                      <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-500 rounded-full ring-2 ring-white" />
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold text-slate-900 leading-tight">
+                        Sarah Chen (Medic Squad)
+                      </p>
+                      <p className="text-[10px] text-slate-500">Basecamp Medical · Channel 3</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setCallModalContact({
+                          name: 'Sarah Chen',
+                          title: 'Medic Squad Lead',
+                          phone: '+91 98000 00002',
+                          avatar: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&w=120&q=80',
+                        })
+                      }
+                      className="w-8 h-8 rounded-full bg-emerald-100/70 flex items-center justify-center text-emerald-800 hover:bg-emerald-700 hover:text-white transition-colors cursor-pointer"
+                    >
+                      <Phone className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setChatModalContact({
+                          name: 'Sarah Chen',
+                          title: 'Medic Squad',
+                          avatar: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&w=120&q=80',
+                        })
+                      }
+                      className="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center text-slate-700 hover:bg-slate-300 transition-colors cursor-pointer"
+                    >
+                      <MessageSquare className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            {/* Leave Group Action Card */}
+            <div className="pt-2 pb-6">
+              <button
+                type="button"
+                onClick={() => {
+                  onSetJoinedGroup(false);
+                  onShowToast('You left the squad expedition. Trip gear, Faculty Drive & Splitwise have been removed.');
+                }}
+                className="w-full py-3 rounded-2xl border border-rose-200 bg-rose-50/60 hover:bg-rose-100 text-rose-700 text-xs font-bold flex items-center justify-center gap-1.5 transition-all active:scale-98 cursor-pointer shadow-2xs"
+              >
+                <LogOut className="w-4 h-4 text-rose-600" />
+                <span>Leave Squad Expedition (Reset Group Membership)</span>
+              </button>
+              <p className="text-[10px] text-slate-400 text-center mt-1.5">
+                Leaving the group will hide the shared Faculty Drive, Splitwise ledger, and Trip Gear checklist until you rejoin or create a new group.
+              </p>
+            </div>
+          </>
+        )}
+      </main>
+
+      {/* Cover Background Picker Modal */}
+      {isCoverPickerOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="w-full max-w-sm bg-white rounded-3xl p-5 border border-slate-200 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+              <h3 className="font-bold text-slate-900 text-sm">Choose Expedition Cover</h3>
+              <button
+                type="button"
+                onClick={() => setIsCoverPickerOpen(false)}
+                className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2.5">
+              {presetCovers.map((item, idx) => (
+                <div
+                  key={idx}
+                  onClick={() => {
+                    setCoverBg(item.url);
+                    setIsCoverPickerOpen(false);
+                    onShowToast(`Cover updated to ${item.name}!`);
+                  }}
+                  className="relative rounded-xl overflow-hidden aspect-video border-2 border-slate-200 hover:border-emerald-600 cursor-pointer shadow-xs group"
+                >
+                  <img src={item.url} alt={item.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
+                  <span className="absolute bottom-1 left-1 bg-black/60 text-white text-[10px] font-bold px-1.5 py-0.5 rounded">
+                    {item.name}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Call Simulator Modal */}
+      {callModalContact && (
+        <CallModal
+          isOpen={true}
+          onClose={() => setCallModalContact(null)}
+          contactName={callModalContact.name}
+          contactTitle={callModalContact.title}
+          phoneNumber={callModalContact.phone}
+          avatar={callModalContact.avatar}
+        />
+      )}
+
+      {/* Chat Simulator Modal */}
+      {chatModalContact && (
+        <ChatModal
+          isOpen={true}
+          onClose={() => setChatModalContact(null)}
+          contactName={chatModalContact.name}
+          contactTitle={chatModalContact.title}
+          avatar={chatModalContact.avatar}
+        />
+      )}
+
+      {/* 1. EDIT GROUP MODAL */}
+      {isEditGroupModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="w-full max-w-sm bg-white rounded-3xl p-5 border border-slate-200 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto no-scrollbar">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <div className="w-7 h-7 rounded-lg bg-slate-800 text-white flex items-center justify-center">
+                  <Settings className="w-4 h-4" />
+                </div>
+                <h3 className="font-bold text-slate-900 text-sm">Edit Expedition Group</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsEditGroupModalOpen(false)}
+                className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                setIsEditGroupModalOpen(false);
+                onShowToast(`Expedition "${tripName}" details updated!`);
+              }}
+              className="space-y-3"
+            >
+              <div>
+                <label className="text-[11px] font-bold text-slate-600 block mb-1">
+                  Expedition Group Name
+                </label>
+                <input
+                  type="text"
+                  value={tripName}
+                  onChange={(e) => setTripName(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs font-semibold text-slate-900 focus:outline-none focus:border-emerald-600"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="text-[11px] font-bold text-slate-600 block mb-1">
+                  Origin / Departure Base
+                </label>
+                <input
+                  type="text"
+                  value={editFromLocation}
+                  onChange={(e) => setEditFromLocation(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs font-semibold text-slate-900 focus:outline-none focus:border-emerald-600"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="text-[11px] font-bold text-slate-600 block mb-1">
+                  Summit Destination
+                </label>
+                <input
+                  type="text"
+                  value={editDestination}
+                  onChange={(e) => setEditDestination(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs font-semibold text-slate-900 focus:outline-none focus:border-emerald-600"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="text-[11px] font-bold text-slate-600 block mb-1">
+                  Departure Date
+                </label>
+                <input
+                  type="date"
+                  value={editDepartureDate}
+                  onChange={(e) => setEditDepartureDate(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs font-semibold text-slate-900 focus:outline-none focus:border-emerald-600"
+                />
+              </div>
+
+              <div className="pt-1">
+                <button
+                  type="button"
+                  onClick={() => setIsCoverPickerOpen(true)}
+                  className="w-full py-2 px-3 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+                >
+                  <Camera className="w-3.5 h-3.5 text-slate-500" />
+                  <span>Choose Cover Image</span>
+                </button>
+              </div>
+
+              <button
+                type="submit"
+                className="w-full py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-bold transition-all shadow-md active:scale-98 cursor-pointer mt-2"
+              >
+                Save Group Changes
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* 2. CREATE SUB-GROUP MODAL */}
+      {isCreateSubGroupModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="w-full max-w-sm bg-white rounded-3xl p-5 border border-slate-200 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto no-scrollbar">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <div className="w-7 h-7 rounded-lg bg-teal-700 text-white flex items-center justify-center">
+                  <Layers className="w-4 h-4" />
+                </div>
+                <h3 className="font-bold text-slate-900 text-sm">Create Squad Sub-Group</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsCreateSubGroupModalOpen(false)}
+                className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="text-[11px] font-bold text-slate-600 block mb-1">
+                  Sub-Group Title
+                </label>
+                <input
+                  type="text"
+                  value={subGroupNameInput}
+                  onChange={(e) => setSubGroupNameInput(e.target.value)}
+                  placeholder="e.g. Ridge Push Patrol Beta"
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs font-semibold text-slate-900 focus:outline-none focus:border-emerald-600"
+                />
+                {/* Suggestions */}
+                <div className="flex flex-wrap gap-1 mt-1.5">
+                  {['Ridge Recon', 'Basecamp Cooks', 'Photography Patrol', 'Rear Sweepers'].map((sug) => (
+                    <button
+                      key={sug}
+                      type="button"
+                      onClick={() => setSubGroupNameInput(sug)}
+                      className="text-[9px] font-semibold px-2 py-0.5 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors"
+                    >
+                      + {sug}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Color Badge Selector */}
+              <div>
+                <label className="text-[11px] font-bold text-slate-600 block mb-1.5">
+                  Identification Color Badge
+                </label>
+                <div className="flex items-center gap-2">
+                  {[
+                    { color: '#ef4444', label: 'Crimson' },
+                    { color: '#3b82f6', label: 'Azure' },
+                    { color: '#10b981', label: 'Emerald' },
+                    { color: '#f59e0b', label: 'Amber' },
+                    { color: '#8b5cf6', label: 'Violet' },
+                  ].map((c) => (
+                    <button
+                      key={c.color}
+                      type="button"
+                      onClick={() => setSubGroupColorInput(c.color)}
+                      style={{ backgroundColor: c.color }}
+                      className={`w-7 h-7 rounded-full transition-transform cursor-pointer flex items-center justify-center ${
+                        subGroupColorInput === c.color ? 'ring-2 ring-offset-2 ring-slate-800 scale-110' : 'opacity-80 hover:opacity-100'
+                      }`}
+                      title={c.label}
+                    >
+                      {subGroupColorInput === c.color && <Check className="w-3.5 h-3.5 text-white" />}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Assign Members */}
+              <div>
+                <label className="text-[11px] font-bold text-slate-600 block mb-1">
+                  Assign Members ({selectedSubGroupMembers.length} selected)
+                </label>
+                <div className="space-y-1.5 max-h-36 overflow-y-auto no-scrollbar border border-slate-100 rounded-xl p-1.5 bg-slate-50/60">
+                  {members.map((m) => {
+                    const isSelected = selectedSubGroupMembers.includes(m.id);
+                    return (
+                      <div
+                        key={m.id}
+                        onClick={() => {
+                          setSelectedSubGroupMembers((prev) =>
+                            isSelected ? prev.filter((id) => id !== m.id) : [...prev, m.id]
+                          );
+                        }}
+                        className={`flex items-center justify-between p-1.5 rounded-lg text-xs cursor-pointer transition-colors ${
+                          isSelected ? 'bg-emerald-100/60 border border-emerald-300' : 'hover:bg-slate-100'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <img src={m.avatar} alt={m.name} className="w-5 h-5 rounded-full object-cover" />
+                          <span className="font-semibold text-slate-800 text-[11px]">{m.name}</span>
+                        </div>
+                        <div className={`w-4 h-4 rounded-md border flex items-center justify-center ${
+                          isSelected ? 'bg-emerald-600 border-emerald-600 text-white' : 'border-slate-300 bg-white'
+                        }`}>
+                          {isSelected && <Check className="w-3 h-3" />}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Existing Sub-Groups Preview with Minus Removal Button (Request 8) */}
+              <div className="pt-1">
+                <span className="text-[10px] font-extrabold text-slate-500 uppercase tracking-wider block mb-1">
+                  Active Sub-Groups ({subGroups.length}) — Tap minus to remove:
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  {subGroups.map((sg) => (
+                    <div
+                      key={sg.id}
+                      className="text-[10px] font-bold px-2 py-0.5 rounded-full border text-slate-800 flex items-center gap-1.5 bg-white shadow-2xs"
+                      style={{ borderColor: sg.color }}
+                    >
+                      <span className="w-2 h-2 rounded-full" style={{ backgroundColor: sg.color }} />
+                      <span>{sg.name}</span>
+                      <span className="text-[9px] text-slate-400 font-normal">({sg.memberCount})</span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteSubGroup(sg.id, sg.name);
+                        }}
+                        className="w-4 h-4 rounded-full bg-rose-100 hover:bg-rose-200 text-rose-700 flex items-center justify-center cursor-pointer transition-colors"
+                        title={`Remove sub-group ${sg.name}`}
+                      >
+                        <Minus className="w-2.5 h-2.5 stroke-[3]" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  if (!subGroupNameInput.trim()) return;
+                  const newSubGroup = {
+                    id: `sub-${Date.now()}`,
+                    name: subGroupNameInput.trim(),
+                    color: subGroupColorInput,
+                    leadName: 'Chris Walker',
+                    memberCount: selectedSubGroupMembers.length || 1,
+                  };
+                  setSubGroups((prev) => [...prev, newSubGroup]);
+                  // Update assigned members' state
+                  setMembers((prev) =>
+                    prev.map((m) =>
+                      selectedSubGroupMembers.includes(m.id)
+                        ? { ...m, subGroupId: newSubGroup.id, subGroupName: newSubGroup.name, subGroupColor: newSubGroup.color }
+                        : m
+                    )
+                  );
+                  setIsCreateSubGroupModalOpen(false);
+                  setSubGroupNameInput('');
+                  onShowToast(`Sub-Group "${newSubGroup.name}" created and assigned!`);
+                }}
+                disabled={!subGroupNameInput.trim()}
+                className="w-full py-2.5 rounded-xl bg-teal-700 hover:bg-teal-600 disabled:opacity-40 text-white text-xs font-bold transition-all shadow-md active:scale-98 cursor-pointer mt-2"
+              >
+                Create &amp; Assign Sub-Group
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 3. BROADCAST ANNOUNCEMENT MODAL */}
+      {isAnnouncementModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="w-full max-w-sm bg-white rounded-3xl p-5 border border-slate-200 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto no-scrollbar">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <div className="w-7 h-7 rounded-lg bg-amber-600 text-white flex items-center justify-center">
+                  <Megaphone className="w-4 h-4" />
+                </div>
+                <h3 className="font-bold text-slate-900 text-sm">Squad Announcement</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsAnnouncementModalOpen(false)}
+                className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (!quickAnnounceTitle.trim() || !quickAnnounceText.trim()) return;
+                const newAnnounce = {
+                  id: `a-${Date.now()}`,
+                  title: quickAnnounceTitle.trim(),
+                  text: quickAnnounceText.trim(),
+                  priority: quickAnnouncePriority,
+                  author: 'Chris Walker (Trekker Lead)',
+                  timestamp: 'Just now',
+                };
+                setAnnouncements((prev) => [newAnnounce, ...prev]);
+                setIsAnnouncementModalOpen(false);
+                setQuickAnnounceTitle('');
+                setQuickAnnounceText('');
+                onShowToast(`Announcement broadcasted to all 42 squad members!`);
+              }}
+              className="space-y-3"
+            >
+              {/* Priority Selector */}
+              <div>
+                <label className="text-[11px] font-bold text-slate-600 block mb-1">
+                  Urgency / Priority
+                </label>
+                <div className="grid grid-cols-3 gap-1.5">
+                  {[
+                    { id: 'critical', label: 'Critical', color: 'bg-rose-600 text-white' },
+                    { id: 'advisory', label: 'Advisory', color: 'bg-amber-500 text-white' },
+                    { id: 'info', label: 'Info', color: 'bg-sky-600 text-white' },
+                  ].map((p) => (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => setQuickAnnouncePriority(p.id as any)}
+                      className={`py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                        quickAnnouncePriority === p.id
+                          ? `${p.color} shadow-xs scale-102`
+                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      }`}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[11px] font-bold text-slate-600 block mb-1">
+                  Announcement Title
+                </label>
+                <input
+                  type="text"
+                  value={quickAnnounceTitle}
+                  onChange={(e) => setQuickAnnounceTitle(e.target.value)}
+                  placeholder="e.g. Mandatory Perimeter Recall"
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs font-semibold text-slate-900 focus:outline-none focus:border-amber-500"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="text-[11px] font-bold text-slate-600 block mb-1">
+                  Message Details
+                </label>
+                <textarea
+                  value={quickAnnounceText}
+                  onChange={(e) => setQuickAnnounceText(e.target.value)}
+                  rows={3}
+                  placeholder="Type broadcast message for the entire squad..."
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs font-medium text-slate-900 focus:outline-none focus:border-amber-500"
+                  required
+                />
+              </div>
+
+              {/* Quick Template Chips */}
+              <div className="space-y-1">
+                <span className="text-[10px] font-bold text-slate-400 uppercase">Quick Templates</span>
+                <div className="flex flex-wrap gap-1">
+                  {[
+                    'Dusk Roll Call in 15 mins',
+                    'High-Altitude Wind Advisory',
+                    'Stay in Visual Range of Basecamp',
+                    'Water Hydration Check at Camp',
+                  ].map((tmpl) => (
+                    <button
+                      key={tmpl}
+                      type="button"
+                      onClick={() => {
+                        setQuickAnnounceTitle(tmpl);
+                        setQuickAnnounceText(`Attention all squad members: ${tmpl}. Please confirm receipt on channel 1.`);
+                      }}
+                      className="text-[9px] font-semibold px-2 py-0.5 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-700"
+                    >
+                      {tmpl}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                className="w-full py-2.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold transition-all shadow-md active:scale-98 cursor-pointer mt-2 flex items-center justify-center gap-1.5"
+              >
+                <Send className="w-3.5 h-3.5" />
+                <span>Broadcast to Squad</span>
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* 4. ADMIN DASHBOARD & ROLE GOVERNANCE MODAL */}
+      {isAdminDashboardModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="w-full max-w-sm bg-white rounded-3xl p-5 border border-slate-200 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto no-scrollbar">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <div className="w-7 h-7 rounded-lg bg-indigo-700 text-white flex items-center justify-center">
+                  <Crown className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-900 text-sm">Admin Dashboard</h3>
+                  <p className="text-[10px] text-slate-500">Role hierarchy &amp; squad permissions</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsAdminDashboardModalOpen(false)}
+                className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Permission Control Switches */}
+            <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200 space-y-2.5">
+              <span className="text-[10px] font-extrabold text-slate-500 uppercase tracking-wider block">
+                Expedition Permission Gates
+              </span>
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-bold text-slate-800">Geofence GPS Roll-Call</p>
+                  <p className="text-[10px] text-slate-500">Require 50m proximity for check-in</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAdminPermissions((p) => ({ ...p, lockCheckIn: !p.lockCheckIn }));
+                    onShowToast(`Geofence proximity check ${!adminPermissions.lockCheckIn ? 'Enabled' : 'Disabled'}`);
+                  }}
+                  className={`w-10 h-6 rounded-full transition-colors cursor-pointer p-0.5 ${
+                    adminPermissions.lockCheckIn ? 'bg-indigo-600' : 'bg-slate-300'
+                  }`}
+                >
+                  <div className={`w-5 h-5 rounded-full bg-white shadow-xs transition-transform ${
+                    adminPermissions.lockCheckIn ? 'translate-x-4' : 'translate-x-0'
+                  }`} />
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between pt-1 border-t border-slate-200/60">
+                <div>
+                  <p className="text-xs font-bold text-slate-800">Require Excursion Approval</p>
+                  <p className="text-[10px] text-slate-500">Scouts must have admin sign-off</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAdminPermissions((p) => ({ ...p, requireExcursionClearance: !p.requireExcursionClearance }));
+                    onShowToast(`Excursion clearance rule toggled`);
+                  }}
+                  className={`w-10 h-6 rounded-full transition-colors cursor-pointer p-0.5 ${
+                    adminPermissions.requireExcursionClearance ? 'bg-indigo-600' : 'bg-slate-300'
+                  }`}
+                >
+                  <div className={`w-5 h-5 rounded-full bg-white shadow-xs transition-transform ${
+                    adminPermissions.requireExcursionClearance ? 'translate-x-4' : 'translate-x-0'
+                  }`} />
+                </button>
+              </div>
+            </div>
+
+            {/* DIRECT PERSONAL ROLE SWITCHER (Request 1 & 13) */}
+            <div className="p-3.5 rounded-2xl bg-gradient-to-r from-indigo-50 to-purple-50 border-2 border-indigo-200/80 space-y-2">
+              <div className="flex items-center justify-between">
+                <div>
+                  <span className="text-[10px] font-extrabold text-indigo-900 uppercase tracking-wider block">
+                    Your Personal Access Level
+                  </span>
+                  <p className="text-xs font-bold text-slate-800">
+                    Active Authority:{' '}
+                    <span className={`px-2 py-0.5 rounded-md text-[10px] font-black uppercase ${
+                      userRole === 'super_admin'
+                        ? 'bg-purple-700 text-white'
+                        : userRole === 'subgroup_admin'
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-emerald-700 text-white'
+                    }`}>
+                      {userRole === 'super_admin' ? 'Super Admin' : userRole === 'subgroup_admin' ? 'Sub-Admin' : 'Regular User (Member)'}
+                    </span>
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-1.5 pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (onUpdateRole) onUpdateRole('member');
+                    localStorage.setItem('trailoPS_userRole', 'member');
+                    setMembers((prev) =>
+                      prev.map((item) =>
+                        item.id === '1' || item.name.includes('(You)')
+                          ? { ...item, roleHierarchy: 'member', role: 'Expedition Member' }
+                          : item
+                      )
+                    );
+                    onShowToast('✓ You are now a Regular User! Super Admin privileges disabled.');
+                  }}
+                  className={`py-2 px-1 rounded-xl text-[11px] font-extrabold border transition-all cursor-pointer text-center ${
+                    userRole === 'member'
+                      ? 'bg-slate-900 text-white border-slate-900 shadow-md ring-2 ring-emerald-400'
+                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
+                  }`}
+                >
+                  👤 User (Member)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (onUpdateRole) onUpdateRole('subgroup_admin');
+                    localStorage.setItem('trailoPS_userRole', 'subgroup_admin');
+                    setMembers((prev) =>
+                      prev.map((item) =>
+                        item.id === '1' || item.name.includes('(You)')
+                          ? { ...item, roleHierarchy: 'subgroup_admin', role: 'Sub-Group Lead' }
+                          : item
+                      )
+                    );
+                    onShowToast('Assigned Sub-Admin role.');
+                  }}
+                  className={`py-2 px-1 rounded-xl text-[11px] font-extrabold border transition-all cursor-pointer text-center ${
+                    userRole === 'subgroup_admin'
+                      ? 'bg-blue-600 text-white border-blue-600 shadow-md ring-2 ring-blue-300'
+                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
+                  }`}
+                >
+                  ⚡ Sub-Admin
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (onUpdateRole) onUpdateRole('super_admin');
+                    localStorage.setItem('trailoPS_userRole', 'super_admin');
+                    setMembers((prev) =>
+                      prev.map((item) =>
+                        item.id === '1' || item.name.includes('(You)')
+                          ? { ...item, roleHierarchy: 'super_admin', role: 'Faculty Super Admin' }
+                          : item
+                      )
+                    );
+                    onShowToast('Assigned Super Admin role.');
+                  }}
+                  className={`py-2 px-1 rounded-xl text-[11px] font-extrabold border transition-all cursor-pointer text-center ${
+                    userRole === 'super_admin'
+                      ? 'bg-purple-700 text-white border-purple-700 shadow-md ring-2 ring-purple-300'
+                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
+                  }`}
+                >
+                  👑 Super Admin
+                </button>
+              </div>
+            </div>
+
+            {/* Role Hierarchy Management */}
+            <div className="space-y-2">
+              <span className="text-[10px] font-extrabold text-slate-500 uppercase tracking-wider block">
+                Assign &amp; Manage Member Roles
+              </span>
+              <div className="space-y-2 max-h-52 overflow-y-auto no-scrollbar">
+                {members.map((m) => (
+                  <div key={m.id} className="p-2.5 rounded-xl border border-slate-200 bg-white flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <img src={m.avatar} alt={m.name} className="w-7 h-7 rounded-full object-cover" />
+                      <div>
+                        <p className="text-xs font-bold text-slate-900 leading-tight">{m.name}</p>
+                        <span className={`text-[9px] font-extrabold px-1.5 py-0.5 rounded-md inline-block mt-0.5 ${
+                          m.roleHierarchy === 'super_admin'
+                            ? 'bg-purple-100 text-purple-800 border border-purple-300'
+                            : m.roleHierarchy === 'subgroup_admin'
+                            ? 'bg-blue-100 text-blue-800 border border-blue-300'
+                            : 'bg-slate-100 text-slate-700'
+                        }`}>
+                          {m.roleHierarchy === 'super_admin' ? 'Super Admin' : m.roleHierarchy === 'subgroup_admin' ? 'Sub-Admin' : 'Member'}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Role changer buttons */}
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMembers((prev) =>
+                            prev.map((item) =>
+                              item.id === m.id
+                                ? { ...item, roleHierarchy: 'super_admin', role: 'Faculty Super Admin' }
+                                : item
+                            )
+                          );
+                          if ((m.id === '1' || m.name.includes('(You)')) && onUpdateRole) {
+                            onUpdateRole('super_admin');
+                            localStorage.setItem('trailoPS_userRole', 'super_admin');
+                          }
+                          onShowToast(`Promoted ${m.name} to Super Admin`);
+                        }}
+                        className={`text-[9px] font-bold px-1.5 py-1 rounded transition-colors cursor-pointer ${
+                          m.roleHierarchy === 'super_admin' ? 'bg-purple-700 text-white' : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                        }`}
+                        title="Promote to Super Admin"
+                      >
+                        Super
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMembers((prev) =>
+                            prev.map((item) =>
+                              item.id === m.id
+                                ? { ...item, roleHierarchy: 'subgroup_admin', role: 'Sub-Group Lead' }
+                                : item
+                            )
+                          );
+                          if ((m.id === '1' || m.name.includes('(You)')) && onUpdateRole) {
+                            onUpdateRole('subgroup_admin');
+                            localStorage.setItem('trailoPS_userRole', 'subgroup_admin');
+                          }
+                          onShowToast(`Assigned ${m.name} as Sub-Admin`);
+                        }}
+                        className={`text-[9px] font-bold px-1.5 py-1 rounded transition-colors cursor-pointer ${
+                          m.roleHierarchy === 'subgroup_admin' ? 'bg-blue-600 text-white' : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                        }`}
+                        title="Promote to Sub-Group Admin"
+                      >
+                        Admin
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMembers((prev) =>
+                            prev.map((item) =>
+                              item.id === m.id
+                                ? { ...item, roleHierarchy: 'member', role: 'Expedition Member' }
+                                : item
+                            )
+                          );
+                          if ((m.id === '1' || m.name.includes('(You)')) && onUpdateRole) {
+                            onUpdateRole('member');
+                            localStorage.setItem('trailoPS_userRole', 'member');
+                          }
+                          onShowToast(`Set ${m.name} as Member (User)`);
+                        }}
+                        className={`text-[9px] font-bold px-1.5 py-1 rounded transition-colors cursor-pointer ${
+                          m.roleHierarchy === 'member' ? 'bg-slate-700 text-white' : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                        }`}
+                        title="Set as Member / Regular User"
+                      >
+                        User
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                const me = members.find((item) => item.id === '1' || item.name.includes('(You)'));
+                const targetRole = me?.roleHierarchy || userRole;
+                if (onUpdateRole) {
+                  onUpdateRole(targetRole);
+                }
+                localStorage.setItem('trailoPS_userRole', targetRole);
+                localStorage.setItem('trailoPS_squad_members', JSON.stringify(members));
+                setIsAdminDashboardModalOpen(false);
+                onShowToast(
+                  `Permissions saved! Your active role is now ${
+                    targetRole === 'member'
+                      ? 'Expedition Member (User)'
+                      : targetRole === 'subgroup_admin'
+                      ? 'Sub-Admin'
+                      : 'Super Admin'
+                  }.`
+                );
+              }}
+              className="w-full py-2.5 rounded-xl bg-indigo-700 hover:bg-indigo-600 text-white text-xs font-bold transition-all shadow-md active:scale-98 cursor-pointer mt-1"
+            >
+              Done &amp; Save Permissions
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 5. MISSING ITEM REQUEST MODAL */}
+      {isMissingItemModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="w-full max-w-sm bg-white rounded-3xl p-5 border border-slate-200 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto no-scrollbar">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <div className="w-7 h-7 rounded-lg bg-rose-600 text-white flex items-center justify-center">
+                  <HelpCircle className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-900 text-sm">Missing Item Broadcast</h3>
+                  <p className="text-[10px] text-slate-500">Alert squad to find gear or medical items</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsMissingItemModalOpen(false)}
+                className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (!missingItemName.trim()) return;
+                const newItem = {
+                  id: `m-${Date.now()}`,
+                  itemName: missingItemName.trim(),
+                  reportedBy: 'Chris Walker (You)',
+                  urgency: missingItemUrgency,
+                  location: missingItemLocation.trim() || 'Trail Base',
+                  timestamp: 'Just now',
+                  status: 'open' as const,
+                };
+                setMissingItems((prev) => [newItem, ...prev]);
+                setIsMissingItemModalOpen(false);
+                setMissingItemName('');
+                onShowToast(`Missing item alert broadcasted to entire squad!`);
+              }}
+              className="space-y-3"
+            >
+              <div>
+                <label className="text-[11px] font-bold text-slate-600 block mb-1">
+                  Urgency Level
+                </label>
+                <div className="grid grid-cols-3 gap-1.5">
+                  {[
+                    { id: 'critical', label: 'Critical / Rescue', color: 'bg-rose-600 text-white' },
+                    { id: 'moderate', label: 'Moderate / Gear', color: 'bg-amber-500 text-white' },
+                    { id: 'routine', label: 'Routine / Personal', color: 'bg-slate-700 text-white' },
+                  ].map((u) => (
+                    <button
+                      key={u.id}
+                      type="button"
+                      onClick={() => setMissingItemUrgency(u.id as any)}
+                      className={`py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                        missingItemUrgency === u.id
+                          ? `${u.color} shadow-xs scale-102`
+                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      }`}
+                    >
+                      {u.label.split(' / ')[0]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[11px] font-bold text-slate-600 block mb-1">
+                  Missing Item Description
+                </label>
+                <input
+                  type="text"
+                  value={missingItemName}
+                  onChange={(e) => setMissingItemName(e.target.value)}
+                  placeholder="e.g. Petzl Locking Carabiner"
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs font-semibold text-slate-900 focus:outline-none focus:border-rose-500"
+                  required
+                />
+                {/* Suggestions */}
+                <div className="flex flex-wrap gap-1 mt-1.5">
+                  {['Carabiner 24kN', 'ORS Sachets', 'Headlamp', 'Trekking Pole', 'VHF Radio'].map((sug) => (
+                    <button
+                      key={sug}
+                      type="button"
+                      onClick={() => setMissingItemName(sug)}
+                      className="text-[9px] font-semibold px-2 py-0.5 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-700"
+                    >
+                      + {sug}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[11px] font-bold text-slate-600 block mb-1">
+                  Last Seen Location / Marker
+                </label>
+                <input
+                  type="text"
+                  value={missingItemLocation}
+                  onChange={(e) => setMissingItemLocation(e.target.value)}
+                  placeholder="e.g. Near Rock Bivouac Marker 4"
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs font-semibold text-slate-900 focus:outline-none focus:border-rose-500"
+                />
+              </div>
+
+              <button
+                type="submit"
+                className="w-full py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition-all shadow-md active:scale-98 cursor-pointer mt-2"
+              >
+                Broadcast Missing Item Alert
+              </button>
+            </form>
+
+            {/* Active Missing Items Feed */}
+            <div className="pt-2 border-t border-slate-100 space-y-2">
+              <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider block">
+                Active Missing Item Alerts ({missingItems.filter((i) => i.status === 'open').length})
+              </span>
+              <div className="space-y-1.5 max-h-36 overflow-y-auto no-scrollbar">
+                {missingItems.map((item) => (
+                  <div
+                    key={item.id}
+                    className={`p-2 rounded-xl border flex items-center justify-between text-xs ${
+                      item.status === 'found' ? 'bg-slate-50 border-slate-200 opacity-60' : 'bg-rose-50/70 border-rose-200'
+                    }`}
+                  >
+                    <div>
+                      <p className={`font-bold text-[11px] ${item.status === 'found' ? 'line-through text-slate-500' : 'text-slate-900'}`}>
+                        {item.itemName}
+                      </p>
+                      <p className="text-[9px] text-slate-500">
+                        {item.location} · {item.timestamp}
+                      </p>
+                    </div>
+                    {item.status === 'open' ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMissingItems((prev) =>
+                            prev.map((i) => (i.id === item.id ? { ...i, status: 'found' } : i))
+                          );
+                          onShowToast(`"${item.itemName}" marked as found!`);
+                        }}
+                        className="px-2 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-bold transition-colors cursor-pointer"
+                      >
+                        Found
+                      </button>
+                    ) : (
+                      <span className="text-[10px] font-bold text-emerald-700">Resolved</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 6. SHARED JOURNEY CHECKLIST MODAL */}
+      {isJourneyChecklistModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="w-full max-w-sm bg-white rounded-3xl p-5 border border-slate-200 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto no-scrollbar">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <div className="w-7 h-7 rounded-lg bg-teal-700 text-white flex items-center justify-center">
+                  <ClipboardCheck className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-900 text-sm">Shared Journey Checklist</h3>
+                  <p className="text-[10px] text-slate-500">Synced across all squad member home screens</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsJourneyChecklistModalOpen(false)}
+                className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Checklist Progress */}
+            <div className="p-3 rounded-2xl bg-teal-50/70 border border-teal-200">
+              <div className="flex items-center justify-between text-xs font-bold text-teal-900 mb-1.5">
+                <span>Expedition Readiness</span>
+                <span>
+                  {journeyChecklist.filter((t) => t.completed).length} / {journeyChecklist.length} Verified
+                </span>
+              </div>
+              <div className="w-full h-2 rounded-full bg-teal-200/80 overflow-hidden">
+                <div
+                  className="h-full bg-teal-600 transition-all duration-300"
+                  style={{
+                    width: `${Math.round((journeyChecklist.filter((t) => t.completed).length / (journeyChecklist.length || 1)) * 100)}%`,
+                  }}
+                />
+              </div>
+            </div>
+
+            {/* Checklist Tasks List with Minus Deletion Button (Request 10) */}
+            <div className="space-y-2 max-h-56 overflow-y-auto no-scrollbar">
+              {journeyChecklist.map((task) => (
+                <div
+                  key={task.id}
+                  className={`p-2.5 rounded-xl border flex items-center justify-between gap-2 transition-all ${
+                    task.completed ? 'bg-emerald-50/60 border-emerald-300' : 'bg-slate-50 border-slate-200 hover:border-slate-300'
+                  }`}
+                >
+                  <div
+                    onClick={() => {
+                      setJourneyChecklist((prev) =>
+                        prev.map((t) => (t.id === task.id ? { ...t, completed: !t.completed } : t))
+                      );
+                      onShowToast(`Checklist task updated: ${task.title}`);
+                    }}
+                    className="flex items-start gap-2.5 flex-1 min-w-0 cursor-pointer"
+                  >
+                    <div className={`w-5 h-5 rounded-md border flex items-center justify-center shrink-0 mt-0.5 ${
+                      task.completed ? 'bg-emerald-600 border-emerald-600 text-white' : 'border-slate-300 bg-white'
+                    }`}>
+                      {task.completed && <Check className="w-3.5 h-3.5" />}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className={`text-xs font-semibold leading-tight ${task.completed ? 'line-through text-slate-400' : 'text-slate-900'}`}>
+                        {task.title}
+                      </p>
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className="text-[9px] font-bold text-teal-800 bg-teal-100 px-1.5 py-0.5 rounded">
+                          {task.category}
+                        </span>
+                        <span className="text-[9px] text-slate-500">
+                          Lead: {task.assignedRole}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Minus button to remove task if added by mistake (Request 10) */}
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDeleteJourneyTask(task.id, task.title);
+                    }}
+                    className="w-7 h-7 rounded-lg bg-white hover:bg-rose-50 text-slate-400 hover:text-rose-600 border border-slate-200 hover:border-rose-300 flex items-center justify-center cursor-pointer transition-colors shrink-0"
+                    title={`Remove task: ${task.title}`}
+                  >
+                    <Minus className="w-3.5 h-3.5 stroke-[2.5]" />
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            {/* Add New Shared Task */}
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (!newJourneyTask.trim()) return;
+                const newTask = {
+                  id: `j-${Date.now()}`,
+                  title: newJourneyTask.trim(),
+                  category: newJourneyCategory,
+                  completed: false,
+                  assignedRole: 'All Squad',
+                };
+                setJourneyChecklist((prev) => [...prev, newTask]);
+                setNewJourneyTask('');
+                onShowToast(`Added task to shared squad checklist!`);
+              }}
+              className="pt-2 border-t border-slate-100 space-y-2"
+            >
+              <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider block">
+                Add Shared Squad Task
+              </span>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={newJourneyTask}
+                  onChange={(e) => setNewJourneyTask(e.target.value)}
+                  placeholder="e.g. Verify Satellite Beacon Firmware"
+                  className="flex-1 px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200 text-xs font-semibold text-slate-900 focus:outline-none focus:border-teal-600"
+                />
+                <button
+                  type="submit"
+                  disabled={!newJourneyTask.trim()}
+                  className="px-3 py-1.5 rounded-xl bg-teal-700 hover:bg-teal-600 disabled:opacity-40 text-white text-xs font-bold transition-all cursor-pointer flex items-center gap-1"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Add</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* 7. CLOUD SYNC & MULTI-DEVICE PERSISTENCE CENTER MODAL (Addresses User Request 2) */}
+      {isCloudSyncModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="w-full max-w-sm bg-white rounded-3xl p-5 border border-slate-200 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto no-scrollbar">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <div className="w-7 h-7 rounded-lg bg-sky-600 text-white flex items-center justify-center">
+                  <Database className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-900 text-sm">Cloud Storage &amp; Sync Architecture</h3>
+                  <p className="text-[10px] text-slate-500">How data persists &amp; syncs across all phones</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsCloudSyncModalOpen(false)}
+                className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Architecture Explanation in clear terms */}
+            <div className="space-y-2.5">
+              <div className="p-3 rounded-2xl bg-sky-50/70 border border-sky-200">
+                <div className="flex items-center gap-1.5 text-sky-950 font-bold text-xs mb-1">
+                  <Server className="w-4 h-4 text-sky-700 shrink-0" />
+                  <span>1. Firebase Cloud Firestore (Primary Database)</span>
+                </div>
+                <p className="text-[11px] text-slate-600 leading-relaxed">
+                  Sabhi groups, members, GPS coordinates, roll-call status, aur checklists Google Cloud Firestore mein real-time document schema ke roop mein store hote hain. WebSocket <span className="font-mono text-sky-800 font-bold">onSnapshot()</span> listeners ke through jaise hi Admin ya Scout koi bhi update karta hai, wo instantly (under 150ms) sabhi 42 phones mein sync ho jata hai bina refresh kiye!
+                </p>
+              </div>
+
+              <div className="p-3 rounded-2xl bg-emerald-50/70 border border-emerald-200">
+                <div className="flex items-center gap-1.5 text-emerald-950 font-bold text-xs mb-1">
+                  <Smartphone className="w-4 h-4 text-emerald-700 shrink-0" />
+                  <span>2. Offline PWA &amp; IndexedDB Local Cache</span>
+                </div>
+                <p className="text-[11px] text-slate-600 leading-relaxed">
+                  Jab trekker high-altitude mountains mein bina network zone (Zero 4G) mein hota hai, app stop nahi hoti. IndexedDB local storage mein offline actions queue hote hain, aur jaise hi phone satellite ya tower range mein aata hai, auto two-way delta sync ho jata hai.
+                </p>
+              </div>
+
+              <div className="p-3 rounded-2xl bg-indigo-50/70 border border-indigo-200">
+                <div className="flex items-center gap-1.5 text-indigo-950 font-bold text-xs mb-1">
+                  <Wifi className="w-4 h-4 text-indigo-700 shrink-0" />
+                  <span>3. Bluetooth Low Energy (BLE) &amp; WebRTC Mesh</span>
+                </div>
+                <p className="text-[11px] text-slate-600 leading-relaxed">
+                  Zero-network dead zones mein nearby phones 100 meters range ke andar direct device-to-device peer mesh ke through SOS beacons and presence radar share karte hain.
+                </p>
+              </div>
+            </div>
+
+            {/* Interactive Live Multi-Phone Sync Simulator */}
+            <div className="p-3 rounded-2xl bg-slate-900 text-white space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                  <span>Simulate Real-Time Multi-Phone Sync</span>
+                </span>
+                <span className="text-[9px] text-slate-400 font-mono">Channel 142.500</span>
+              </div>
+
+              <div className="space-y-1.5">
+                {simulatedSyncPhones.map((p) => (
+                  <div key={p.id} className="p-2 rounded-xl bg-slate-800/80 border border-slate-700 flex items-center justify-between text-xs">
+                    <div>
+                      <p className="font-bold text-white text-[11px] leading-tight flex items-center gap-1">
+                        <span>{p.device}</span>
+                        <span className="text-[9px] text-slate-400">({p.user.split(' ')[0]})</span>
+                      </p>
+                      <p className="text-[9px] text-emerald-400 font-mono">
+                        {p.role} · Latency: {p.latency}
+                      </p>
+                    </div>
+                    <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-bold border border-emerald-500/30">
+                      {isSimulatingSync ? 'Syncing...' : p.status}
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setIsSimulatingSync(true);
+                  setTimeout(() => {
+                    setIsSimulatingSync(false);
+                    setSimulatedSyncPhones((prev) =>
+                      prev.map((p) => ({
+                        ...p,
+                        latency: `${Math.floor(25 + Math.random() * 50)}ms`,
+                        lastSync: 'Just now',
+                      }))
+                    );
+                    onShowToast('Real-time sync test passed: 4 phones synced in 48ms!');
+                  }, 650);
+                }}
+                disabled={isSimulatingSync}
+                className="w-full py-2 rounded-xl bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 active:scale-98"
+              >
+                <RefreshCcw className={`w-3.5 h-3.5 ${isSimulatingSync ? 'animate-spin' : ''}`} />
+                <span>{isSimulatingSync ? 'Propagating Delta Update...' : 'Test Multi-Device Sync Ping'}</span>
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setIsCloudSyncModalOpen(false)}
+              className="w-full py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold transition-all cursor-pointer"
+            >
+              Close Sync Center
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 8. HIGH-DEFINITION RAW & 4K MEDIA VAULT MODAL (Better than WhatsApp) */}
+      {isHDMediaModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/75 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="w-full max-w-md bg-white rounded-3xl border border-slate-200 shadow-2xl p-5 space-y-4 max-h-[90vh] overflow-y-auto no-scrollbar animate-in zoom-in-95 duration-200">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-fuchsia-600 to-indigo-600 text-white flex items-center justify-center shadow-md">
+                  <Image className="w-4 h-4" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-1.5">
+                    <h3 className="text-sm font-extrabold text-slate-900 leading-tight">
+                      Squad HD Raw Media Vault
+                    </h3>
+                    <span className="px-1.5 py-0.2 rounded-full bg-fuchsia-100 text-fuchsia-800 text-[9px] font-black border border-fuchsia-200">
+                      Lossless
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-slate-500">
+                    High-Definition Original Photos &amp; 4K Videos
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsHDMediaModalOpen(false)}
+                className="w-7 h-7 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500 flex items-center justify-center transition-colors cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Why Better than WhatsApp Highlight Banner */}
+            <div className="p-3 rounded-2xl bg-gradient-to-br from-fuchsia-950 via-purple-900 to-slate-950 text-white shadow-md space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-extrabold uppercase tracking-wider text-fuchsia-300 flex items-center gap-1">
+                  <Sparkles className="w-3 h-3 text-amber-300" />
+                  Why TrailoPS is Superior to WhatsApp
+                </span>
+                <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-400/30">
+                  Zero Compression
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 text-[10px] pt-1">
+                <div className="p-2 rounded-xl bg-rose-500/10 border border-rose-500/20">
+                  <span className="font-extrabold text-rose-300 block mb-0.5">❌ WhatsApp</span>
+                  <ul className="text-rose-200/90 space-y-0.5 text-[9.5px]">
+                    <li>• Compresses 48MP down to 1.5MP</li>
+                    <li>• Strips GPS elevation &amp; EXIF data</li>
+                    <li>• 4K Video downgraded to 720p</li>
+                    <li>• Fails with zero 4G network</li>
+                  </ul>
+                </div>
+
+                <div className="p-2 rounded-xl bg-emerald-500/15 border border-emerald-400/30">
+                  <span className="font-extrabold text-emerald-300 block mb-0.5">✅ TrailoPS HD Share</span>
+                  <ul className="text-emerald-200/90 space-y-0.5 text-[9.5px]">
+                    <li>• 100% Lossless RAW (DNG, ARW)</li>
+                    <li>• Preserves full GPS Altitude tags</li>
+                    <li>• Apple ProRes &amp; 4K 60fps HDR</li>
+                    <li>• Offline P2P AirBeam (No Internet)</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+
+            {/* Real Hidden File Input for Device Photos & Videos */}
+            <input
+              type="file"
+              ref={fileInputRef}
+              onChange={handleMediaFileUpload}
+              multiple
+              accept="image/*,video/*,.raw,.dng,.arw,.cr2,.cr3,.mov,.mp4"
+              className="hidden"
+            />
+
+            {/* Quick Upload Action Bar */}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isUploadingMedia}
+                className="flex-1 py-2.5 px-3 rounded-xl bg-gradient-to-r from-fuchsia-600 to-indigo-600 hover:from-fuchsia-500 hover:to-indigo-500 text-white text-xs font-bold transition-all shadow-md active:scale-98 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+              >
+                <Upload className={`w-4 h-4 ${isUploadingMedia ? 'animate-bounce' : ''}`} />
+                <span>
+                  {isUploadingMedia ? 'Processing High-Def Media...' : 'Choose Photo / Video from Device'}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  onShowToast('P2P AirBeam Active: Broadcasting to 4 squad members over Wi-Fi Direct!');
+                }}
+                className="px-3 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-all flex items-center gap-1 cursor-pointer shrink-0"
+                title="Direct P2P AirBeam without Internet"
+              >
+                <Share2 className="w-3.5 h-3.5 text-fuchsia-700" />
+                <span className="hidden sm:inline">P2P Beam</span>
+              </button>
+            </div>
+
+            {/* Media Filter Tabs */}
+            <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-xl text-xs font-bold">
+              <button
+                type="button"
+                onClick={() => setSelectedHDMediaFilter('all')}
+                className={`flex-1 py-1 rounded-lg text-center transition-all cursor-pointer ${
+                  selectedHDMediaFilter === 'all'
+                    ? 'bg-white text-slate-900 shadow-2xs font-extrabold'
+                    : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                All Vault ({sharedHDMedia.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedHDMediaFilter('photo')}
+                className={`flex-1 py-1 rounded-lg text-center transition-all cursor-pointer ${
+                  selectedHDMediaFilter === 'photo'
+                    ? 'bg-white text-slate-900 shadow-2xs font-extrabold'
+                    : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                48MP RAW Photos
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedHDMediaFilter('video')}
+                className={`flex-1 py-1 rounded-lg text-center transition-all cursor-pointer ${
+                  selectedHDMediaFilter === 'video'
+                    ? 'bg-white text-slate-900 shadow-2xs font-extrabold'
+                    : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                4K HDR Video
+              </button>
+            </div>
+
+            {/* Media Stream List */}
+            <div className="space-y-3">
+              {sharedHDMedia
+                .filter((item) => selectedHDMediaFilter === 'all' || item.type === selectedHDMediaFilter)
+                .map((media) => (
+                  <div
+                    key={media.id}
+                    className="rounded-2xl border border-slate-200 overflow-hidden bg-white shadow-2xs hover:shadow-md transition-shadow"
+                  >
+                    {/* Media Preview Box */}
+                    <div className="relative h-44 w-full overflow-hidden bg-slate-950 group">
+                      {media.type === 'video' ? (
+                        <video
+                          src={media.url}
+                          controls
+                          playsInline
+                          poster="https://images.unsplash.com/photo-1486870591958-9b9d0d1dda99?auto=format&fit=crop&w=1200&q=95"
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <img
+                          src={media.url}
+                          alt={media.title}
+                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                        />
+                      )}
+                      {/* Gradient Backdrop */}
+                      <div className="absolute inset-0 bg-gradient-to-t from-slate-950/80 via-transparent to-black/30 pointer-events-none" />
+
+                      {/* Top Badges */}
+                      <div className="absolute top-2 left-2 flex items-center gap-1.5 pointer-events-none">
+                        <span className="px-2 py-0.5 rounded-full bg-slate-950/70 backdrop-blur-md text-white text-[9px] font-black border border-white/20 flex items-center gap-1">
+                          {media.type === 'video' ? <Film className="w-2.5 h-2.5 text-amber-400" /> : <Image className="w-2.5 h-2.5 text-emerald-400" />}
+                          {media.format}
+                        </span>
+                        <span className="px-1.5 py-0.5 rounded-full bg-emerald-500 text-white text-[9px] font-black shadow-xs">
+                          {media.size}
+                        </span>
+                      </div>
+
+                      {/* Bottom Info inside image */}
+                      <div className="absolute bottom-2 left-2 right-2 text-white pointer-events-none">
+                        <h4 className="text-xs font-bold leading-tight truncate drop-shadow-sm">
+                          {media.title}
+                        </h4>
+                        <div className="flex items-center justify-between text-[9px] text-slate-200 mt-0.5">
+                          <span>{media.author} · {media.timestamp}</span>
+                          <span className="text-emerald-300 font-mono font-bold">EXIF: {media.altitude}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Metadata & Actions Bar */}
+                    <div className="p-2.5 bg-slate-50 flex items-center justify-between gap-2 border-t border-slate-100">
+                      <div className="min-w-0">
+                        <span className="text-[10px] text-slate-500 font-mono block truncate">
+                          Resolution: {media.resolution}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onShowToast(`Downloading original uncompressed file: ${media.title} (${media.size})`);
+                          }}
+                          className="px-2.5 py-1 rounded-lg bg-[#0f5238] hover:bg-[#166534] text-white text-[10px] font-bold flex items-center gap-1 transition-all cursor-pointer shadow-2xs active:scale-95"
+                          title="Download Uncompressed Original RAW"
+                        >
+                          <Download className="w-3 h-3" />
+                          <span>Original RAW</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onShowToast(`AirBeamed ${media.title} to squad via Wi-Fi Direct!`);
+                          }}
+                          className="p-1 rounded-lg bg-white hover:bg-slate-200 text-slate-700 border border-slate-200 transition-colors cursor-pointer"
+                          title="AirBeam to nearby phones"
+                        >
+                          <Share2 className="w-3 h-3 text-fuchsia-700" />
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSharedHDMedia((prev) => prev.filter((m) => m.id !== media.id));
+                            onShowToast(`Removed ${media.title} from media vault.`);
+                          }}
+                          className="p-1 rounded-lg bg-white hover:bg-rose-50 text-slate-400 hover:text-rose-600 border border-slate-200 hover:border-rose-300 transition-colors cursor-pointer"
+                          title="Remove media file"
+                        >
+                          <Minus className="w-3 h-3 stroke-[2.5]" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setIsHDMediaModalOpen(false)}
+              className="w-full py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold transition-all cursor-pointer"
+            >
+              Close Media Vault
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 9. ALL SQUAD MEMBERS SEPARATE WINDOW ROSTER MODAL (Request 12) */}
+      {isAllMembersModalOpen && (
+        <div
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setIsAllMembersModalOpen(false);
+          }}
+          className="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-4 bg-slate-950/75 backdrop-blur-md animate-in fade-in duration-200"
+        >
+          <div className="w-full max-w-md bg-white rounded-3xl border border-slate-200 shadow-2xl flex flex-col h-[85vh] max-h-[700px] overflow-hidden animate-in zoom-in-95 duration-200">
+            {/* Modal Header */}
+            <div className="p-4 bg-gradient-to-r from-cyan-900 to-[#0f5238] text-white flex items-center justify-between shadow-xs shrink-0">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-2xl bg-white/10 text-cyan-200 flex items-center justify-center border border-white/20">
+                  <Users className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-extrabold text-white leading-tight">
+                      All Squad Members Roster
+                    </h3>
+                    <span className="px-1.5 py-0.5 rounded-full bg-cyan-400 text-slate-950 text-[9px] font-black">
+                      {members.length} Total
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-cyan-200">
+                    Full expedition directory &amp; tactical communications
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setIsAllMembersModalOpen(false)}
+                className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center transition-colors cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Search & Filter Toolbar */}
+            <div className="p-3 bg-slate-50 border-b border-slate-200 space-y-2 shrink-0">
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
+                <input
+                  type="text"
+                  value={allMembersSearchQuery}
+                  onChange={(e) => setAllMembersSearchQuery(e.target.value)}
+                  placeholder="Search members by name, role or tag..."
+                  className="w-full pl-8 pr-3 py-1.5 rounded-xl bg-white border border-slate-200 text-xs text-slate-900 outline-none focus:border-cyan-600"
+                />
+              </div>
+
+              {/* Role Filter Pills */}
+              <div className="flex items-center gap-1.5 text-[10px] font-bold">
+                {[
+                  { id: 'all', label: `All (${members.length})` },
+                  { id: 'admins', label: `Admins (${members.filter((m) => m.roleHierarchy !== 'member').length})` },
+                  { id: 'members', label: `Members (${members.filter((m) => m.roleHierarchy === 'member').length})` },
+                ].map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setAllMembersRoleFilter(tab.id as any)}
+                    className={`px-2.5 py-1 rounded-lg transition-colors cursor-pointer ${
+                      allMembersRoleFilter === tab.id
+                        ? 'bg-cyan-800 text-white'
+                        : 'bg-white text-slate-600 hover:bg-slate-200 border border-slate-200'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Scrollable Members Roster List */}
+            <div className="flex-1 p-3 overflow-y-auto space-y-2 no-scrollbar bg-slate-50/50">
+              {members
+                .filter((m) => {
+                  if (allMembersRoleFilter === 'admins') return m.roleHierarchy !== 'member';
+                  if (allMembersRoleFilter === 'members') return m.roleHierarchy === 'member';
+                  return true;
+                })
+                .filter((m) => {
+                  if (!allMembersSearchQuery.trim()) return true;
+                  const q = allMembersSearchQuery.toLowerCase();
+                  return (
+                    m.name.toLowerCase().includes(q) ||
+                    m.role.toLowerCase().includes(q) ||
+                    (m.subGroupName && m.subGroupName.toLowerCase().includes(q))
+                  );
+                })
+                .map((member) => (
+                  <div
+                    key={member.id}
+                    className="p-3 rounded-2xl bg-white border border-slate-200 shadow-2xs hover:shadow-xs transition-shadow space-y-2"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="relative shrink-0">
+                          <img
+                            src={member.avatar}
+                            alt={member.name}
+                            className="w-10 h-10 rounded-full object-cover ring-2 ring-slate-100"
+                          />
+                          <span
+                            className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full ring-2 ring-white ${
+                              member.status === 'present'
+                                ? 'bg-emerald-500'
+                                : member.status === 'excursion'
+                                ? 'bg-sky-500'
+                                : 'bg-rose-500'
+                            }`}
+                          />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <h4 className="text-xs font-extrabold text-slate-900 truncate">
+                              {member.name}
+                            </h4>
+                            {member.roleHierarchy === 'super_admin' ? (
+                              <span className="px-1.5 py-0.2 rounded text-[8.5px] font-black uppercase tracking-wider bg-gradient-to-r from-amber-400 to-amber-500 text-slate-950 flex items-center gap-0.5">
+                                <Crown className="w-2.5 h-2.5" /> Super Admin
+                              </span>
+                            ) : member.roleHierarchy === 'subgroup_admin' ? (
+                              <span className="px-1.5 py-0.2 rounded text-[8.5px] font-black uppercase tracking-wider bg-blue-100 text-blue-800 border border-blue-300 flex items-center gap-0.5">
+                                <Shield className="w-2.5 h-2.5" /> Sub-Admin
+                              </span>
+                            ) : (
+                              <span className="px-1.5 py-0.2 rounded text-[8.5px] font-bold uppercase bg-slate-100 text-slate-600 border border-slate-200">
+                                Member
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[10px] text-slate-500 truncate mt-0.5">
+                            {member.role} {member.subGroupName ? `· ${member.subGroupName}` : ''}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="text-right shrink-0">
+                        <div className="flex items-center gap-1 text-[10px] text-slate-500 justify-end">
+                          <Battery className="w-3 h-3 text-emerald-600" />
+                          <span className="font-mono font-bold text-slate-700">{member.battery}%</span>
+                        </div>
+                        <span className="text-[9px] font-mono text-slate-400 block">
+                          {member.distance} away
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Action buttons bar */}
+                    <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5 text-[10px] text-slate-500">
+                        <MapPin className="w-3 h-3 text-slate-400" />
+                        <span>Last ping: <strong className="text-slate-700 font-normal">{member.lastPing}</strong></span>
+                      </div>
+
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsAllMembersModalOpen(false);
+                            setCallModalContact({
+                              name: member.name,
+                              title: member.role,
+                              phone: '+91 98000 00001',
+                              avatar: member.avatar,
+                            });
+                          }}
+                          className="px-2 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-[10px] font-bold flex items-center gap-1 cursor-pointer transition-colors"
+                        >
+                          <Phone className="w-3 h-3" />
+                          <span>Call</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsAllMembersModalOpen(false);
+                            setChatModalContact({
+                              name: member.name,
+                              title: member.role,
+                              avatar: member.avatar,
+                            });
+                          }}
+                          className="px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-bold flex items-center gap-1 cursor-pointer transition-colors"
+                        >
+                          <MessageSquare className="w-3 h-3" />
+                          <span>Chat</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+            </div>
+
+            {/* Modal Bottom Footer */}
+            <div className="p-3 bg-white border-t border-slate-200 shrink-0">
+              <button
+                type="button"
+                onClick={() => setIsAllMembersModalOpen(false)}
+                className="w-full py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition-all cursor-pointer"
+              >
+                Close Directory
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Create Trip Modal */}
+      <CreateTripModal
+        isOpen={isCreateModalOpen}
+        onClose={() => setIsCreateModalOpen(false)}
+        onCreate={(trip) => {
+          setTripName(trip.name);
+          onSetJoinedGroup(true);
+          localStorage.setItem('trailoPS_hasJoinedGroup', 'true');
+          onShowToast(`Squad route "${trip.name}" created with individual budget ₹${trip.budgetPerMember.toLocaleString()}!`);
+        }}
+      />
+
+      {/* Field WebRTC Tactical Intercom Audio Call Modal */}
+      {callModalContact && (
+        <CallModal
+          isOpen={!!callModalContact}
+          onClose={() => setCallModalContact(null)}
+          contactName={callModalContact.name}
+          contactTitle={callModalContact.title}
+          phoneNumber={callModalContact.phone}
+          avatar={callModalContact.avatar}
+        />
+      )}
+
+      {/* Peer-to-Peer Tactical Squad Chat / Direct Messaging Modal */}
+      {chatModalContact && (
+        <ChatModal
+          isOpen={!!chatModalContact}
+          onClose={() => setChatModalContact(null)}
+          contactName={chatModalContact.name}
+          contactTitle={chatModalContact.title}
+          avatar={chatModalContact.avatar}
+        />
+      )}
+    </div>
+  );
+};

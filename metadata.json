@@ -1,0 +1,6 @@
+{
+  "name": "TrailoPS V1",
+  "description": "Tactical trail operations and expedition management suite with multi-step expedition profiling, squad roll call telemetry, peer mesh radar, and instant emergency SOS dispatch.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
