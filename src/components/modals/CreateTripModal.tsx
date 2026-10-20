@@ -26,7 +26,29 @@ import {
   Map,
   AdvancedMarker,
   Pin,
+  useMap,
+  MapMouseEvent,
 } from '@vis.gl/react-google-maps';
+import { InteractiveTrailMap } from '../InteractiveTrailMap';
+
+const GoogleMapPanController: React.FC<{ target: { lat: number; lng: number } }> = ({
+  target,
+}) => {
+  const map = useMap();
+  const lastTargetRef = React.useRef<{ lat: number; lng: number }>(target);
+
+  useEffect(() => {
+    if (!map) return;
+    const dLat = Math.abs(target.lat - lastTargetRef.current.lat);
+    const dLng = Math.abs(target.lng - lastTargetRef.current.lng);
+    if (dLat > 0.0001 || dLng > 0.0001) {
+      lastTargetRef.current = target;
+      map.panTo(target);
+    }
+  }, [map, target.lat, target.lng]);
+
+  return null;
+};
 
 interface CreateTripModalProps {
   isOpen: boolean;
@@ -40,7 +62,7 @@ interface CreateTripModalProps {
     returnDate: string;
     budgetPerMember: number;
     coverBg: string;
-    passkey: string;
+  passkey?: string;
     waypoints: Waypoint[];
   }) => void;
 }
@@ -62,7 +84,6 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({
   const [departureDate, setDepartureDate] = useState('');
   const [returnDate, setReturnDate] = useState('');
   const [budgetPerMember, setBudgetPerMember] = useState<number>(0);
-  const [generatedPasskey] = useState(() => 'TR' + Math.random().toString(36).substring(2, 6).toUpperCase());
 
   // Step 2: Google Maps Pointing with Red Markers
   const [mapCenter, setMapCenter] = useState<{ lat: number; lng: number }>({
@@ -197,16 +218,16 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({
   };
 
   const handleFinalSubmit = (skipMap = false) => {
+    if (!name.trim()) return;
     onCreate({
-      name,
-      fromLocation,
-      destination,
+      name: name.trim(),
+      fromLocation: fromLocation.trim(),
+      destination: destination.trim() || 'Expedition Route',
       coordinates: mapCenter,
-      departureDate,
-      returnDate,
+      departureDate: departureDate || '2026-10-24',
+      returnDate: returnDate || '2026-10-30',
       budgetPerMember,
       coverBg,
-      passkey: generatedPasskey,
       waypoints: skipMap ? [] : waypoints,
     });
     onClose();
@@ -519,8 +540,8 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({
                   <Hand className="w-3.5 h-3.5 text-rose-600" />
                   <span>
                     {mapGestureMode === 'greedy'
-                      ? 'Map Moving: Free 1 & 2-Finger Pan / Zoom Active'
-                      : 'Two-Finger Touch: Use 2 fingers to move map'}
+                      ? '1 & 2-Finger Touch Pan + Pinch Zoom Active'
+                      : 'Topo Tile Map (1 & 2-Finger Pan + Pinch Zoom)'}
                   </span>
                 </span>
                 <button
@@ -531,72 +552,129 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({
                   className={`px-2 py-0.5 rounded-md font-bold transition-all cursor-pointer ${
                     mapGestureMode === 'greedy'
                       ? 'bg-rose-600 text-white shadow-2xs'
-                      : 'bg-white text-slate-700 border border-slate-300'
+                      : 'bg-emerald-700 text-white shadow-2xs'
                   }`}
                 >
-                  {mapGestureMode === 'greedy' ? '⚡ Free Map' : '✋ 2-Finger'}
+                  {mapGestureMode === 'greedy' ? '🗺️ Google Map' : '🧭 Topo Map'}
                 </button>
               </div>
 
-              {/* Interactive Google Map Container with Touch Event Isolation */}
+              {/* Interactive Map Container with Touch Event Isolation & Uncontrolled Center */}
               <div
-                className="relative h-60 w-full rounded-2xl overflow-hidden border-2 border-slate-200 shadow-inner bg-slate-100"
+                className="relative h-64 w-full rounded-2xl overflow-hidden border-2 border-slate-200 shadow-inner bg-slate-100"
                 onTouchStart={(e) => {
-                  if (e.touches.length >= 2 || mapGestureMode === 'greedy') {
-                    e.stopPropagation();
-                  }
+                  e.stopPropagation();
                 }}
                 onTouchMove={(e) => {
-                  if (e.touches.length >= 2 || mapGestureMode === 'greedy') {
-                    e.stopPropagation();
-                  }
+                  e.stopPropagation();
                 }}
                 style={{ touchAction: 'none' }}
               >
-                <APIProvider apiKey={mapsApiKey}>
-                  <Map
-                    mapId="DEMO_MAP_ID"
-                    defaultCenter={mapCenter}
-                    center={mapCenter}
-                    defaultZoom={11}
-                    gestureHandling={mapGestureMode}
-                    disableDefaultUI={false}
-                    className="w-full h-full"
-                    internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
-                  >
-                    {waypoints
-                      .filter((wp) => wp.isRedMarked && wp.lat && wp.lng)
-                      .map((wp) => (
+                {mapGestureMode === 'greedy' ? (
+                  <APIProvider apiKey={mapsApiKey}>
+                    <Map
+                      mapId="DEMO_MAP_ID"
+                      defaultCenter={mapCenter}
+                      defaultZoom={11}
+                      gestureHandling="greedy"
+                      zoomControl={true}
+                      disableDefaultUI={false}
+                      className="w-full h-full"
+                      internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
+                      onClick={(ev: MapMouseEvent) => {
+                        const latLng = ev.detail?.latLng;
+                        if (latLng) {
+                          const newWp: Waypoint = {
+                            id: `wp-${Date.now()}`,
+                            name: `Pinned Point (${latLng.lat.toFixed(3)}°N, ${latLng.lng.toFixed(3)}°E)`,
+                            elevation: newPointElevation || '2,400m',
+                            type: 'camp',
+                            isRedMarked: true,
+                            lat: latLng.lat,
+                            lng: latLng.lng,
+                          };
+                          setWaypoints((prev) => [...prev, newWp]);
+                        }
+                      }}
+                    >
+                      <GoogleMapPanController target={mapCenter} />
+                      {waypoints
+                        .filter((wp) => wp.isRedMarked && wp.lat && wp.lng)
+                        .map((wp) => (
+                          <AdvancedMarker
+                            key={wp.id}
+                            position={{ lat: wp.lat!, lng: wp.lng! }}
+                            title={`${wp.name} (${wp.elevation})`}
+                          >
+                            <Pin
+                              background="#e11d48"
+                              glyphColor="#ffffff"
+                              borderColor="#9f1239"
+                              scale={1.1}
+                            />
+                          </AdvancedMarker>
+                        ))}
+
+                      {/* Immediate Marker for Searched Location */}
+                      {searchedLocation && (
                         <AdvancedMarker
-                          key={wp.id}
-                          position={{ lat: wp.lat!, lng: wp.lng! }}
-                          title={`${wp.name} (${wp.elevation})`}
+                          position={{ lat: searchedLocation.lat, lng: searchedLocation.lng }}
+                          title={`${searchedLocation.name} (Found Location)`}
                         >
                           <Pin
-                            background="#e11d48"
+                            background="#059669"
                             glyphColor="#ffffff"
-                            borderColor="#9f1239"
-                            scale={1.1}
+                            borderColor="#064e3b"
+                            scale={1.25}
                           />
                         </AdvancedMarker>
-                      ))}
-
-                    {/* Immediate Marker for Searched Location */}
-                    {searchedLocation && (
-                      <AdvancedMarker
-                        position={{ lat: searchedLocation.lat, lng: searchedLocation.lng }}
-                        title={`${searchedLocation.name} (Found Location)`}
-                      >
-                        <Pin
-                          background="#059669"
-                          glyphColor="#ffffff"
-                          borderColor="#064e3b"
-                          scale={1.25}
-                        />
-                      </AdvancedMarker>
-                    )}
-                  </Map>
-                </APIProvider>
+                      )}
+                    </Map>
+                  </APIProvider>
+                ) : (
+                  <InteractiveTrailMap
+                    center={mapCenter}
+                    zoom={11}
+                    heightClass="h-64"
+                    routePoints={waypoints
+                      .filter((wp) => wp.isRedMarked && wp.lat && wp.lng)
+                      .map((wp) => ({ lat: wp.lat!, lng: wp.lng! }))}
+                    markers={[
+                      ...waypoints
+                        .filter((wp) => wp.isRedMarked && wp.lat && wp.lng)
+                        .map((wp) => ({
+                          id: wp.id,
+                          lat: wp.lat!,
+                          lng: wp.lng!,
+                          label: wp.name,
+                          color: 'rose' as const,
+                        })),
+                      ...(searchedLocation
+                        ? [
+                            {
+                              id: 'searched',
+                              lat: searchedLocation.lat,
+                              lng: searchedLocation.lng,
+                              label: searchedLocation.name,
+                              color: 'emerald' as const,
+                            },
+                          ]
+                        : []),
+                    ]}
+                    onMapTap={(coords) => {
+                      const newWp: Waypoint = {
+                        id: `wp-${Date.now()}`,
+                        name: `Pinned Point (${coords.lat.toFixed(3)}°N, ${coords.lng.toFixed(3)}°E)`,
+                        elevation: newPointElevation || '2,400m',
+                        type: 'camp',
+                        isRedMarked: true,
+                        lat: coords.lat,
+                        lng: coords.lng,
+                      };
+                      setWaypoints((prev) => [...prev, newWp]);
+                    }}
+                  />
+                )}
               </div>
 
               {/* Waypoints List with Red Toggle and Minus Delete Sign */}

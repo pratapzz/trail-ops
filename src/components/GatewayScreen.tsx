@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Compass,
   Users,
@@ -29,6 +29,11 @@ import {
   ShieldCheck,
   Code2,
   GraduationCap,
+  Copy,
+  Send,
+  Loader2,
+  UserCheck,
+  XCircle,
 } from 'lucide-react';
 import { ScreenType, UserRole } from '../types';
 import { CreateTripModal } from './modals/CreateTripModal';
@@ -36,7 +41,20 @@ import { PermissionModal } from './modals/PermissionModal';
 import { TripGearChecklist } from './TripGearChecklist';
 import { PersonalPackingNotes } from './PersonalPackingNotes';
 import { WeatherForecast } from './WeatherForecast';
-import { getSupabase, isSupabaseConfigured, joinSquadByCode, createSquadGroup, fetchSquadMembers } from '../lib/supabase';
+import {
+  getSupabase,
+  isSupabaseConfigured,
+  createSquadGroup,
+  fetchSquadMembers,
+  lookupSquadByCode,
+  normalizeSquadCode,
+  submitSquadJoinRequest,
+  fetchUserJoinRequestsAndNotifications,
+  markNotificationRead,
+  SquadGroupRecord,
+  SquadJoinRequestRecord,
+  UserNotificationRecord,
+} from '../lib/supabase';
 
 interface GatewayScreenProps {
   onNavigate: (screen: ScreenType) => void;
@@ -62,12 +80,17 @@ interface GatewayScreenProps {
     returnDate: string;
   }) => void;
   userName?: string;
+  currentUserId?: string;
+  currentUserEmail?: string;
   activeSquadId?: string;
   activeSquad?: any;
+  onSquadJoined?: (group: SquadGroupRecord, role?: UserRole) => void;
 }
 
 export const GatewayScreen: React.FC<GatewayScreenProps> = ({
-  userName = 'Pratap',
+  userName = 'Explorer',
+  currentUserId,
+  currentUserEmail,
   onNavigate,
   onShowToast,
   hasJoinedGroup,
@@ -85,13 +108,24 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
   onUpdateTripDestination,
   activeSquadId,
   activeSquad,
+  onSquadJoined,
 }) => {
   const [passcode, setPasscode] = useState(['', '', '', '', '', '']);
+  const inputRefs = useRef<Array<HTMLInputElement | null>>([]);
   const [joinSubMode, setJoinSubMode] = useState<'code' | 'scanner'>('code');
   const [isFlashOn, setIsFlashOn] = useState(false);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isPermissionModalOpen, setIsPermissionModalOpen] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
+
+  // Code lookup & Join Request state
+  const [isVerifyingCode, setIsVerifyingCode] = useState(false);
+  const [isSubmittingRequest, setIsSubmittingRequest] = useState(false);
+  const [verifiedSquad, setVerifiedSquad] = useState<SquadGroupRecord | null>(null);
+  const [codeLookupError, setCodeLookupError] = useState<string | null>(null);
+  const [myJoinRequests, setMyJoinRequests] = useState<SquadJoinRequestRecord[]>([]);
+  const [userNotifications, setUserNotifications] = useState<UserNotificationRecord[]>([]);
+  const notifiedIdsRef = useRef<Set<string>>(new Set());
 
   // Dynamic real squad member attendance stats (No fake 42 counts)
   const [squadMemberStats, setSquadMemberStats] = useState<{ total: number; present: number }>(() => {
@@ -173,7 +207,7 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
     name: string;
     coordinates: { lat: number; lng: number };
   }>({
-    name: destinationName,
+    name: activeSquad?.destination || destinationName,
     coordinates: destinationCoordinates,
   });
 
@@ -182,13 +216,18 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
   const [isEditingDepartureDate, setIsEditingDepartureDate] = useState(false);
 
   useEffect(() => {
-    if (destinationName && destinationCoordinates) {
+    if (activeSquad?.destination) {
+      setActiveDestination((prev) => ({
+        ...prev,
+        name: activeSquad.destination,
+      }));
+    } else if (destinationName && destinationCoordinates) {
       setActiveDestination({
         name: destinationName,
         coordinates: destinationCoordinates,
       });
     }
-  }, [destinationName, destinationCoordinates?.lat, destinationCoordinates?.lng]);
+  }, [activeSquad?.destination, destinationName, destinationCoordinates?.lat, destinationCoordinates?.lng]);
 
   useEffect(() => {
     if (departureDate) {
@@ -250,35 +289,242 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
 
   const paidPercent = tripBudget > 0 ? Math.min(Math.round((amountPaid / tripBudget) * 100), 100) : 0;
 
+  // Poll / Sync user's join requests and notifications across devices
+  useEffect(() => {
+    if (!currentUserId) return;
+    let isMounted = true;
+
+    const syncRequestsAndNotifications = async () => {
+      try {
+        const { requests, notifications, joinedGroups } =
+          await fetchUserJoinRequestsAndNotifications(currentUserId);
+        if (!isMounted) return;
+
+        setMyJoinRequests(requests);
+        setUserNotifications(notifications);
+
+        // Keep verifiedSquad request status in sync if open
+        setVerifiedSquad((prev) => {
+          if (!prev) return null;
+          const matchingReq = requests.find((r) => r.group_id === prev.id);
+          const isJoined = joinedGroups.some((g) => g.id === prev.id);
+          if (isJoined) {
+            return { ...prev, userRequestStatus: 'member' };
+          }
+          if (matchingReq) {
+            return { ...prev, userRequestStatus: matchingReq.status };
+          }
+          return prev;
+        });
+
+        // Surface unread join request notifications via toast & auto-unlock accepted groups
+        for (const notif of notifications) {
+          if (!notif.read && !notifiedIdsRef.current.has(notif.id)) {
+            notifiedIdsRef.current.add(notif.id);
+            onShowToast(`${notif.title}: ${notif.message}`);
+            markNotificationRead(notif.id);
+
+            if (notif.type === 'join_request_accepted' && notif.group_id) {
+              const acceptedGroup = joinedGroups.find((g) => g.id === notif.group_id);
+              if (acceptedGroup) {
+                onSquadJoined?.(acceptedGroup, 'member');
+                onSetJoinedGroup(true);
+              }
+            }
+          }
+        }
+      } catch {
+        // ignore transient network errors
+      }
+    };
+
+    syncRequestsAndNotifications();
+    const interval = setInterval(syncRequestsAndNotifications, 3500);
+    window.addEventListener('trailoPS_join_requests_updated', syncRequestsAndNotifications);
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+      window.removeEventListener('trailoPS_join_requests_updated', syncRequestsAndNotifications);
+    };
+  }, [currentUserId, hasJoinedGroup]);
+
+  const verifyCodeLookup = async (rawCode: string) => {
+    const clean = normalizeSquadCode(rawCode);
+    setCodeLookupError(null);
+    if (clean.length < 4) {
+      setVerifiedSquad(null);
+      setCodeLookupError('Please enter a valid 6-character group invitation code.');
+      onShowToast('Please enter a valid 6-character group invitation code.');
+      return;
+    }
+
+    setIsVerifyingCode(true);
+    try {
+      const foundSquad = await lookupSquadByCode(clean, currentUserId);
+      if (foundSquad) {
+        setVerifiedSquad(foundSquad);
+        setCodeLookupError(null);
+        if (foundSquad.userRequestStatus === 'member' || foundSquad.userRequestStatus === 'accepted') {
+          onShowToast(`Verified group "${foundSquad.name}" — You are an approved member!`);
+        } else if (foundSquad.userRequestStatus === 'pending') {
+          onShowToast(`Group "${foundSquad.name}" verified — Your join request is awaiting Super Admin approval.`);
+        } else {
+          onShowToast(`Group "${foundSquad.name}" verified! Review details below to send a join request.`);
+        }
+      } else {
+        setVerifiedSquad(null);
+        const errMsg = `No group available with code "${clean}". Please verify the invitation code with your group creator.`;
+        setCodeLookupError(errMsg);
+        onShowToast(errMsg);
+      }
+    } catch (err: any) {
+      setVerifiedSquad(null);
+      const errMsg = err?.message || `Unable to verify code "${clean}".`;
+      setCodeLookupError(errMsg);
+      onShowToast(errMsg);
+    } finally {
+      setIsVerifyingCode(false);
+    }
+  };
+
+  const handleSubmitJoinRequest = async (targetGroup?: SquadGroupRecord) => {
+    const group = targetGroup || verifiedSquad;
+    if (!group) {
+      await verifyCodeLookup(passcode.join(''));
+      return;
+    }
+    if (!currentUserId) {
+      onShowToast('Please sign in first to submit a join request.');
+      return;
+    }
+
+    // If already an approved member, enter the group directly
+    if (group.userRequestStatus === 'member' || group.userRequestStatus === 'accepted') {
+      onSquadJoined?.(group, 'member');
+      onSetJoinedGroup(true);
+      onShowToast(`Entered expedition group "${group.name}" (${group.code})!`);
+      onNavigate('squad');
+      return;
+    }
+
+    // Prevent duplicate pending requests
+    const existingPending = myJoinRequests.find(
+      (r) => r.group_id === group.id && r.status === 'pending'
+    );
+    if (group.userRequestStatus === 'pending' || existingPending) {
+      onShowToast(`Request Sent — Awaiting Approval from "${group.name}" Super Admin.`);
+      return;
+    }
+
+    setIsSubmittingRequest(true);
+    try {
+      const res = await submitSquadJoinRequest(
+        group.id,
+        currentUserId,
+        userName,
+        currentUserEmail,
+        avatarUrl
+      );
+
+      if (res.alreadyMember) {
+        const updated = { ...group, userRequestStatus: 'member' as const };
+        setVerifiedSquad(updated);
+        onSquadJoined?.(updated, 'member');
+        onSetJoinedGroup(true);
+        onShowToast(`You are already an active member of "${group.name}"!`);
+        onNavigate('squad');
+        return;
+      }
+
+      if (res.success || res.alreadyPending) {
+        setVerifiedSquad({ ...group, userRequestStatus: 'pending' });
+        if (res.request) {
+          setMyJoinRequests((prev) => [
+            res.request!,
+            ...prev.filter((r) => r.group_id !== group.id),
+          ]);
+        }
+        onShowToast(
+          res.alreadyPending
+            ? `Request Sent — Awaiting Approval for "${group.name}".`
+            : `Join request sent to "${group.name}" Super Admin! Awaiting approval.`
+        );
+      } else {
+        onShowToast(res.error || 'Failed to submit join request.');
+      }
+    } finally {
+      setIsSubmittingRequest(false);
+    }
+  };
+
   const handleCharInput = async (index: number, val: string) => {
+    setCodeLookupError(null);
+    const cleaned = val.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (cleaned.length > 1) {
+      // Handle multi-character input or autofill
+      const chars = cleaned.slice(0, 6).split('');
+      const next = ['', '', '', '', '', ''];
+      for (let i = 0; i < 6; i++) {
+        next[i] = chars[i] || '';
+      }
+      setPasscode(next);
+      const nextFocusIdx = Math.min(chars.length, 5);
+      inputRefs.current[nextFocusIdx]?.focus();
+      if (chars.length === 6) {
+        await verifyCodeLookup(chars.join(''));
+      }
+      return;
+    }
+
     const updated = [...passcode];
-    updated[index] = val.toUpperCase().slice(0, 1);
+    updated[index] = cleaned.slice(0, 1);
     setPasscode(updated);
 
+    if (cleaned && index < 5) {
+      inputRefs.current[index + 1]?.focus();
+    }
+
     if (updated.every((ch) => ch !== '')) {
-      const code = updated.join('');
-      const sb = getSupabase();
-      if (sb && isSupabaseConfigured()) {
-        try {
-          const { data: squad } = await sb
-            .from('squad_groups')
-            .select('*')
-            .eq('code', code)
-            .single();
-          if (squad) {
-            onShowToast(`Squad "${squad.name}" found! Review permissions to enter.`);
-            setIsPermissionModalOpen(true);
-            return;
-          } else {
-            onShowToast(`No expedition group found with code "${code}". Please verify code.`);
-            return;
-          }
-        } catch {
-          // Fallback if offline
-        }
+      await verifyCodeLookup(updated.join(''));
+    } else {
+      setVerifiedSquad(null);
+    }
+  };
+
+  const handleKeyDown = (index: number, e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Backspace' && !passcode[index] && index > 0) {
+      const updated = [...passcode];
+      updated[index - 1] = '';
+      setPasscode(updated);
+      inputRefs.current[index - 1]?.focus();
+    } else if (e.key === 'Enter') {
+      const code = passcode.join('');
+      if (code.length >= 4) {
+        verifyCodeLookup(code);
       }
-      onShowToast(`Passkey ${code} entered. Review permissions to join.`);
-      setIsPermissionModalOpen(true);
+    }
+  };
+
+  const handlePasteCode = async (e: React.ClipboardEvent<HTMLInputElement>) => {
+    e.preventDefault();
+    const pastedText = e.clipboardData.getData('text') || '';
+    // Extract either a 6-char code after ?join= or Invitation Code: or raw alphanumeric
+    const joinMatch = pastedText.match(/(?:join=|Code:\s*)([A-Za-z0-9-]{4,8})/i);
+    const targetRaw = joinMatch ? joinMatch[1] : pastedText;
+    const clean = normalizeSquadCode(targetRaw);
+    if (!clean) return;
+
+    const next = ['', '', '', '', '', ''];
+    for (let i = 0; i < 6; i++) {
+      next[i] = clean[i] || '';
+    }
+    setPasscode(next);
+    const focusIdx = Math.min(clean.length, 5);
+    inputRefs.current[focusIdx]?.focus();
+
+    if (clean.length === 6) {
+      await verifyCodeLookup(clean);
     }
   };
 
@@ -324,11 +570,11 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
 
               {/* Notification Dropdown Drawer */}
               {showNotifications && (
-                <div className="absolute right-0 top-11 w-72 bg-white rounded-2xl shadow-2xl border border-slate-200 p-3 z-50 animate-in fade-in slide-in-from-top-2 duration-150">
+                <div className="absolute right-0 top-11 w-80 bg-white rounded-2xl shadow-2xl border border-slate-200 p-3 z-50 animate-in fade-in slide-in-from-top-2 duration-150">
                   <div className="flex items-center justify-between pb-2 border-b border-slate-100 mb-2">
                     <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
-                      <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
-                      Trail Directives (1 New)
+                      <Bell className="w-3.5 h-3.5 text-emerald-700" />
+                      Squad Notifications ({userNotifications.length + 1})
                     </span>
                     <button
                       type="button"
@@ -339,13 +585,35 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
                     </button>
                   </div>
 
-                  <div className="bg-amber-50 p-2.5 rounded-xl border border-amber-200 text-xs mb-2">
-                    <span className="font-bold text-amber-950 block text-[11px] uppercase tracking-wide">
-                      Weather Advisory · 15m ago
-                    </span>
-                    <p className="text-[11px] text-amber-900 mt-0.5 leading-snug font-medium">
-                      Gusting alpine winds exceeding 45km/h at Ridge Marker 4. Basecamp assembly in effect.
-                    </p>
+                  <div className="max-h-60 overflow-y-auto space-y-2 mb-2 pr-0.5">
+                    {userNotifications.map((notif) => (
+                      <div
+                        key={notif.id}
+                        className={`p-2.5 rounded-xl border text-xs ${
+                          notif.type === 'join_request_accepted'
+                            ? 'bg-emerald-50 border-emerald-200 text-emerald-950'
+                            : notif.type === 'join_request_rejected'
+                            ? 'bg-rose-50 border-rose-200 text-rose-950'
+                            : 'bg-slate-50 border-slate-200 text-slate-800'
+                        }`}
+                      >
+                        <span className="font-bold block text-[11px] uppercase tracking-wide">
+                          {notif.title}
+                        </span>
+                        <p className="text-[11px] mt-0.5 leading-snug font-medium">
+                          {notif.message}
+                        </p>
+                      </div>
+                    ))}
+
+                    <div className="bg-amber-50 p-2.5 rounded-xl border border-amber-200 text-xs">
+                      <span className="font-bold text-amber-950 block text-[11px] uppercase tracking-wide">
+                        Weather Advisory · 15m ago
+                      </span>
+                      <p className="text-[11px] text-amber-900 mt-0.5 leading-snug font-medium">
+                        Gusting alpine winds exceeding 45km/h at Ridge Marker 4. Basecamp assembly in effect.
+                      </p>
+                    </div>
                   </div>
 
                   <button
@@ -423,7 +691,7 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
 
           <p className="text-xs text-slate-600 leading-relaxed">
             {hasJoinedGroup
-              ? `Your squad is active and ready for ${activeDestination.name ? activeDestination.name.split('(')[0].trim() : 'the trip'}.`
+              ? `Your squad "${activeSquad?.name || 'Squad'}" is active and ready for ${activeDestination.name ? activeDestination.name.split('(')[0].trim() : 'the trip'}.`
               : 'Join an existing squad route or create a new one for your group.'}
           </p>
         </section>
@@ -445,8 +713,11 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
                       Connected Squad
                     </span>
                     <h3 className="text-base font-extrabold leading-tight text-white">
-                      {activeDestination.name ? activeDestination.name.split('(')[0].trim() : 'Squad Expedition'}
+                      {activeSquad?.name || 'Squad Expedition'}
                     </h3>
+                    <p className="text-[11px] text-emerald-200 font-medium">
+                      Destination: {activeSquad?.destination || activeDestination.name}
+                    </p>
                   </div>
                 </div>
 
@@ -563,6 +834,41 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
                 </div>
               </div>
 
+              {/* Active Squad Invitation Code & Join by Code Bar */}
+              <div className="bg-black/30 backdrop-blur-md rounded-2xl p-2.5 border border-white/15 mb-3 relative z-10 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-300">
+                    Squad Code:
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const codeToCopy = normalizeSquadCode(activeSquad?.code || '');
+                      if (!codeToCopy) return;
+                      navigator.clipboard.writeText(codeToCopy);
+                      onShowToast(`Squad invitation code "${codeToCopy}" copied!`);
+                    }}
+                    className="px-2 py-0.5 rounded-lg bg-amber-400 text-slate-950 font-mono text-xs font-black flex items-center gap-1 hover:bg-amber-300 transition-colors cursor-pointer"
+                    title="Tap to copy group code"
+                  >
+                    <span>{normalizeSquadCode(activeSquad?.code || '') || 'SYNCING'}</span>
+                    <Copy className="w-3 h-3" />
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPasscode(['', '', '', '', '', '']);
+                    onSetJoinedGroup(false);
+                    onShowToast('Enter the 6-character code sent by your friend to join their squad.');
+                  }}
+                  className="px-2.5 py-1 rounded-lg bg-emerald-500/30 hover:bg-emerald-500/50 border border-emerald-300/40 text-white text-[10px] font-bold transition-colors cursor-pointer shrink-0"
+                >
+                  + Join Friend&apos;s Code
+                </button>
+              </div>
+
               {/* Quick Actions */}
               <div className="grid grid-cols-2 gap-2 relative z-10">
                 <button
@@ -577,13 +883,14 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
                 <button
                   type="button"
                   onClick={() => {
+                    setPasscode(['', '', '', '', '', '']);
                     onSetJoinedGroup(false);
-                    onShowToast('Left squad group.');
+                    onShowToast('Enter a squad code or create a new expedition.');
                   }}
                   className="py-2.5 px-3 rounded-xl bg-white/10 hover:bg-white/20 text-white font-semibold text-xs transition-colors flex items-center justify-center gap-1 cursor-pointer"
                 >
                   <LogOut className="w-3.5 h-3.5" />
-                  <span>Switch Group</span>
+                  <span>Switch / Join Code</span>
                 </button>
               </div>
             </div>
@@ -811,10 +1118,15 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
                     {passcode.map((char, index) => (
                       <input
                         key={index}
+                        ref={(el) => {
+                          inputRefs.current[index] = el;
+                        }}
                         type="text"
-                        maxLength={1}
+                        maxLength={6}
                         value={char}
                         onChange={(e) => handleCharInput(index, e.target.value)}
+                        onKeyDown={(e) => handleKeyDown(index, e)}
+                        onPaste={handlePasteCode}
                         placeholder="-"
                         className={`h-12 rounded-xl text-center font-mono text-lg font-bold outline-none transition-all ${
                           char
@@ -825,8 +1137,178 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
                     ))}
                   </div>
 
+                  <button
+                    type="button"
+                    onClick={() => verifyCodeLookup(passcode.join(''))}
+                    disabled={isVerifyingCode}
+                    className="w-full py-2.5 rounded-xl bg-gradient-to-r from-[#0f5238] to-emerald-600 hover:brightness-105 text-white text-xs font-extrabold flex items-center justify-center gap-1.5 shadow-sm active:scale-98 transition-all cursor-pointer disabled:opacity-60"
+                  >
+                    {isVerifyingCode ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>Verifying Group Code...</span>
+                      </>
+                    ) : (
+                      <>
+                        <ArrowRight className="w-4 h-4" />
+                        <span>Verify Group Code</span>
+                      </>
+                    )}
+                  </button>
+
+                  {/* Error Banner when an invalid code is entered */}
+                  {codeLookupError && (
+                    <div className="p-3.5 rounded-2xl bg-rose-50 border border-rose-200 text-rose-900 text-xs flex items-start gap-2.5 animate-in fade-in duration-150">
+                      <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                      <div>
+                        <span className="font-extrabold block text-rose-950">No Group Available</span>
+                        <span className="text-[11px] text-rose-800 mt-0.5 block leading-relaxed">
+                          {codeLookupError}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Verified Group Details Card & Join Request Action */}
+                  {verifiedSquad && (
+                    <div className="p-4 rounded-2xl bg-emerald-50/90 border-2 border-emerald-500/50 space-y-3 animate-in fade-in duration-200">
+                      <div className="flex items-center justify-between">
+                        <span className="inline-flex items-center gap-1 text-[10px] font-extrabold uppercase tracking-wider text-emerald-800 bg-white px-2.5 py-0.5 rounded-full border border-emerald-200">
+                          <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                          Verified Expedition Group
+                        </span>
+                        <span className="font-mono text-xs font-black px-2 py-0.5 rounded-lg bg-emerald-950 text-amber-300">
+                          {verifiedSquad.code}
+                        </span>
+                      </div>
+
+                      <div>
+                        <h3 className="text-sm font-black text-slate-900">{verifiedSquad.name}</h3>
+                        <div className="grid grid-cols-2 gap-1.5 mt-1.5 text-[11px] text-slate-600 font-medium">
+                          <span className="flex items-center gap-1 truncate">
+                            <MapPin className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                            {verifiedSquad.destination || 'Expedition Route'}
+                          </span>
+                          <span className="flex items-center gap-1">
+                            <Users className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                            {verifiedSquad.memberCount || 1} Member(s)
+                          </span>
+                          {verifiedSquad.startDate && (
+                            <span className="flex items-center gap-1 col-span-2 text-slate-500">
+                              <Calendar className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                              Departure: {verifiedSquad.startDate}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {verifiedSquad.userRequestStatus === 'pending' ? (
+                        <div className="p-3 rounded-xl bg-amber-100/90 border border-amber-300 text-amber-950 text-xs flex items-start gap-2">
+                          <Clock className="w-4 h-4 text-amber-700 shrink-0 mt-0.5 animate-pulse" />
+                          <div>
+                            <span className="font-extrabold block">Request Sent — Awaiting Approval</span>
+                            <span className="text-[11px] text-amber-900 block mt-0.5 leading-snug">
+                              Your join request is pending review by the group&apos;s Super Admin. Duplicate requests are prevented.
+                            </span>
+                          </div>
+                        </div>
+                      ) : verifiedSquad.userRequestStatus === 'member' ||
+                        verifiedSquad.userRequestStatus === 'accepted' ? (
+                        <button
+                          type="button"
+                          onClick={() => handleSubmitJoinRequest(verifiedSquad)}
+                          className="w-full py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-extrabold flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
+                        >
+                          <UserCheck className="w-4 h-4" />
+                          <span>Approved Member — Enter Group</span>
+                        </button>
+                      ) : (
+                        <div className="space-y-2">
+                          {verifiedSquad.userRequestStatus === 'rejected' && (
+                            <div className="p-2.5 rounded-xl bg-rose-100/80 border border-rose-300 text-rose-900 text-[11px] flex items-center gap-1.5 font-semibold">
+                              <XCircle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                              <span>Your previous request was declined. You may submit a new request below.</span>
+                            </div>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => handleSubmitJoinRequest(verifiedSquad)}
+                            disabled={isSubmittingRequest}
+                            className="w-full py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-extrabold flex items-center justify-center gap-1.5 shadow-sm cursor-pointer disabled:opacity-60"
+                          >
+                            {isSubmittingRequest ? (
+                              <>
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                <span>Sending Join Request...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Send className="w-3.5 h-3.5 text-emerald-400" />
+                                <span>
+                                  {verifiedSquad.userRequestStatus === 'rejected'
+                                    ? 'Submit New Join Request'
+                                    : 'Send Join Request to Super Admin'}
+                                </span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Active / Pending Join Requests Tracker */}
+                  {myJoinRequests.length > 0 && (
+                    <div className="pt-2 space-y-2">
+                      <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-500 block">
+                        Your Group Join Requests
+                      </span>
+                      {myJoinRequests.map((req) => (
+                        <div
+                          key={req.id}
+                          className={`p-3 rounded-2xl border text-xs flex items-center justify-between gap-2 ${
+                            req.status === 'pending'
+                              ? 'bg-amber-50/90 border-amber-200 text-amber-950'
+                              : req.status === 'accepted'
+                              ? 'bg-emerald-50 border-emerald-200 text-emerald-950'
+                              : 'bg-rose-50 border-rose-200 text-rose-950'
+                          }`}
+                        >
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-extrabold truncate">
+                                {req.group_name || 'Expedition Group'}
+                              </span>
+                              {req.group_code && (
+                                <span className="font-mono text-[10px] px-1.5 py-0.2 rounded bg-white/80 border border-slate-200 text-slate-700 font-bold">
+                                  {req.group_code}
+                                </span>
+                              )}
+                            </div>
+                            <span className="text-[11px] block mt-0.5 font-semibold">
+                              {req.status === 'pending'
+                                ? '⏳ Request Sent — Awaiting Approval'
+                                : req.status === 'accepted'
+                                ? '✓ Approved by Super Admin'
+                                : '✕ Request Declined by Super Admin'}
+                            </span>
+                          </div>
+                          {req.status === 'rejected' && req.group_code && (
+                            <button
+                              type="button"
+                              onClick={() => verifyCodeLookup(req.group_code!)}
+                              className="px-2.5 py-1 rounded-lg bg-white hover:bg-rose-100 border border-rose-300 text-rose-900 text-[10px] font-bold shrink-0 cursor-pointer"
+                            >
+                              Request Again
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
                   <p className="text-[11px] text-slate-500 text-center">
-                    Ask your lead guide for the 6-character squad code (e.g. <strong>TR89K2</strong>).
+                    Enter the unique 6-character invitation code generated for your expedition group.
                   </p>
                 </div>
               )}
@@ -942,27 +1424,14 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
         onClose={() => setIsPermissionModalOpen(false)}
         onConfirm={async () => {
           setIsPermissionModalOpen(false);
-          const enteredCode = passcode.join('');
-          const sb = getSupabase();
-          if (sb && isSupabaseConfigured() && enteredCode.length === 6) {
-            try {
-              const { data: userResp } = await sb.auth.getUser();
-              if (userResp?.user) {
-                const res = await joinSquadByCode(userResp.user.id, enteredCode);
-                if (res?.group) {
-                  onShowToast(`🎉 Successfully joined squad "${res.group.name}"!`);
-                  onSetJoinedGroup(true);
-                  onNavigate('squad');
-                  return;
-                }
-              }
-            } catch (err: any) {
-              console.warn('Error joining squad:', err);
+          if (verifiedSquad) {
+            await handleSubmitJoinRequest(verifiedSquad);
+          } else {
+            const enteredCode = normalizeSquadCode(passcode.join(''));
+            if (enteredCode.length >= 4) {
+              await verifyCodeLookup(enteredCode);
             }
           }
-          onSetJoinedGroup(true);
-          onShowToast('🎉 Successfully joined expedition squad! Telemetry online.');
-          onNavigate('squad');
         }}
       />
 
@@ -976,28 +1445,32 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
             name: trip.destination,
             coordinates: tripCoords,
           });
-          const sb = getSupabase();
-          if (sb && isSupabaseConfigured()) {
-            try {
-              const { data: userResp } = await sb.auth.getUser();
-              if (userResp?.user) {
-                await createSquadGroup(
-                  userResp.user.id,
-                  trip.name,
-                  trip.destination,
-                  trip.budgetPerMember,
-                  trip.passkey
-                );
-              }
-            } catch (err) {
-              console.warn('Error saving squad to Supabase:', err);
-            }
+
+          const res = await createSquadGroup(
+            currentUserId || 'user_self',
+            trip.name,
+            trip.destination,
+            trip.budgetPerMember,
+            undefined,
+            trip.departureDate,
+            trip.returnDate,
+            userName,
+            currentUserEmail,
+            avatarUrl
+          );
+
+          if (!res.success || !res.group) {
+            onShowToast(res.error || 'Failed to create group in database.');
+            return;
           }
+
           if (onUpdateTripDestination) {
             onUpdateTripDestination(trip);
           }
-          onShowToast(`Trip "${trip.name}" created! Invitation code: ${trip.passkey}`);
-          setPasscode(trip.passkey.split(''));
+
+          onSquadJoined?.(res.group, 'super_admin');
+          onShowToast(`Group "${res.group.name}" created! Unique Code: ${res.group.code}`);
+          setPasscode(res.group.code.split('').slice(0, 6));
           localStorage.setItem('trailoPS_userRole', 'super_admin');
           onSetJoinedGroup(true);
         }}

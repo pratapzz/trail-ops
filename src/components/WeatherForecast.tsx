@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Cloud,
   Sun,
@@ -10,21 +10,19 @@ import {
   Compass,
   Droplets,
   Gauge,
-  Thermometer,
   RotateCw,
   AlertTriangle,
   ShieldCheck,
   AlertOctagon,
-  Eye,
   MapPin,
-  Calendar,
-  Clock,
-  ChevronRight,
   Search,
   Plus,
   Check,
   X,
-  Compass as CompassIcon,
+  Navigation,
+  Eye,
+  Sunrise,
+  Sunset,
 } from 'lucide-react';
 import { WeatherData, WeatherConditionType } from '../types';
 import { weatherService, GeocodedLocation } from '../services/weatherService';
@@ -39,7 +37,15 @@ interface WeatherForecastProps {
   onDestinationChange?: (name: string, coordinates: { lat: number; lng: number }) => void;
 }
 
-const PRESET_LOCATIONS: Array<{ name: string; lat: number; lng: number; tag: string }> = [];
+const PRESET_LOCATIONS: Array<{ name: string; lat: number; lng: number; tag: string }> = [
+  { name: 'Kolkata, West Bengal', lat: 22.5726, lng: 88.3639, tag: 'City' },
+  { name: 'Bagula, Nadia', lat: 23.3333, lng: 88.65, tag: 'Town' },
+  { name: 'Siliguri, West Bengal', lat: 26.7271, lng: 88.3953, tag: 'Transit' },
+  { name: 'Darjeeling, West Bengal (2,042m)', lat: 27.041, lng: 88.2663, tag: 'Hill' },
+  { name: 'Pelling, Sikkim (2,150m)', lat: 27.3184, lng: 88.2412, tag: 'Ridge' },
+  { name: 'Manali, Himachal (2,050m)', lat: 32.2432, lng: 77.1892, tag: 'Valley' },
+  { name: 'Leh, Ladakh (3,500m)', lat: 34.1526, lng: 77.5771, tag: 'Pass' },
+];
 
 export const WeatherForecast: React.FC<WeatherForecastProps> = ({
   coordinates = { lat: 27.3184, lng: 88.2412 },
@@ -50,16 +56,32 @@ export const WeatherForecast: React.FC<WeatherForecastProps> = ({
   const [activeLocation, setActiveLocation] = useState<{
     name: string;
     coordinates: { lat: number; lng: number };
-  }>({
-    name: destinationName,
-    coordinates: coordinates,
+    isLiveGps?: boolean;
+  }>(() => {
+    try {
+      const savedGps = localStorage.getItem('trailoPS_live_gps_weather_location');
+      if (savedGps) {
+        const parsed = JSON.parse(savedGps);
+        if (parsed && parsed.name && parsed.coordinates?.lat && parsed.coordinates?.lng) {
+          return parsed;
+        }
+      }
+    } catch {}
+    return {
+      name: destinationName,
+      coordinates,
+      isLiveGps: false,
+    };
   });
 
   const [weather, setWeather] = useState<WeatherData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isDetectingGps, setIsDetectingGps] = useState(false);
   const [unit, setUnit] = useState<'C' | 'F'>('C');
   const [forecastTab, setForecastTab] = useState<'hourly' | 'daily'>('hourly');
+  const hasAutoDetectedRef = useRef(false);
+  const userManuallySelectedRef = useRef(false);
 
   // Weather search and addition state
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -68,6 +90,52 @@ export const WeatherForecast: React.FC<WeatherForecastProps> = ({
   const [isSearchingPlaces, setIsSearchingPlaces] = useState(false);
   const [customLocationName, setCustomLocationName] = useState('');
   const [customAltitude, setCustomAltitude] = useState('2400');
+
+  // Auto-detect live GPS location on initial mount so weather matches Google Weather on user's phone
+  const detectLiveGpsWeather = useCallback(
+    async (showFeedback = false) => {
+      setIsDetectingGps(true);
+      try {
+        const geo = await weatherService.detectLiveLocation();
+        if (geo) {
+          const liveLoc = {
+            name: geo.fullName || geo.name || 'My Live Location',
+            coordinates: { lat: geo.lat, lng: geo.lng },
+            isLiveGps: true,
+          };
+          userManuallySelectedRef.current = false;
+          setActiveLocation(liveLoc);
+          try {
+            localStorage.setItem('trailoPS_live_gps_weather_location', JSON.stringify(liveLoc));
+          } catch {}
+          if (onDestinationChange) {
+            onDestinationChange(liveLoc.name, liveLoc.coordinates);
+          }
+          if (showFeedback && onShowToast) {
+            onShowToast(`📍 Synced live weather for ${geo.name || 'your current location'}!`);
+          }
+        } else if (showFeedback && onShowToast) {
+          onShowToast('Could not detect live location. Use Search to pick your city or trail.');
+          setIsSearchOpen(true);
+        }
+      } catch {
+        if (showFeedback && onShowToast) {
+          onShowToast('Use Search to pick your city or trail.');
+          setIsSearchOpen(true);
+        }
+      } finally {
+        setIsDetectingGps(false);
+      }
+    },
+    [onDestinationChange, onShowToast]
+  );
+
+  useEffect(() => {
+    if (!hasAutoDetectedRef.current) {
+      hasAutoDetectedRef.current = true;
+      detectLiveGpsWeather(false);
+    }
+  }, [detectLiveGpsWeather]);
 
   // Debounced live geocoded search
   useEffect(() => {
@@ -92,50 +160,65 @@ export const WeatherForecast: React.FC<WeatherForecastProps> = ({
     return () => clearTimeout(timer);
   }, [searchQuery]);
 
-  // Keep in sync if parent changes coordinates/destinationName
+  // Keep in sync if parent explicitly changes destination to a non-default location
   useEffect(() => {
-    setActiveLocation({
-      name: destinationName,
-      coordinates: coordinates,
-    });
-  }, [coordinates.lat, coordinates.lng, destinationName]);
-
-  const loadWeather = useCallback(async (isManualRefresh = false, targetLocation = activeLocation) => {
-    if (isManualRefresh) {
-      setIsRefreshing(true);
-    } else {
-      setIsLoading(true);
+    const isDefaultPelling =
+      Math.abs(coordinates.lat - 27.3184) < 0.001 && Math.abs(coordinates.lng - 88.2412) < 0.001;
+    if (!isDefaultPelling && !activeLocation.isLiveGps && !userManuallySelectedRef.current) {
+      setActiveLocation({
+        name: destinationName,
+        coordinates,
+        isLiveGps: false,
+      });
     }
+  }, [coordinates.lat, coordinates.lng, destinationName, activeLocation.isLiveGps]);
 
-    try {
-      const data = await weatherService.fetchDestinationWeather(
-        targetLocation.coordinates,
-        targetLocation.name
-      );
-      setWeather(data);
-      if (isManualRefresh && onShowToast) {
-        onShowToast(`Weather telemetry refreshed for ${data?.destinationName || targetLocation.name}`);
+  const loadWeather = useCallback(
+    async (isManualRefresh = false, targetLocation = activeLocation) => {
+      if (isManualRefresh) {
+        setIsRefreshing(true);
+      } else {
+        setIsLoading(true);
       }
-    } catch {
-      if (onShowToast) {
-        onShowToast('Failed to fetch destination weather telemetry.');
+
+      try {
+        const data = await weatherService.fetchDestinationWeather(
+          targetLocation.coordinates,
+          targetLocation.name
+        );
+        setWeather(data);
+        if (isManualRefresh && onShowToast) {
+          onShowToast(
+            `Weather telemetry refreshed for ${data?.destinationName || targetLocation.name}`
+          );
+        }
+      } catch {
+        if (onShowToast) {
+          onShowToast('Failed to fetch destination weather telemetry.');
+        }
+      } finally {
+        setIsLoading(false);
+        setIsRefreshing(false);
       }
-    } finally {
-      setIsLoading(false);
-      setIsRefreshing(false);
-    }
-  }, [activeLocation, onShowToast]);
+    },
+    [activeLocation, onShowToast]
+  );
 
   useEffect(() => {
     loadWeather(false, activeLocation);
   }, [activeLocation, loadWeather]);
 
   const handleSelectLocation = (loc: { name: string; lat: number; lng: number }) => {
+    userManuallySelectedRef.current = true;
     const newLoc = {
       name: loc.name,
       coordinates: { lat: loc.lat, lng: loc.lng },
+      isLiveGps: false,
     };
     setActiveLocation(newLoc);
+    try {
+      localStorage.setItem('trailoPS_live_gps_weather_location', JSON.stringify(newLoc));
+    } catch {}
     setIsSearchOpen(false);
     setSearchQuery('');
     if (onDestinationChange) {
@@ -146,34 +229,38 @@ export const WeatherForecast: React.FC<WeatherForecastProps> = ({
     }
   };
 
-  const handleAddCustomLocation = (e: React.FormEvent) => {
+  const handleAddCustomLocation = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!customLocationName.trim()) return;
 
-    // Generate consistent coordinates based on location string
+    // Try real geocoding first for the custom location name!
+    try {
+      const matches = await weatherService.searchLocations(customLocationName.trim());
+      if (matches && matches.length > 0) {
+        const best = matches[0];
+        handleSelectLocation({
+          name: best.fullName,
+          lat: best.lat,
+          lng: best.lng,
+        });
+        setCustomLocationName('');
+        return;
+      }
+    } catch {}
+
     const hash = customLocationName.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
     const lat = 27.0 + (hash % 60) * 0.1;
     const lng = 77.0 + ((hash * 3) % 110) * 0.1;
     const fullName = `${customLocationName.trim()} (${customAltitude}m ASL)`;
 
-    const newLoc = {
-      name: fullName,
-      coordinates: { lat, lng },
-    };
-    setActiveLocation(newLoc);
-    setIsSearchOpen(false);
+    handleSelectLocation({ name: fullName, lat, lng });
     setCustomLocationName('');
-    if (onDestinationChange) {
-      onDestinationChange(fullName, { lat, lng });
-    }
-    if (onShowToast) {
-      onShowToast(`Added and loaded weather details for ${fullName}!`);
-    }
   };
 
-  const filteredPresets = PRESET_LOCATIONS.filter((p) =>
-    p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    p.tag.toLowerCase().includes(searchQuery.toLowerCase())
+  const filteredPresets = PRESET_LOCATIONS.filter(
+    (p) =>
+      p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      p.tag.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
   const convertTemp = (celsius: number) => {
@@ -213,21 +300,42 @@ export const WeatherForecast: React.FC<WeatherForecastProps> = ({
           <div className="space-y-0.5 min-w-0">
             <div className="flex items-center gap-1.5 text-emerald-400 text-[11px] font-bold tracking-wide">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              <span>Real-Time Weather Telemetry</span>
+              <span>
+                {activeLocation.isLiveGps
+                  ? 'Live GPS Weather (Google Weather Synced)'
+                  : 'Real-Time Weather Telemetry'}
+              </span>
             </div>
             <h3 className="text-sm font-extrabold text-white leading-tight flex items-center gap-1.5">
               <MapPin className="w-3.5 h-3.5 text-rose-400 shrink-0" />
-              <span className="truncate max-w-[210px]">{activeLocation.name}</span>
+              <span className="truncate max-w-[200px]">{activeLocation.name}</span>
             </h3>
             {/* Coordinate Subtitle */}
             <p className="text-[10px] text-slate-400 font-mono">
-              Coordinates: {activeLocation.coordinates.lat.toFixed(4)}° N, {activeLocation.coordinates.lng.toFixed(4)}° E
+              {activeLocation.coordinates.lat.toFixed(4)}° N,{' '}
+              {activeLocation.coordinates.lng.toFixed(4)}° E
               {weather ? ` · Alt: ${weather.elevationMeters}m ASL` : ''}
             </p>
           </div>
 
-          {/* Search, Unit Toggle & Refresh Controls */}
-          <div className="flex items-center gap-1.5 shrink-0">
+          {/* Live GPS, Search, Unit Toggle & Refresh Controls */}
+          <div className="flex items-center gap-1 shrink-0">
+            {/* Live GPS Auto-Detect Button */}
+            <button
+              type="button"
+              onClick={() => detectLiveGpsWeather(true)}
+              disabled={isDetectingGps}
+              className={`p-1.5 rounded-lg border text-xs font-bold transition-all cursor-pointer flex items-center gap-1 ${
+                activeLocation.isLiveGps
+                  ? 'bg-emerald-600/90 text-white border-emerald-400 shadow-xs'
+                  : 'bg-slate-800 hover:bg-slate-700 text-cyan-400 border-slate-700'
+              }`}
+              title="Auto-detect my live GPS location"
+            >
+              <Navigation className={`w-3.5 h-3.5 ${isDetectingGps ? 'animate-spin' : ''}`} />
+              <span className="text-[10px]">GPS</span>
+            </button>
+
             {/* Search Toggle Button */}
             <button
               type="button"
@@ -237,7 +345,7 @@ export const WeatherForecast: React.FC<WeatherForecastProps> = ({
                   ? 'bg-emerald-600 text-white border-emerald-500 shadow-xs'
                   : 'bg-slate-800 hover:bg-slate-700 text-emerald-400 border-slate-700'
               }`}
-              title="Search or add weather for destination"
+              title="Search any city or mountain pass"
             >
               <Search className="w-3.5 h-3.5" />
               <span className="text-[10px]">Search</span>
@@ -249,7 +357,9 @@ export const WeatherForecast: React.FC<WeatherForecastProps> = ({
                 type="button"
                 onClick={() => setUnit('C')}
                 className={`px-1.5 py-0.5 rounded transition-all cursor-pointer ${
-                  unit === 'C' ? 'bg-emerald-600 text-white shadow-xs' : 'text-slate-400 hover:text-white'
+                  unit === 'C'
+                    ? 'bg-emerald-600 text-white shadow-xs'
+                    : 'text-slate-400 hover:text-white'
                 }`}
               >
                 °C
@@ -258,7 +368,9 @@ export const WeatherForecast: React.FC<WeatherForecastProps> = ({
                 type="button"
                 onClick={() => setUnit('F')}
                 className={`px-1.5 py-0.5 rounded transition-all cursor-pointer ${
-                  unit === 'F' ? 'bg-emerald-600 text-white shadow-xs' : 'text-slate-400 hover:text-white'
+                  unit === 'F'
+                    ? 'bg-emerald-600 text-white shadow-xs'
+                    : 'text-slate-400 hover:text-white'
                 }`}
               >
                 °F
@@ -273,7 +385,9 @@ export const WeatherForecast: React.FC<WeatherForecastProps> = ({
               className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 cursor-pointer active:scale-90 transition-all disabled:opacity-50"
               title="Refresh real-time weather sensors"
             >
-              <RotateCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-emerald-400' : ''}`} />
+              <RotateCw
+                className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-emerald-400' : ''}`}
+              />
             </button>
           </div>
         </div>
@@ -281,6 +395,19 @@ export const WeatherForecast: React.FC<WeatherForecastProps> = ({
         {/* Collapsible Destination Search & Custom Weather Addition Panel */}
         {isSearchOpen && (
           <div className="mt-2.5 pt-3 border-t border-slate-800/80 space-y-3 animate-in fade-in slide-in-from-top-2 duration-200">
+            {/* Quick GPS Banner inside Search */}
+            <button
+              type="button"
+              onClick={() => {
+                detectLiveGpsWeather(true);
+                setIsSearchOpen(false);
+              }}
+              className="w-full py-2 px-3 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/40 text-emerald-300 text-xs font-bold flex items-center justify-center gap-2 cursor-pointer transition-colors"
+            >
+              <Navigation className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Use My Live Phone GPS Location</span>
+            </button>
+
             {/* Search Input Bar */}
             <div className="relative">
               <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
@@ -288,7 +415,7 @@ export const WeatherForecast: React.FC<WeatherForecastProps> = ({
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search mountain pass, basecamp or city..."
+                placeholder="Search any city, town, mountain pass, or pin..."
                 className="w-full pl-8 pr-8 py-1.5 rounded-xl bg-slate-800/90 border border-slate-700 text-xs text-white placeholder-slate-400 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 font-medium"
               />
               {searchQuery && (
@@ -308,9 +435,13 @@ export const WeatherForecast: React.FC<WeatherForecastProps> = ({
                 <div className="flex items-center justify-between text-[10px] font-bold text-slate-400">
                   <span className="uppercase tracking-wider flex items-center gap-1">
                     <Search className="w-2.5 h-2.5 text-emerald-400" />
-                    <span>Search Results {isSearchingPlaces ? '(Searching...)' : `(${searchResults.length})`}</span>
+                    <span>
+                      Search Results {isSearchingPlaces ? '(Searching...)' : `(${searchResults.length})`}
+                    </span>
                   </span>
-                  {isSearchingPlaces && <RotateCw className="w-2.5 h-2.5 animate-spin text-emerald-400" />}
+                  {isSearchingPlaces && (
+                    <RotateCw className="w-2.5 h-2.5 animate-spin text-emerald-400" />
+                  )}
                 </div>
 
                 {searchResults.length > 0 ? (
@@ -331,7 +462,9 @@ export const WeatherForecast: React.FC<WeatherForecastProps> = ({
                         <div className="flex items-center gap-2 min-w-0">
                           <MapPin className="w-3.5 h-3.5 text-rose-400 shrink-0 group-hover:scale-110 transition-transform" />
                           <div className="min-w-0">
-                            <span className="text-xs font-bold text-white block truncate">{place.name}</span>
+                            <span className="text-xs font-bold text-white block truncate">
+                              {place.name}
+                            </span>
                             <span className="text-[10px] text-slate-400 truncate block">
                               {[place.admin1, place.country].filter(Boolean).join(', ')}
                             </span>
@@ -358,11 +491,11 @@ export const WeatherForecast: React.FC<WeatherForecastProps> = ({
               </div>
             )}
 
-            {/* Quick Himalayan & Alpine Presets */}
+            {/* Quick Presets */}
             {filteredPresets.length > 0 && (
               <div className="space-y-1.5">
                 <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                  Popular Expeditions &amp; Passes
+                  Quick Cities &amp; Expedition Hubs
                 </span>
                 <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto no-scrollbar">
                   {filteredPresets.map((loc) => {
@@ -393,19 +526,19 @@ export const WeatherForecast: React.FC<WeatherForecastProps> = ({
             <form onSubmit={handleAddCustomLocation} className="pt-2 border-t border-slate-800 space-y-2">
               <div className="flex items-center justify-between">
                 <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                  Add Custom Trail Weather
+                  Add Custom Place / Basecamp
                 </span>
-                <span className="text-[9px] text-emerald-400">Auto-derives barometric lapse rate</span>
+                <span className="text-[9px] text-emerald-400">Live Geocoded Lookup</span>
               </div>
               <div className="flex items-center gap-2">
                 <input
                   type="text"
                   value={customLocationName}
                   onChange={(e) => setCustomLocationName(e.target.value)}
-                  placeholder="e.g. Kedarkantha Basecamp"
+                  placeholder="e.g. Krishnanagar, Kedarkantha..."
                   className="flex-1 px-2.5 py-1.5 rounded-xl bg-slate-800/90 border border-slate-700 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 font-medium"
                 />
-                <div className="flex items-center gap-1 w-24">
+                <div className="flex items-center gap-1 w-20">
                   <input
                     type="number"
                     value={customAltitude}
@@ -422,7 +555,7 @@ export const WeatherForecast: React.FC<WeatherForecastProps> = ({
                   className="px-2.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-xs font-bold transition-all cursor-pointer flex items-center gap-1 shrink-0"
                 >
                   <Plus className="w-3.5 h-3.5" />
-                  <span>Add</span>
+                  <span>Load</span>
                 </button>
               </div>
             </form>
@@ -454,17 +587,21 @@ export const WeatherForecast: React.FC<WeatherForecastProps> = ({
                   <span className="text-4xl font-black tracking-tight text-white">
                     {convertTemp(weather.temperature)}°
                   </span>
-                  <span className="text-xs font-semibold text-emerald-300">
-                    {unit}
+                  <span className="text-xs font-semibold text-emerald-300">{unit}</span>
+                </div>
+                <div className="text-xs font-bold text-emerald-200 mt-0.5">{weather.condition}</div>
+                <div className="text-[11px] text-slate-300 mt-1 flex items-center gap-2 flex-wrap">
+                  <span>
+                    Feels like {convertTemp(weather.feelsLike)}°{unit}
                   </span>
-                </div>
-                <div className="text-xs font-bold text-emerald-200 mt-0.5">
-                  {weather.condition}
-                </div>
-                <div className="text-[11px] text-slate-300 mt-1 flex items-center gap-2">
-                  <span>Feels like {convertTemp(weather.feelsLike)}°{unit}</span>
                   <span className="text-slate-500">·</span>
-                  <span>H: {convertTemp(weather.highTemp)}° L: {convertTemp(weather.lowTemp)}°</span>
+                  <span>
+                    H: {convertTemp(weather.highTemp)}° L: {convertTemp(weather.lowTemp)}°
+                  </span>
+                  <span className="text-slate-500">·</span>
+                  <span className="text-emerald-300 font-semibold">
+                    AQI {weather.airQualityIndex}
+                  </span>
                 </div>
               </div>
 
@@ -475,7 +612,7 @@ export const WeatherForecast: React.FC<WeatherForecastProps> = ({
             </div>
           </div>
 
-          {/* Alpine Micro-Metrics Grid (4 items) */}
+          {/* Primary Micro-Metrics Grid (4 items) */}
           <div className="grid grid-cols-4 gap-2">
             {/* Wind */}
             <div className="bg-slate-50 rounded-xl p-2 border border-slate-200/80 text-center">
@@ -484,9 +621,12 @@ export const WeatherForecast: React.FC<WeatherForecastProps> = ({
               </div>
               <span className="text-[10px] text-slate-500 block font-medium">Wind</span>
               <span className="text-xs font-extrabold text-slate-900 leading-tight block">
-                {weather.windSpeedKmH} <span className="text-[9px] font-normal text-slate-500">km/h</span>
+                {weather.windSpeedKmH}{' '}
+                <span className="text-[9px] font-normal text-slate-500">km/h</span>
               </span>
-              <span className="text-[9px] text-teal-800 font-semibold block">{weather.windDirection.split(' ')[0]}</span>
+              <span className="text-[9px] text-teal-800 font-semibold block">
+                {weather.windDirection}
+              </span>
             </div>
 
             {/* Precipitation */}
@@ -498,7 +638,9 @@ export const WeatherForecast: React.FC<WeatherForecastProps> = ({
               <span className="text-xs font-extrabold text-slate-900 leading-tight block">
                 {weather.precipitationChance}%
               </span>
-              <span className="text-[9px] text-sky-700 font-semibold block">Precip</span>
+              <span className="text-[9px] text-sky-700 font-semibold block">
+                UV {weather.uvIndex}
+              </span>
             </div>
 
             {/* Humidity */}
@@ -510,19 +652,37 @@ export const WeatherForecast: React.FC<WeatherForecastProps> = ({
               <span className="text-xs font-extrabold text-slate-900 leading-tight block">
                 {weather.humidity}%
               </span>
-              <span className="text-[9px] text-indigo-700 font-semibold block">Moisture</span>
+              <span className="text-[9px] text-indigo-700 font-semibold block">
+                Vis {weather.visibilityKm}km
+              </span>
             </div>
 
-            {/* Barometric Pressure & Altitude */}
+            {/* Barometric Pressure & Sun */}
             <div className="bg-slate-50 rounded-xl p-2 border border-slate-200/80 text-center">
               <div className="flex items-center justify-center text-amber-600 mb-1">
                 <Compass className="w-3.5 h-3.5" />
               </div>
-              <span className="text-[10px] text-slate-500 block font-medium">Barometer</span>
+              <span className="text-[10px] text-slate-500 block font-medium">Pressure</span>
               <span className="text-xs font-extrabold text-slate-900 leading-tight block">
                 {weather.pressureHpa}
               </span>
               <span className="text-[9px] text-amber-700 font-semibold block">hPa</span>
+            </div>
+          </div>
+
+          {/* Sunrise / Sunset & UV / Visibility Strip */}
+          <div className="grid grid-cols-3 gap-2 px-3 py-2 rounded-xl bg-slate-50 border border-slate-200/70 text-[10px] text-slate-600 font-semibold">
+            <div className="flex items-center gap-1.5">
+              <Sunrise className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+              <span>Rise: {weather.sunrise}</span>
+            </div>
+            <div className="flex items-center justify-center gap-1.5">
+              <Sunset className="w-3.5 h-3.5 text-orange-500 shrink-0" />
+              <span>Set: {weather.sunset}</span>
+            </div>
+            <div className="flex items-center justify-end gap-1.5">
+              <Eye className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+              <span>AQI: {weather.airQualityIndex}</span>
             </div>
           </div>
 
@@ -570,7 +730,7 @@ export const WeatherForecast: React.FC<WeatherForecastProps> = ({
                       : 'text-slate-500 hover:text-slate-800'
                   }`}
                 >
-                  Hourly (24h)
+                  Hourly (12h)
                 </button>
                 <button
                   type="button"
@@ -586,11 +746,11 @@ export const WeatherForecast: React.FC<WeatherForecastProps> = ({
               </div>
 
               <span className="text-[10px] text-slate-500 font-medium">
-                Refreshed {weather.lastUpdated}
+                Updated {weather.lastUpdated}
               </span>
             </div>
 
-            {/* View A: 24h Hourly Forecast Scrollable Rail */}
+            {/* View A: Consecutive Hourly Forecast Scrollable Rail */}
             {forecastTab === 'hourly' && (
               <div className="flex items-center gap-2 overflow-x-auto no-scrollbar py-1">
                 {weather.hourly.map((h, i) => (
@@ -637,12 +797,8 @@ export const WeatherForecast: React.FC<WeatherForecastProps> = ({
 
                     <div className="flex items-center gap-2 w-24 justify-end text-right">
                       <span className="text-[10px] text-sky-600 font-bold">{d.rainChance}%</span>
-                      <span className="font-extrabold text-slate-900">
-                        {convertTemp(d.high)}°
-                      </span>
-                      <span className="text-slate-500 font-medium">
-                        {convertTemp(d.low)}°
-                      </span>
+                      <span className="font-extrabold text-slate-900">{convertTemp(d.high)}°</span>
+                      <span className="text-slate-500 font-medium">{convertTemp(d.low)}°</span>
                     </div>
                   </div>
                 ))}
@@ -658,10 +814,12 @@ export const WeatherForecast: React.FC<WeatherForecastProps> = ({
           <div className="space-y-1">
             <h5 className="text-xs font-bold text-slate-800">Weather Telemetry Offline</h5>
             <p className="text-[11px] text-slate-600 font-mono">
-              Coordinates: {activeLocation.coordinates.lat.toFixed(4)}°N, {activeLocation.coordinates.lng.toFixed(4)}°E
+              Coordinates: {activeLocation.coordinates.lat.toFixed(4)}°N,{' '}
+              {activeLocation.coordinates.lng.toFixed(4)}°E
             </p>
             <p className="text-[10px] text-slate-500 max-w-xs mx-auto leading-relaxed">
-              Live meteorology requires an active network or weather provider setup. Route coordinates and offline navigation markers remain active.
+              Live meteorology requires an active network connection. Route coordinates and offline
+              navigation markers remain active.
             </p>
           </div>
           <button

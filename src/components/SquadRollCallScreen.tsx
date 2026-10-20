@@ -56,6 +56,7 @@ import {
   ShieldCheck,
   Search,
   Train,
+  Copy,
 } from 'lucide-react';
 import { SquadMember, ExcursionRequest, ScreenType, UserRole } from '../types';
 import { CallModal } from './modals/CallModal';
@@ -72,10 +73,14 @@ import {
   uploadMediaToVault,
   createSquadGroup,
   fetchSquadMembers,
+  fetchGroupJoinRequests,
+  respondToJoinRequest,
   updateMemberRole,
   manageMemberRole,
+  normalizeSquadCode,
   SquadGroupRecord,
   SquadMemberRecord,
+  SquadJoinRequestRecord,
 } from '../lib/supabase';
 
 interface SquadRollCallScreenProps {
@@ -134,10 +139,13 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
   const [allMembersSearchQuery, setAllMembersSearchQuery] = useState('');
   const [allMembersRoleFilter, setAllMembersRoleFilter] = useState<'all' | 'admins' | 'members'>('all');
 
-  // Super Admin Member Verification Queue state (No fake demo records)
+  // Super Admin Join Requests State (Database-backed & synchronized across devices)
   const [isVerificationRequired, setIsVerificationRequired] = useState(true);
   const squadKey = activeSquad?.id || 'default';
   const pendingStorageKey = `trailoPS_pending_requests_${squadKey}`;
+
+  const [joinRequests, setJoinRequests] = useState<SquadJoinRequestRecord[]>([]);
+  const [respondingRequestId, setRespondingRequestId] = useState<string | null>(null);
 
   const [pendingMembers, setPendingMembers] = useState<Array<{
     id: string;
@@ -148,37 +156,37 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
     bloodGroup: string;
     requestedAt: string;
     roleRequested: string;
-  }>>(() => {
-    const saved = localStorage.getItem(pendingStorageKey);
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) return parsed;
-      } catch {}
-    }
-    return [];
-  });
+  }>>([]);
 
-  // Cross-device and tab synchronization for pending join requests
+  // Synchronize pending Join Requests for this group from database/server
+  const loadGroupJoinRequests = async () => {
+    if (!activeSquad?.id) {
+      setJoinRequests([]);
+      return;
+    }
+    try {
+      const reqs = await fetchGroupJoinRequests(activeSquad.id, currentUserId);
+      setJoinRequests(reqs);
+    } catch {
+      // ignore transient error
+    }
+  };
+
   useEffect(() => {
-    const syncPending = () => {
-      const saved = localStorage.getItem(pendingStorageKey);
-      if (saved) {
-        try {
-          const parsed = JSON.parse(saved);
-          if (Array.isArray(parsed)) setPendingMembers(parsed);
-        } catch {}
-      } else {
-        setPendingMembers([]);
-      }
-    };
-    window.addEventListener('storage', syncPending);
-    window.addEventListener('trailoPS_pending_updated', syncPending);
+    if (!hasJoinedGroup || !activeSquad?.id) {
+      setJoinRequests([]);
+      return;
+    }
+    loadGroupJoinRequests();
+    const interval = setInterval(loadGroupJoinRequests, 3000);
+    window.addEventListener('trailoPS_join_requests_updated', loadGroupJoinRequests);
+    window.addEventListener('trailoPS_pending_updated', loadGroupJoinRequests);
     return () => {
-      window.removeEventListener('storage', syncPending);
-      window.removeEventListener('trailoPS_pending_updated', syncPending);
+      clearInterval(interval);
+      window.removeEventListener('trailoPS_join_requests_updated', loadGroupJoinRequests);
+      window.removeEventListener('trailoPS_pending_updated', loadGroupJoinRequests);
     };
-  }, [pendingStorageKey]);
+  }, [hasJoinedGroup, activeSquad?.id, currentUserId]);
 
   // Real device media file input reference for user uploads (Request 11)
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -650,8 +658,8 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
     ];
   });
 
-  // Fetch real squad members from Supabase when in an active squad
-  useEffect(() => {
+  // Fetch & synchronize real squad members from database when in an active squad
+  const syncSquadMembersList = async () => {
     if (!hasJoinedGroup || !activeSquad?.id) {
       if (!hasJoinedGroup) {
         setMembers([]);
@@ -659,27 +667,66 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
       return;
     }
 
-    let isMounted = true;
-    fetchSquadMembers(activeSquad.id).then((sbMembers) => {
-      if (!isMounted) return;
-      if (sbMembers && sbMembers.length > 0) {
+    try {
+      const rawMembers = await fetchSquadMembers(activeSquad.id);
+      const sbMembers = (rawMembers || []).filter((m) => Boolean(m && m.user_id));
+      if (sbMembers.length > 0) {
+        // Prevent unauthorized access to private group data if user is not an approved member
+        if (
+          currentUserId &&
+          activeSquad.creator_id !== currentUserId &&
+          !sbMembers.some((m) => m?.user_id === currentUserId)
+        ) {
+          onSetJoinedGroup(false);
+          setMembers([]);
+          onShowToast('Access restricted: Your join request is awaiting Super Admin approval.');
+          return;
+        }
+
         const mapped: SquadMember[] = sbMembers.map((m) => ({
           id: m.user_id,
-          name: m.profile?.full_name || (m.user_id === currentUserId ? `${currentUserName} (You)` : 'Squad Member'),
-          role: m.role === 'super_admin' ? 'Squad Commander' : m.role === 'admin' ? 'Sub-Admin' : 'Expedition Member',
-          roleHierarchy: m.role as any,
+          name:
+            m.profile?.full_name ||
+            (m.user_id === currentUserId ? `${currentUserName} (You)` : 'Squad Member'),
+          role:
+            m.role === 'super_admin'
+              ? 'Squad Commander'
+              : m.role === 'admin'
+              ? 'Sub-Admin'
+              : 'Expedition Member',
+          roleHierarchy: (m.role === 'admin' ? 'subgroup_admin' : m.role) as any,
           status: m.status === 'distress' ? 'missing' : 'present',
-          avatar: m.profile?.avatar_url || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=120&q=80',
+          avatar:
+            m.profile?.avatar_url ||
+            'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=120&q=80',
           distance: m.user_id === currentUserId ? '0m' : '15m',
           battery: 95,
           lastPing: 'Just now',
           phone: m.profile?.phone,
         }));
 
+        // Sync current user's role from database membership
+        const myMembership = sbMembers.find((m) => m?.user_id === currentUserId);
+        if (myMembership) {
+          const effectiveRole: UserRole =
+            myMembership.role === 'super_admin'
+              ? 'super_admin'
+              : myMembership.role === 'admin'
+              ? 'subgroup_admin'
+              : 'member';
+          if (effectiveRole !== userRole && onUpdateRole) {
+            onUpdateRole(effectiveRole);
+            localStorage.setItem('trailoPS_userRole', effectiveRole);
+          }
+        }
+
         // Mandatory Super Admin Check: 1 member is always Super Admin
-        if (mapped.length === 1 || !mapped.some(m => m.roleHierarchy === 'super_admin')) {
+        if (mapped.length === 1 || !mapped.some((m) => m.roleHierarchy === 'super_admin')) {
           mapped[0].roleHierarchy = 'super_admin';
-          mapped[0].role = mapped[0].id === (currentUserId || '1') ? 'Squad Commander (You)' : 'Squad Commander';
+          mapped[0].role =
+            mapped[0].id === (currentUserId || '1')
+              ? 'Squad Commander (You)'
+              : 'Squad Commander';
           if (mapped[0].id === (currentUserId || '1') || mapped[0].name.includes('(You)')) {
             if (onUpdateRole) onUpdateRole('super_admin');
             localStorage.setItem('trailoPS_userRole', 'super_admin');
@@ -687,13 +734,22 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
         }
 
         setMembers(mapped);
+        localStorage.setItem('trailoPS_squad_members', JSON.stringify(mapped));
       }
-    });
+    } catch {
+      // ignore transient error
+    }
+  };
 
+  useEffect(() => {
+    syncSquadMembersList();
+    const interval = setInterval(syncSquadMembersList, 3500);
+    window.addEventListener('trailoPS_members_updated', syncSquadMembersList);
     return () => {
-      isMounted = false;
+      clearInterval(interval);
+      window.removeEventListener('trailoPS_members_updated', syncSquadMembersList);
     };
-  }, [hasJoinedGroup, activeSquad?.id, currentUserId, currentUserName, currentUserAvatar, onUpdateRole]);
+  }, [hasJoinedGroup, activeSquad?.id, currentUserId, currentUserName, currentUserAvatar]);
 
   // Mandatory Single Member Super Admin Auto-Promotion
   useEffect(() => {
@@ -779,49 +835,72 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
     onShowToast('Excursion request declined. Squad directed to remain in camp perimeter.');
   };
 
-  // Super Admin Verification Handlers (Request 7)
+  // Super Admin Join Request Approval & Rejection Handlers (Enforced in Database + Server)
+  const isCurrentUserSuperAdmin =
+    userRole === 'super_admin' ||
+    (!!currentUserId && activeSquad?.creator_id === currentUserId) ||
+    members.some((m) => m.id === currentUserId && m.roleHierarchy === 'super_admin');
+
+  const handleRespondToJoinRequest = async (
+    request: SquadJoinRequestRecord,
+    action: 'accept' | 'reject'
+  ) => {
+    if (!activeSquad?.id || !currentUserId) return;
+    if (!isCurrentUserSuperAdmin) {
+      onShowToast('Only an authorized Super Admin of this group can approve or reject join requests.');
+      return;
+    }
+
+    setRespondingRequestId(request.id);
+    try {
+      const res = await respondToJoinRequest(
+        request.id,
+        activeSquad.id,
+        currentUserId,
+        action
+      );
+
+      if (!res.success) {
+        onShowToast(res.error || `Failed to ${action} join request.`);
+        return;
+      }
+
+      // Immediately update local joinRequests state and re-sync member roster
+      setJoinRequests((prev) =>
+        prev.map((r) =>
+          r.id === request.id
+            ? { ...r, status: action === 'accept' ? 'accepted' : 'rejected' }
+            : r
+        )
+      );
+
+      await Promise.all([syncSquadMembersList(), loadGroupJoinRequests()]);
+      onRefreshSquad?.();
+
+      if (action === 'accept') {
+        onShowToast(
+          `✓ Approved ${request.user_name || 'Member'}! Added to "${activeSquad.name}" and synced across devices.`
+        );
+      } else {
+        onShowToast(`✕ Rejected join request from ${request.user_name || 'Requester'}.`);
+      }
+    } finally {
+      setRespondingRequestId(null);
+    }
+  };
+
   const handleVerifyPendingMember = (id: string) => {
-    const target = pendingMembers.find((p) => p.id === id);
-    if (!target) return;
-
-    const newSquadMember: SquadMember = {
-      id: `m-${Date.now()}`,
-      name: target.name,
-      role: target.roleRequested || 'Expedition Member',
-      roleHierarchy: 'member',
-      status: 'present',
-      avatar: target.avatar,
-      distance: '15m',
-      battery: 95,
-      lastPing: 'Just now',
-      phone: target.phone,
-    };
-
-    setMembers((prev) => {
-      const next = [...prev, newSquadMember];
-      localStorage.setItem('trailoPS_squad_members', JSON.stringify(next));
-      return next;
-    });
-
-    setPendingMembers((prev) => {
-      const next = prev.filter((p) => p.id !== id);
-      localStorage.setItem(pendingStorageKey, JSON.stringify(next));
-      return next;
-    });
-
-    window.dispatchEvent(new CustomEvent('trailoPS_members_updated'));
-    window.dispatchEvent(new CustomEvent('trailoPS_pending_updated'));
-    onShowToast(`✓ ${target.name} verified and added to active squad!`);
+    const req = joinRequests.find((r) => r.id === id);
+    if (req) {
+      handleRespondToJoinRequest(req, 'accept');
+    }
   };
 
   const handleKickPendingMember = (id: string, name: string) => {
-    setPendingMembers((prev) => {
-      const next = prev.filter((p) => p.id !== id);
-      localStorage.setItem(pendingStorageKey, JSON.stringify(next));
-      return next;
-    });
-    window.dispatchEvent(new CustomEvent('trailoPS_pending_updated'));
-    onShowToast(`✕ ${name} request declined.`);
+    const req = joinRequests.find((r) => r.id === id);
+    if (req) {
+      handleRespondToJoinRequest(req, 'reject');
+    }
   };
 
   const handleKickActiveMember = (id: string, name: string) => {
@@ -969,8 +1048,22 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
     return `${hours}h ${mins}m`;
   };
 
+  const getEffectiveSquadCode = (): string => {
+    if (activeSquad?.code) return normalizeSquadCode(activeSquad.code);
+    try {
+      const saved = localStorage.getItem('trailoPS_active_squad');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed?.code) return normalizeSquadCode(parsed.code);
+      }
+    } catch {}
+    return '';
+  };
+
+  const effectiveGroupCode = getEffectiveSquadCode();
+
   const handleShareGroup = async () => {
-    const code = activeSquad?.code || 'TRK-842';
+    const code = effectiveGroupCode;
     const name = activeSquad?.name || tripName;
     const dest = activeSquad?.destination || 'Expedition Base';
     const shareUrl = `${window.location.origin}/?join=${code}`;
@@ -1041,11 +1134,27 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
 
         {/* Trip Name & Editable title */}
         <div className="absolute bottom-3 left-4 right-4 text-white z-10">
-          <div className="flex items-center gap-2 mb-1">
+          <div className="flex items-center gap-2 mb-1 flex-wrap">
             <span className="px-2 py-0.5 rounded-md bg-emerald-500/80 text-white text-[10px] font-extrabold uppercase tracking-wider backdrop-blur-xs">
               Expedition Squad
             </span>
-            <span className="text-emerald-300 text-xs font-semibold">Siliguri → Pelling Ridge</span>
+            {hasJoinedGroup && (
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard.writeText(effectiveGroupCode);
+                  onShowToast(`Squad invitation code "${effectiveGroupCode}" copied!`);
+                }}
+                className="px-2 py-0.5 rounded-md bg-amber-400/95 hover:bg-amber-300 text-slate-950 text-[10px] font-mono font-black tracking-wider flex items-center gap-1 shadow-xs cursor-pointer transition-transform active:scale-95"
+                title="Tap to copy 6-character squad invitation code"
+              >
+                <span>CODE: {effectiveGroupCode}</span>
+                <Copy className="w-2.5 h-2.5" />
+              </button>
+            )}
+            <span className="text-emerald-300 text-xs font-semibold truncate">
+              {activeSquad?.destination || 'Siliguri → Pelling Ridge'}
+            </span>
           </div>
 
           <div className="flex items-center justify-between">
@@ -1376,7 +1485,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
               {(() => {
                 const activeJourney = trainDirection === 'onward' ? onwardJourney : returnJourney;
                 const isAdmin = userRole === 'super_admin' || userRole === 'subgroup_admin';
-                const mySeat = seatAssignments.find((s) => s.user_id === currentUserId);
+                const mySeat = seatAssignments.find((s) => s && s.user_id === currentUserId);
 
                 if (!activeJourney) {
                   return (
@@ -1716,93 +1825,110 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                 </button>
               </div>
 
-              {/* SUPER ADMIN MEMBER VERIFICATION & APPROVAL TOGGLE (Request 7) */}
-              <div className="mt-3 p-3 rounded-2xl bg-slate-50 border border-slate-200 space-y-2">
+              {/* JOIN REQUESTS SECTION (Super Admin Approval Governance) */}
+              <div
+                id="squad-join-requests-section"
+                className="mt-3 p-3.5 rounded-2xl bg-slate-50 border border-slate-200 space-y-2.5"
+              >
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <ShieldCheck className="w-4 h-4 text-[#0f5238]" />
+                    <div className="w-7 h-7 rounded-xl bg-emerald-100 text-[#0f5238] flex items-center justify-center shrink-0">
+                      <ShieldCheck className="w-4 h-4" />
+                    </div>
                     <div>
-                      <span className="text-[11px] font-bold text-slate-800 block">
-                        Super Admin Verification Required
-                      </span>
-                      <span className="text-[9px] text-slate-500 block">
-                        Verify genuine members before admitting to squad
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs font-extrabold text-slate-900">
+                          Join Requests
+                        </span>
+                        {joinRequests.filter((r) => r.status === 'pending').length > 0 && (
+                          <span className="px-2 py-0.2 rounded-full bg-amber-500 text-white text-[10px] font-black animate-pulse">
+                            {joinRequests.filter((r) => r.status === 'pending').length} Pending
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-[10px] text-slate-500 block">
+                        {isCurrentUserSuperAdmin
+                          ? 'Super Admin Authority: Review & approve new squad members'
+                          : 'Only authorized Super Admins may approve or reject requests'}
                       </span>
                     </div>
                   </div>
 
                   <button
                     type="button"
-                    onClick={() => {
-                      setIsVerificationRequired(!isVerificationRequired);
-                      onShowToast(
-                        !isVerificationRequired
-                          ? 'Member Verification Required: Super admin must approve new members!'
-                          : 'Member Verification disabled: New members can join directly.'
-                      );
-                    }}
-                    className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors cursor-pointer ${
-                      isVerificationRequired ? 'bg-[#0f5238]' : 'bg-slate-300'
-                    }`}
-                    title="Toggle Member Verification Required"
+                    onClick={loadGroupJoinRequests}
+                    className="p-1.5 rounded-lg bg-white hover:bg-slate-100 border border-slate-200 text-slate-600 cursor-pointer transition-colors"
+                    title="Refresh Join Requests"
                   >
-                    <span
-                      className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
-                        isVerificationRequired ? 'translate-x-5' : 'translate-x-1'
-                      }`}
-                    />
+                    <RefreshCcw className="w-3.5 h-3.5" />
                   </button>
                 </div>
 
-                {/* Pending Verification Approvals */}
-                {isVerificationRequired && pendingMembers.length > 0 && (
-                  <div className="pt-2 border-t border-slate-200/80 space-y-1.5">
-                    <span className="text-[10px] font-bold text-amber-900 flex items-center gap-1 uppercase tracking-wider">
-                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping" />
-                      Pending Verification Queue ({pendingMembers.length})
-                    </span>
-
-                    {pendingMembers.map((p) => (
-                      <div
-                        key={p.id}
-                        className="p-2 rounded-xl bg-white border border-amber-200 shadow-2xs flex items-center justify-between gap-2"
-                      >
-                        <div className="flex items-center gap-2 min-w-0">
-                          <img
-                            src={p.avatar}
-                            alt={p.name}
-                            className="w-7 h-7 rounded-full object-cover border border-amber-300 shrink-0"
-                          />
-                          <div className="min-w-0">
-                            <span className="text-xs font-bold text-slate-900 truncate block">{p.name}</span>
-                            <span className="text-[10px] text-slate-500 block truncate">
-                              {p.phone} · Req: {p.roleRequested}
-                            </span>
+                {/* Pending Join Requests Queue */}
+                {joinRequests.filter((r) => r.status === 'pending').length === 0 ? (
+                  <div className="p-3 rounded-xl bg-white border border-dashed border-slate-200 text-center text-[11px] text-slate-500">
+                    No pending join requests for this group right now. Share group code{' '}
+                    <strong className="font-mono text-slate-800">{effectiveGroupCode || '—'}</strong> to invite members.
+                  </div>
+                ) : (
+                  <div className="pt-1 space-y-2">
+                    {joinRequests
+                      .filter((r) => r.status === 'pending')
+                      .map((req) => (
+                        <div
+                          key={req.id}
+                          className="p-2.5 rounded-xl bg-white border-2 border-amber-300/80 shadow-2xs flex items-center justify-between gap-2.5 animate-in fade-in duration-150"
+                        >
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <img
+                              src={
+                                req.user_avatar ||
+                                'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=120&q=80'
+                              }
+                              alt={req.user_name || 'Requester'}
+                              className="w-8 h-8 rounded-full object-cover border border-amber-300 shrink-0"
+                            />
+                            <div className="min-w-0">
+                              <span className="text-xs font-extrabold text-slate-900 truncate block">
+                                {req.user_name || 'Trekker Applicant'}
+                              </span>
+                              <span className="text-[10px] text-slate-500 block truncate">
+                                {req.user_email || req.user_phone || 'Verified Account'}
+                                {req.blood_group ? ` · Blood: ${req.blood_group}` : ''}
+                              </span>
+                            </div>
                           </div>
-                        </div>
 
-                        <div className="flex items-center gap-1 shrink-0">
-                          <button
-                            type="button"
-                            onClick={() => handleVerifyPendingMember(p.id)}
-                            className="px-2 py-1 rounded-lg bg-[#0f5238] hover:bg-[#1b5e3f] text-white text-[10px] font-bold flex items-center gap-0.5 cursor-pointer shadow-2xs"
-                            title="Verify and Add to Squad"
-                          >
-                            <Check className="w-3 h-3" />
-                            <span>Verify</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleKickPendingMember(p.id, p.name)}
-                            className="px-2 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-[10px] font-bold flex items-center gap-0.5 cursor-pointer"
-                            title="Kick / Decline"
-                          >
-                            <UserX className="w-3 h-3" />
-                            <span>Kick</span>
-                          </button>
+                          {isCurrentUserSuperAdmin ? (
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <button
+                                type="button"
+                                disabled={respondingRequestId === req.id}
+                                onClick={() => handleRespondToJoinRequest(req, 'accept')}
+                                className="px-2.5 py-1.5 rounded-lg bg-[#0f5238] hover:bg-emerald-800 text-white text-[10px] font-extrabold flex items-center gap-1 cursor-pointer shadow-2xs disabled:opacity-50"
+                                title="Accept Join Request"
+                              >
+                                <Check className="w-3 h-3" />
+                                <span>Accept</span>
+                              </button>
+                              <button
+                                type="button"
+                                disabled={respondingRequestId === req.id}
+                                onClick={() => handleRespondToJoinRequest(req, 'reject')}
+                                className="px-2.5 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-[10px] font-extrabold flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                                title="Reject Join Request"
+                              >
+                                <UserX className="w-3 h-3" />
+                                <span>Reject</span>
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="text-[10px] font-bold text-amber-800 bg-amber-50 px-2 py-1 rounded-lg border border-amber-200 shrink-0">
+                              Awaiting Super Admin
+                            </span>
+                          )}
                         </div>
-                      </div>
-                    ))}
+                      ))}
                   </div>
                 )}
               </div>
@@ -3964,22 +4090,30 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
         onClose={() => setIsCreateModalOpen(false)}
         onCreate={async (trip) => {
           setTripName(trip.name);
-          if (currentUserId) {
-            try {
-              await createSquadGroup(
-                currentUserId,
-                trip.name,
-                trip.destination,
-                trip.budgetPerMember,
-                trip.passkey
-              );
-              onRefreshSquad?.();
-            } catch (err) {
-              console.warn('Failed to save squad to Supabase:', err);
+          try {
+            const res = await createSquadGroup(
+              currentUserId || 'user_self',
+              trip.name,
+              trip.destination,
+              trip.budgetPerMember,
+              undefined,
+              trip.departureDate,
+              trip.returnDate,
+              currentUserName,
+              undefined,
+              currentUserAvatar
+            );
+            if (!res.success || !res.group) {
+              onShowToast(res.error || 'Failed to create squad group.');
+              return;
             }
+            onRefreshSquad?.();
+            onSetJoinedGroup(true);
+            onShowToast(`Squad route "${res.group.name}" created! Unique Code: ${res.group.code}`);
+          } catch (err) {
+            console.warn('Failed to save squad:', err);
+            onShowToast('Failed to create squad group.');
           }
-          onSetJoinedGroup(true);
-          onShowToast(`Squad route "${trip.name}" created! Invitation code: ${trip.passkey}`);
         }}
       />
 

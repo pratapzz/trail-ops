@@ -344,7 +344,7 @@ export const TrainJourneyModal: React.FC<TrainJourneyModalProps> = ({
                     onChange={(e) => setSelectedMemberId(e.target.value)}
                     className="col-span-2 bg-slate-950 border border-slate-700 rounded-xl px-2.5 py-1.5 text-white text-xs"
                   >
-                    {members.map((m) => (
+                    {members.filter((m) => Boolean(m && m.user_id)).map((m) => (
                       <option key={m.user_id} value={m.user_id}>
                         {m.profile?.full_name || 'Squad Member'}
                       </option>

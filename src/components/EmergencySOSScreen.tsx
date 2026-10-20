@@ -27,6 +27,7 @@ import { CallModal } from './modals/CallModal';
 import { ChatModal } from './modals/ChatModal';
 import { DistressAlertModal } from './modals/DistressAlertModal';
 import { AddEmergencyContactModal } from './modals/AddEmergencyContactModal';
+import { InteractiveTrailMap } from './InteractiveTrailMap';
 import {
   EmergencyContactRecord,
   fetchEmergencyContacts,
@@ -106,6 +107,7 @@ export const EmergencySOSScreen: React.FC<EmergencySOSScreenProps> = ({
   const [isAddContactModalOpen, setIsAddContactModalOpen] = useState(false);
   const [newContactName, setNewContactName] = useState('');
   const [newContactPhone, setNewContactPhone] = useState('');
+  const [liveCoords, setLiveCoords] = useState({ lat: 27.3184, lng: 88.2412 });
 
   // Direct phone dialer redirect using tel: protocol
   const handleDirectDial = (phone: string, name?: string) => {
@@ -542,104 +544,72 @@ export const EmergencySOSScreen: React.FC<EmergencySOSScreenProps> = ({
           </div>
         </div>
 
-        {/* Real-Time Mini Radar Map Card */}
-        <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-xs">
-          <div className="flex items-center justify-between mb-3">
+        {/* Real-Time Interactive Map & Proximity Mesh Radar Card (Supports 1 & 2-Finger Touch Move/Zoom) */}
+        <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-xs space-y-2.5">
+          <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <div className="w-8 h-8 rounded-lg bg-teal-100 text-teal-800 flex items-center justify-center">
                 <Navigation className="w-4 h-4" />
               </div>
               <div>
-                <h3 className="text-sm font-bold text-slate-900">Proximity Mesh Radar</h3>
-                <p className="text-[11px] text-slate-500">4 active units within 1.2km</p>
+                <h3 className="text-sm font-bold text-slate-900">
+                  Live Trail Map &amp; Proximity Radar
+                </h3>
+                <p className="text-[11px] text-slate-500">
+                  Use 1 or 2 fingers to move &amp; pinch-zoom map
+                </p>
               </div>
             </div>
             <span className="text-[10px] bg-teal-50 text-teal-700 border border-teal-200 px-2 py-0.5 rounded-full font-bold">
-              10 Hz Scan
+              Multi-Touch Active
             </span>
           </div>
 
-          {/* Map Display Container with Animated Radar Sweep Overlay */}
-          <div className="relative w-full h-44 rounded-xl overflow-hidden border border-slate-200 bg-slate-900">
-            {/* Topographic background simulation */}
-            <div className="absolute inset-0 bg-gradient-to-tr from-slate-900 via-emerald-950 to-slate-900 opacity-90" />
-            <svg
-              className="absolute inset-0 w-full h-full opacity-25"
-              viewBox="0 0 300 180"
-              fill="none"
-              stroke="#10b981"
-            >
-              <path d="M10 40 Q 60 20 120 50 T 250 30" strokeWidth="1" />
-              <path d="M10 80 Q 80 50 150 90 T 290 70" strokeWidth="1" />
-              <path d="M10 120 Q 90 90 180 130 T 290 110" strokeWidth="1" />
-              <path d="M10 160 Q 110 140 200 160 T 290 150" strokeWidth="1" />
-            </svg>
-
-            {/* Rotating Radar Sweep Line */}
-            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-              <div className="w-44 h-44 rounded-full border border-teal-400/30" />
-              <div className="w-28 h-28 rounded-full border border-teal-400/40" />
-              <div className="absolute w-44 h-44 rounded-full overflow-hidden animate-radar-sweep">
-                <div className="w-1/2 h-1/2 bg-gradient-to-br from-teal-400/35 to-transparent origin-bottom-right" />
-              </div>
-            </div>
-
-            {/* Current User Beacon */}
-            <div className="absolute top-[52%] left-[48%] -translate-x-1/2 -translate-y-1/2 flex items-center justify-center">
-              <span className="animate-ping absolute h-8 w-8 rounded-full bg-rose-500 opacity-75" />
-              <span className="relative flex items-center justify-center h-6 w-6 rounded-full bg-rose-600 text-white shadow-md">
-                <MapPin className="w-3.5 h-3.5 fill-current" />
-              </span>
-              <span className="absolute -bottom-5 bg-rose-600 text-white text-[9px] px-1.5 py-0.5 rounded-full font-bold shadow-xs whitespace-nowrap">
-                YOU
-              </span>
-            </div>
-
-            {/* Squad Member Lead 1 Marker (Real) */}
-            {leads[0] && (
-              <div
-                onClick={() => {
-                  setSelectedCallContact({
-                    name: leads[0].name,
-                    title: leads[0].title,
-                    phone: leads[0].phone,
-                    avatar: leads[0].avatar,
-                  });
-                }}
-                className="absolute top-[28%] left-[26%] flex flex-col items-center cursor-pointer hover:scale-110 transition-transform"
-              >
-                <span className="h-4 w-4 rounded-full bg-emerald-500 border-2 border-white shadow-sm flex items-center justify-center" />
-                <span className="bg-white/95 text-emerald-800 text-[9px] px-1.5 py-0.5 rounded-md shadow-xs mt-0.5 font-bold border border-emerald-100">
-                  {leads[0].name} (Squad)
-                </span>
-              </div>
-            )}
-
-            {/* Squad Member Lead 2 Marker (Real) */}
-            {leads[1] && (
-              <div
-                onClick={() => {
-                  setSelectedCallContact({
-                    name: leads[1].name,
-                    title: leads[1].title,
-                    phone: leads[1].phone,
-                    avatar: leads[1].avatar,
-                  });
-                }}
-                className="absolute top-[65%] right-[22%] flex flex-col items-center cursor-pointer hover:scale-110 transition-transform"
-              >
-                <span className="h-4 w-4 rounded-full bg-sky-500 border-2 border-white shadow-sm" />
-                <span className="bg-white/95 text-sky-800 text-[9px] px-1.5 py-0.5 rounded-md shadow-xs mt-0.5 font-bold border border-sky-100">
-                  {leads[1].name} (Squad)
-                </span>
-              </div>
-            )}
-
-            {/* Compass Heading */}
-            <div className="absolute top-2 right-2 bg-white/95 backdrop-blur-xs border border-slate-200 rounded-full px-2 py-0.5 flex items-center gap-1 text-[10px] font-extrabold text-slate-800 shadow-2xs">
-              <span className="text-rose-600">▲</span> N 014°
-            </div>
-          </div>
+          <InteractiveTrailMap
+            center={{ lat: liveCoords.lat, lng: liveCoords.lng }}
+            zoom={13}
+            heightClass="h-56"
+            markers={[
+              {
+                id: 'you',
+                lat: liveCoords.lat,
+                lng: liveCoords.lng,
+                label: 'YOU (Live GPS)',
+                color: 'rose',
+                isUser: true,
+              },
+              ...(leads[0]
+                ? [
+                    {
+                      id: leads[0].id,
+                      lat: liveCoords.lat + 0.0045,
+                      lng: liveCoords.lng - 0.0035,
+                      label: `${leads[0].name} (Squad)`,
+                      color: 'emerald' as const,
+                    },
+                  ]
+                : []),
+              ...(leads[1]
+                ? [
+                    {
+                      id: leads[1].id,
+                      lat: liveCoords.lat - 0.0038,
+                      lng: liveCoords.lng + 0.0042,
+                      label: `${leads[1].name} (Squad)`,
+                      color: 'blue' as const,
+                    },
+                  ]
+                : []),
+            ]}
+            onLocateGps={(coords) => {
+              setLiveCoords((prev) => ({
+                ...prev,
+                lat: coords.lat,
+                lng: coords.lng,
+              }));
+              onShowToast('📍 Centered map on your live GPS coordinates!');
+            }}
+          />
         </div>
 
         {/* DEDICATED EMERGENCY CONTACTS SECTION */}

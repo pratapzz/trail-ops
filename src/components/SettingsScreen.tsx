@@ -31,6 +31,10 @@ import {
   AlertOctagon,
   ShieldCheck,
   ArrowRight,
+  Smartphone,
+  Download,
+  GitBranch,
+  Copy,
 } from 'lucide-react';
 import { ProfileFormData, ScreenType, UserRole } from '../types';
 import { TransferSuperAdminModal } from './modals/TransferSuperAdminModal';
@@ -732,6 +736,8 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
             </div>
           )}
         </section>
+
+
 
         {/* DEVELOPER ATTRIBUTION CARD */}
         <section className="rounded-3xl p-4 bg-gradient-to-br from-slate-900 via-emerald-950 to-slate-950 text-white shadow-lg border border-emerald-500/30 relative overflow-hidden">

@@ -1,0 +1,92 @@
+name: Build TrailOPS Android APK
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    name: Compile Web Bundle & Build Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Java JDK 21 for Android Gradle
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Install Project Dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: Build Production Web Bundle
+        run: npm run build
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+
+      - name: Install Capacitor Android Tooling
+        run: npm install @capacitor/core @capacitor/cli @capacitor/android --no-save --legacy-peer-deps
+
+      - name: Initialize & Sync Capacitor Android Project
+        run: |
+          if [ ! -d "android" ]; then
+            npx cap add android
+          fi
+          npx cap sync android
+
+      - name: Grant Android Manifest Permissions (Location, Phone Dialer, Audio)
+        run: |
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          if [ -f "$MANIFEST" ]; then
+            sed -i 's|<application|<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />\n    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />\n    <uses-permission android:name="android.permission.VIBRATE" />\n    <uses-permission android:name="android.permission.WAKE_LOCK" />\n    <application|g' "$MANIFEST"
+          fi
+
+      - name: Build Android APK via Gradle
+        working-directory: ./android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: Rename APK to TrailOPS-Expedition.apk
+        run: |
+          cp android/app/build/outputs/apk/debug/app-debug.apk ./TrailOPS-Expedition.apk
+
+      - name: Upload TrailOPS-Expedition.apk to GitHub Actions Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: TrailOPS-Expedition-APK
+          path: ./TrailOPS-Expedition.apk
+          retention-days: 30
+
+      - name: Publish Latest APK Release
+        uses: softprops/action-gh-release@v2
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: "TrailOPS Expedition Android APK (Build #${{ github.run_number }})"
+          body: |
+            ### TrailOPS Expedition - Android APK Release
+            - **Emergency SOS**: Dedicated squad Emergency Contacts with local persistence and 1-tap `tel:` native phone dialer.
+            - **Continuous SOS Siren**: Cross-device & background emergency alarm until manually muted.
+            - **Super Admin Enforcement**: Automatic Super Admin assignment for single-member squads & squad creators, safe transfer, and full group deletion.
+
+            **How to install on Android:**
+            1. Download `TrailOPS-Expedition.apk` below.
+            2. Open the file on your Android phone and tap **Install**.
+          files: ./TrailOPS-Expedition.apk
+          prerelease: false

@@ -73,7 +73,16 @@ export default function App() {
     return byId === 'true' || byEmail === 'true';
   });
 
-  const [activeSquad, setActiveSquad] = useState<SquadGroupRecord | null>(null);
+  const [activeSquad, setActiveSquad] = useState<SquadGroupRecord | null>(() => {
+    try {
+      const saved = localStorage.getItem('trailoPS_active_squad');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && parsed.id && parsed.code) return parsed;
+      }
+    } catch {}
+    return null;
+  });
 
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [isSOSModalOpen, setIsSOSModalOpen] = useState(false);
@@ -546,29 +555,27 @@ export default function App() {
       localStorage.setItem(`trailoPS_isProfileComplete_${userId}`, 'true');
       localStorage.setItem(`trailoPS_isProfileComplete_${emailKey}`, 'true');
 
-      // Check group membership in Supabase
+      // Check group membership in database
       const userSquad = await fetchUserSquad(userId);
       if (userSquad) {
         setActiveSquad(userSquad);
         setHasJoinedGroup(true);
         localStorage.setItem(`trailoPS_hasJoinedGroup_${userId}`, 'true');
         localStorage.setItem(`trailoPS_hasJoinedGroup_${emailKey}`, 'true');
+        localStorage.setItem('trailoPS_active_squad', JSON.stringify(userSquad));
+        localStorage.setItem('trailoPS_active_squad_id', userSquad.id);
         setTripDestination({
           name: userSquad.name,
           destination: userSquad.destination,
           coordinates: { lat: 27.3184, lng: 88.2412 },
-          departureDate: '2026-10-24',
+          departureDate: userSquad.startDate || '2026-10-24',
           returnDate: '2026-10-30',
         });
       } else {
-        // Keep local joined group state if already active, do not abruptly unset
-        const wasJoinedLocally =
-          localStorage.getItem(`trailoPS_hasJoinedGroup_${userId}`) === 'true' ||
-          localStorage.getItem(`trailoPS_hasJoinedGroup_${emailKey}`) === 'true';
-        if (!wasJoinedLocally) {
-          setActiveSquad(null);
-          setHasJoinedGroup(false);
-        }
+        setActiveSquad(null);
+        setHasJoinedGroup(false);
+        localStorage.setItem(`trailoPS_hasJoinedGroup_${userId}`, 'false');
+        localStorage.setItem(`trailoPS_hasJoinedGroup_${emailKey}`, 'false');
       }
 
       // Strictly transition to gateway ONLY if user was on the signin screen
@@ -590,10 +597,14 @@ export default function App() {
           setCurrentUserName(parsed.fullName);
           setCurrentUserAvatar(parsed.avatarUrl);
           setIsProfileComplete(true);
-          const joined =
-            localStorage.getItem(`trailoPS_hasJoinedGroup_${userId}`) === 'true' ||
-            localStorage.getItem(`trailoPS_hasJoinedGroup_${emailKey}`) === 'true';
-          setHasJoinedGroup(joined);
+          const userSquad = await fetchUserSquad(userId);
+          if (userSquad) {
+            setActiveSquad(userSquad);
+            setHasJoinedGroup(true);
+          } else {
+            setActiveSquad(null);
+            setHasJoinedGroup(false);
+          }
           setCurrentScreen((prevScreen) => (prevScreen === 'signin' ? 'gateway' : prevScreen));
           showToast(`Welcome back, ${parsed.fullName}!`);
           return;
@@ -611,6 +622,7 @@ export default function App() {
       setCurrentUserAvatar(freshDraft.avatarUrl);
       setIsProfileComplete(false);
       setHasJoinedGroup(false);
+      setActiveSquad(null);
       localStorage.setItem(`trailoPS_isProfileComplete_${userId}`, 'false');
       localStorage.setItem(`trailoPS_isProfileComplete_${emailKey}`, 'false');
       localStorage.setItem(`trailoPS_hasJoinedGroup_${userId}`, 'false');
@@ -688,8 +700,8 @@ export default function App() {
     localStorage.setItem(`trailoPS_isProfileComplete_${activeUserId}`, 'true');
     localStorage.setItem(`trailoPS_isProfileComplete_${activeEmail}`, 'true');
 
-    // Persist to Supabase if configured
-    if (isSupabaseConfigured() && currentUserId) {
+    // Persist to database (Supabase + Server DB)
+    if (activeUserId) {
       try {
         const combinedMedical = [
           data.medications ? `Medications: ${data.medications}` : '',
@@ -698,7 +710,7 @@ export default function App() {
         ].filter(Boolean).join(' | ');
 
         await upsertProfile({
-          id: currentUserId,
+          id: activeUserId,
           email: activeEmail,
           full_name: data.fullName,
           avatar_url: data.avatarUrl,
@@ -714,7 +726,7 @@ export default function App() {
           is_profile_complete: true,
         });
       } catch (err) {
-        console.warn('Failed to upsert profile to Supabase:', err);
+        console.warn('Failed to upsert profile:', err);
       }
     }
 
@@ -808,6 +820,8 @@ export default function App() {
               hasJoinedGroup={hasJoinedGroup}
               onSetJoinedGroup={handleSetJoinedGroup}
               userName={profileData.fullName}
+              currentUserId={currentUserId}
+              currentUserEmail={currentUserEmail}
               avatarUrl={profileData.avatarUrl}
               onOpenSOS={() => setIsSOSModalOpen(true)}
               tripBudget={tripBudget}
@@ -820,6 +834,27 @@ export default function App() {
               departureDate={tripDestination.departureDate}
               activeSquadId={activeSquad?.id}
               activeSquad={activeSquad}
+              onSquadJoined={(group, role) => {
+                setActiveSquad(group);
+                setHasJoinedGroup(true);
+                localStorage.setItem('trailoPS_active_squad', JSON.stringify(group));
+                localStorage.setItem('trailoPS_active_squad_id', group.id);
+                if (role) {
+                  setUserRole(role);
+                  localStorage.setItem('trailoPS_userRole', role);
+                }
+                if (currentUserId) {
+                  localStorage.setItem(`trailoPS_hasJoinedGroup_${currentUserId}`, 'true');
+                }
+                if (currentUserEmail) {
+                  localStorage.setItem(`trailoPS_hasJoinedGroup_${currentUserEmail}`, 'true');
+                }
+                setTripDestination((prev) => ({
+                  ...prev,
+                  name: group.name,
+                  destination: group.destination || prev.destination,
+                }));
+              }}
               onUpdateTripDestination={(trip) => {
                 const updatedTrip = {
                   name: trip.name,
@@ -850,6 +885,12 @@ export default function App() {
             <FeedScreen
               onNavigate={(screen) => setCurrentScreen(screen)}
               onShowToast={showToast}
+              hasJoinedGroup={hasJoinedGroup}
+              activeSquad={activeSquad}
+              userRole={userRole}
+              currentUserId={currentUserId}
+              currentUserName={profileData.fullName}
+              currentUserAvatar={profileData.avatarUrl}
             />
           )}
 
@@ -1027,6 +1068,9 @@ export default function App() {
             showToast(`Joined ${squad.name} successfully!`);
           }}
           currentUserId={currentUserId}
+          currentUserName={profileData.fullName}
+          currentUserEmail={currentUserEmail}
+          currentUserAvatar={profileData.avatarUrl}
           onShowToast={showToast}
         />
       )}
