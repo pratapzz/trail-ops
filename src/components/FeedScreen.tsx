@@ -35,59 +35,30 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
 
   const isAuthorizedAdmin = userRole === 'super_admin' || userRole === 'subgroup_admin';
 
-  const [announcements, setAnnouncements] = useState<FeedPost[]>([
-    {
-      id: 'ann-1',
-      author: 'Prof. Roy (Faculty Lead)',
-      role: 'Super Admin • Expedition Command',
-      avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=150&q=80',
-      timestamp: '12m ago',
-      content:
-        '⚠️ HIGH RIDGE WEATHER WARNING: Wind gusts exceeding 48km/h on Pelling Ridge Marker 4. Basecamp assembly in effect. Secure all tents and report to your Sub-Group Lead immediately.',
-      type: 'text',
-      isAnnouncement: true,
-      announcementPriority: 'critical',
-      likes: 38,
-      commentsCount: 6,
-    },
-    {
-      id: 'ann-2',
-      author: 'Arjun Sen (Scout Lead)',
-      role: 'Sub-Group Admin • Scout Team Alpha',
-      avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=150&q=80',
-      timestamp: '1h ago',
-      content:
-        '📢 WATER & PERMIT CHECKPOINT: All members of Scout Team Alpha and Medical Vanguard must verify forest permits and refill hydration bladders at Yuksom Rest Point before 15:30.',
-      type: 'text',
-      isAnnouncement: true,
-      announcementPriority: 'advisory',
-      likes: 22,
-      commentsCount: 4,
-    },
-    {
-      id: 'ann-3',
-      author: 'Dr. Anita Roy',
-      role: 'Super Admin • Medical Officer',
-      avatar: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&w=150&q=80',
-      timestamp: '3h ago',
-      content:
-        'ℹ️ MEDICAL ROUTINE: Daily oxygen saturation and pulse rate checks will be recorded at Camp Ridge Marker #3 tent from 17:00 to 18:30. Keep your personal medical record handy.',
-      type: 'text',
-      isAnnouncement: true,
-      announcementPriority: 'info',
-      likes: 29,
-      commentsCount: 3,
-    },
-  ]);
+  const [announcements, setAnnouncements] = useState<FeedPost[]>(() => {
+    const saved = localStorage.getItem('trailoPS_feed_announcements');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {}
+    }
+    return [];
+  });
+
+  React.useEffect(() => {
+    localStorage.setItem('trailoPS_feed_announcements', JSON.stringify(announcements));
+  }, [announcements]);
 
   const handleCreateAnnouncement = (e: React.FormEvent) => {
     e.preventDefault();
     if (!announcementText.trim()) return;
 
+    const authorRoleLabel = userRole === 'super_admin' ? 'Squad Commander (You)' : 'Sub-Group Lead (You)';
     const newPost: FeedPost = {
       id: `ann-${Date.now()}`,
-      author: userRole === 'super_admin' ? 'Prof. Roy (You)' : 'Arjun Sen (You)',
-      role: userRole === 'super_admin' ? 'Super Admin' : 'Sub-Group Admin',
+      author: authorRoleLabel,
+      role: userRole === 'super_admin' ? 'Super Admin • Command' : 'Sub-Group Admin',
       avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=150&q=80',
       timestamp: 'Just now',
       content: announcementTitle ? `📢 ${announcementTitle.toUpperCase()}\n${announcementText}` : announcementText,
@@ -188,17 +159,38 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
 
         {/* Announcements List */}
         <div className="space-y-3">
-          {announcements.map((post) => (
-            <article
-              key={post.id}
-              className={`rounded-2xl transition-all shadow-sm overflow-hidden border-2 ${
-                post.announcementPriority === 'critical'
-                  ? 'bg-rose-50/40 border-rose-400 ring-2 ring-rose-400/10'
-                  : post.announcementPriority === 'advisory'
-                  ? 'bg-amber-50/40 border-amber-400 ring-2 ring-amber-400/10'
-                  : 'bg-emerald-50/40 border-emerald-400 ring-2 ring-emerald-400/10'
-              }`}
-            >
+          {announcements.length === 0 ? (
+            <div className="p-8 rounded-3xl bg-white border border-slate-200 text-center space-y-3 shadow-xs">
+              <div className="w-12 h-12 rounded-2xl bg-amber-100 text-amber-900 mx-auto flex items-center justify-center">
+                <Megaphone className="w-6 h-6" />
+              </div>
+              <h4 className="text-sm font-bold text-slate-800">No Announcements Yet</h4>
+              <p className="text-xs text-slate-500 max-w-xs mx-auto leading-relaxed">
+                Squad commanders and leads have not issued any official bulletins or safety advisories yet.
+              </p>
+              {isAuthorizedAdmin && (
+                <button
+                  type="button"
+                  onClick={() => setIsPosting(true)}
+                  className="mt-2 inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-gradient-to-r from-amber-600 to-amber-700 text-white text-xs font-bold shadow-md hover:brightness-105 active:scale-95 transition-all cursor-pointer"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>Broadcast Directive</span>
+                </button>
+              )}
+            </div>
+          ) : (
+            announcements.map((post) => (
+              <article
+                key={post.id}
+                className={`rounded-2xl transition-all shadow-sm overflow-hidden border-2 ${
+                  post.announcementPriority === 'critical'
+                    ? 'bg-rose-50/40 border-rose-400 ring-2 ring-rose-400/10'
+                    : post.announcementPriority === 'advisory'
+                    ? 'bg-amber-50/40 border-amber-400 ring-2 ring-amber-400/10'
+                    : 'bg-emerald-50/40 border-emerald-400 ring-2 ring-emerald-400/10'
+                }`}
+              >
               {/* Highlighted Top Banner */}
               <div
                 className={`px-3.5 py-1.5 text-xs font-black flex items-center justify-between ${
@@ -255,7 +247,7 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
                 </div>
               </div>
             </article>
-          ))}
+          )))}
         </div>
       </main>
 

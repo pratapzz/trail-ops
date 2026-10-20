@@ -26,11 +26,13 @@ import { DistressAlertModal } from './modals/DistressAlertModal';
 interface EmergencySOSScreenProps {
   onNavigate: (screen: ScreenType) => void;
   onShowToast: (message: string) => void;
+  activeSquadId?: string;
 }
 
 export const EmergencySOSScreen: React.FC<EmergencySOSScreenProps> = ({
   onNavigate,
   onShowToast,
+  activeSquadId,
 }) => {
   const coordinates = '27.3184° N, 88.2412° E';
   const [copied, setCopied] = useState(false);
@@ -54,59 +56,66 @@ export const EmergencySOSScreen: React.FC<EmergencySOSScreenProps> = ({
     avatar?: string;
   } | null>(null);
 
-  const leads: ContactLead[] = [
-    {
-      id: '1',
-      name: 'Prof. Roy',
-      title: 'Faculty Lead',
-      phone: '+91 98000 00001',
-      avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=150&q=80',
-      online: true,
-      type: 'faculty',
-    },
-    {
-      id: '2',
-      name: 'Dr. Anita',
-      title: 'Medical Lead',
-      phone: '+91 98000 00002',
-      avatar: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&w=150&q=80',
-      online: true,
-      type: 'medical',
-    },
-    {
-      id: '3',
-      name: 'Tenzing',
-      title: 'Squad A Guide',
-      phone: '+91 98000 00003',
-      avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=150&q=80',
-      online: true,
-      type: 'guide',
-    },
-  ];
+  // Real Squad Leads with actual phone numbers (zero demo records)
+  const [leads, setLeads] = useState<ContactLead[]>(() => {
+    const saved = localStorage.getItem('trailoPS_squad_members');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          return parsed
+            .filter((m: any) => m.phone && m.phone.trim() !== '' && !m.phone.includes('•'))
+            .map((m: any) => ({
+              id: m.id,
+              name: m.name,
+              title: m.role || 'Squad Member',
+              phone: m.phone,
+              avatar: m.avatar,
+              online: m.status === 'present',
+              type: m.roleHierarchy === 'super_admin' ? 'faculty' : m.roleHierarchy === 'subgroup_admin' ? 'guide' : 'medical',
+            }));
+        }
+      } catch {}
+    }
+    return [];
+  });
 
-  const [helplines, setHelplines] = useState<HelplineItem[]>([
-    {
-      id: '1',
-      name: 'State Disaster Mgmt (SSDMA)',
-      subtext: 'Toll-Free Control: 1077',
-      phone: '1077',
-      iconType: 'emergency',
-    },
-    {
-      id: '2',
-      name: 'Himalayan Police Outpost',
-      subtext: 'Local Pelling: 03595-258222',
-      phone: '03595-258222',
-      iconType: 'police',
-    },
-    {
-      id: '3',
-      name: 'Khangchendzonga Rangers',
-      subtext: 'Wildlife & Rescue: 03592-2024',
-      phone: '03592-2024',
-      iconType: 'park',
-    },
-  ]);
+  // Shared squad helplines synchronized across devices
+  const squadKey = activeSquadId || 'default';
+  const helplinesStorageKey = `trailoPS_shared_helplines_${squadKey}`;
+
+  const [helplines, setHelplines] = useState<HelplineItem[]>(() => {
+    const saved = localStorage.getItem(helplinesStorageKey);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {}
+    }
+    return [];
+  });
+
+  // Cross-device / tab synchronization listener
+  useEffect(() => {
+    const syncHelplines = () => {
+      const saved = localStorage.getItem(helplinesStorageKey);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed)) setHelplines(parsed);
+        } catch {}
+      } else {
+        setHelplines([]);
+      }
+    };
+
+    window.addEventListener('storage', syncHelplines);
+    window.addEventListener('trailoPS_helpline_updated', syncHelplines);
+    return () => {
+      window.removeEventListener('storage', syncHelplines);
+      window.removeEventListener('trailoPS_helpline_updated', syncHelplines);
+    };
+  }, [helplinesStorageKey]);
 
   // Add custom helpline modal state
   const [isAddHelplineModalOpen, setIsAddHelplineModalOpen] = useState(false);
@@ -127,17 +136,24 @@ export const EmergencySOSScreen: React.FC<EmergencySOSScreenProps> = ({
       iconType: newHelplineType,
     };
 
-    setHelplines((prev) => [...prev, item]);
+    const updated = [...helplines, item];
+    setHelplines(updated);
+    localStorage.setItem(helplinesStorageKey, JSON.stringify(updated));
+    window.dispatchEvent(new CustomEvent('trailoPS_helpline_updated'));
+
     setIsAddHelplineModalOpen(false);
     setNewHelplineName('');
     setNewHelplinePhone('');
     setNewHelplineSubtext('');
-    onShowToast(`Emergency helpline "${item.name}" added successfully!`);
+    onShowToast(`Emergency helpline "${item.name}" added and synced with squad!`);
   };
 
   const handleDeleteHelpline = (id: string, name: string) => {
-    setHelplines((prev) => prev.filter((h) => h.id !== id));
-    onShowToast(`Removed helpline "${name}".`);
+    const updated = helplines.filter((h) => h.id !== id);
+    setHelplines(updated);
+    localStorage.setItem(helplinesStorageKey, JSON.stringify(updated));
+    window.dispatchEvent(new CustomEvent('trailoPS_helpline_updated'));
+    onShowToast(`Removed helpline "${name}" for all squad members.`);
   };
 
   const handleCopyCoords = () => {
@@ -400,41 +416,45 @@ export const EmergencySOSScreen: React.FC<EmergencySOSScreenProps> = ({
               </span>
             </div>
 
-            {/* Squad Lead A Marker */}
-            <div
-              onClick={() => {
-                setSelectedCallContact({
-                  name: 'Tenzing',
-                  title: 'Squad A Guide',
-                  phone: '+91 98000 00003',
-                  avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=150&q=80',
-                });
-              }}
-              className="absolute top-[28%] left-[26%] flex flex-col items-center cursor-pointer hover:scale-110 transition-transform"
-            >
-              <span className="h-4 w-4 rounded-full bg-emerald-500 border-2 border-white shadow-sm flex items-center justify-center" />
-              <span className="bg-white/95 text-emerald-800 text-[9px] px-1.5 py-0.5 rounded-md shadow-xs mt-0.5 font-bold border border-emerald-100">
-                Tenzing (350m)
-              </span>
-            </div>
+            {/* Squad Member Lead 1 Marker (Real) */}
+            {leads[0] && (
+              <div
+                onClick={() => {
+                  setSelectedCallContact({
+                    name: leads[0].name,
+                    title: leads[0].title,
+                    phone: leads[0].phone,
+                    avatar: leads[0].avatar,
+                  });
+                }}
+                className="absolute top-[28%] left-[26%] flex flex-col items-center cursor-pointer hover:scale-110 transition-transform"
+              >
+                <span className="h-4 w-4 rounded-full bg-emerald-500 border-2 border-white shadow-sm flex items-center justify-center" />
+                <span className="bg-white/95 text-emerald-800 text-[9px] px-1.5 py-0.5 rounded-md shadow-xs mt-0.5 font-bold border border-emerald-100">
+                  {leads[0].name} (Squad)
+                </span>
+              </div>
+            )}
 
-            {/* Medical Officer Marker */}
-            <div
-              onClick={() => {
-                setSelectedCallContact({
-                  name: 'Dr. Anita',
-                  title: 'Medical Lead',
-                  phone: '+91 98000 00002',
-                  avatar: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&w=150&q=80',
-                });
-              }}
-              className="absolute top-[65%] right-[22%] flex flex-col items-center cursor-pointer hover:scale-110 transition-transform"
-            >
-              <span className="h-4 w-4 rounded-full bg-sky-500 border-2 border-white shadow-sm" />
-              <span className="bg-white/95 text-sky-800 text-[9px] px-1.5 py-0.5 rounded-md shadow-xs mt-0.5 font-bold border border-sky-100">
-                Dr. Anita (710m)
-              </span>
-            </div>
+            {/* Squad Member Lead 2 Marker (Real) */}
+            {leads[1] && (
+              <div
+                onClick={() => {
+                  setSelectedCallContact({
+                    name: leads[1].name,
+                    title: leads[1].title,
+                    phone: leads[1].phone,
+                    avatar: leads[1].avatar,
+                  });
+                }}
+                className="absolute top-[65%] right-[22%] flex flex-col items-center cursor-pointer hover:scale-110 transition-transform"
+              >
+                <span className="h-4 w-4 rounded-full bg-sky-500 border-2 border-white shadow-sm" />
+                <span className="bg-white/95 text-sky-800 text-[9px] px-1.5 py-0.5 rounded-md shadow-xs mt-0.5 font-bold border border-sky-100">
+                  {leads[1].name} (Squad)
+                </span>
+              </div>
+            )}
 
             {/* Compass Heading */}
             <div className="absolute top-2 right-2 bg-white/95 backdrop-blur-xs border border-slate-200 rounded-full px-2 py-0.5 flex items-center gap-1 text-[10px] font-extrabold text-slate-800 shadow-2xs">
@@ -453,60 +473,69 @@ export const EmergencySOSScreen: React.FC<EmergencySOSScreenProps> = ({
           </div>
 
           <div className="flex space-x-3 overflow-x-auto no-scrollbar pb-1">
-            {leads.map((lead) => (
-              <div
-                key={lead.id}
-                className="min-w-[230px] bg-white rounded-2xl p-3 border border-slate-200 shadow-xs flex-shrink-0 hover:shadow-md transition-shadow"
-              >
-                <div className="flex items-center gap-2.5 mb-2.5">
-                  <div className="w-10 h-10 rounded-full overflow-hidden border-2 border-emerald-500/30 flex-shrink-0">
-                    <img
-                      src={lead.avatar}
-                      alt={lead.name}
-                      className="w-full h-full object-cover"
-                    />
-                  </div>
-                  <div className="overflow-hidden">
-                    <h4 className="text-xs font-bold text-slate-900 truncate">{lead.name}</h4>
-                    <p className="text-[10px] text-emerald-700 font-semibold flex items-center gap-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
-                      {lead.title}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setSelectedCallContact({
-                        name: lead.name,
-                        title: lead.title,
-                        phone: lead.phone,
-                        avatar: lead.avatar,
-                      })
-                    }
-                    className="flex items-center justify-center gap-1 py-1.5 px-2 bg-[#0f5238] hover:bg-[#2d6a4f] text-white rounded-xl text-xs font-bold active:scale-95 transition-all shadow-2xs cursor-pointer"
-                  >
-                    <Phone className="w-3.5 h-3.5" /> Call
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setSelectedChatContact({
-                        name: lead.name,
-                        title: lead.title,
-                        avatar: lead.avatar,
-                      })
-                    }
-                    className="flex items-center justify-center gap-1 py-1.5 px-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold active:scale-95 transition-all border border-slate-200 cursor-pointer"
-                  >
-                    <MessageSquare className="w-3.5 h-3.5" /> Chat
-                  </button>
-                </div>
+            {leads.length === 0 ? (
+              <div className="p-4 rounded-2xl bg-slate-50 border border-dashed border-slate-200 text-center space-y-1 w-full">
+                <p className="text-xs font-bold text-slate-700">No Direct Contact Numbers Yet</p>
+                <p className="text-[11px] text-slate-500">
+                  Squad members who enter a phone number in their profile will appear here for one-tap calling.
+                </p>
               </div>
-            ))}
+            ) : (
+              leads.map((lead) => (
+                <div
+                  key={lead.id}
+                  className="min-w-[230px] bg-white rounded-2xl p-3 border border-slate-200 shadow-xs flex-shrink-0 hover:shadow-md transition-shadow"
+                >
+                  <div className="flex items-center gap-2.5 mb-2.5">
+                    <div className="w-10 h-10 rounded-full overflow-hidden border-2 border-emerald-500/30 flex-shrink-0">
+                      <img
+                        src={lead.avatar}
+                        alt={lead.name}
+                        className="w-full h-full object-cover"
+                      />
+                    </div>
+                    <div className="overflow-hidden">
+                      <h4 className="text-xs font-bold text-slate-900 truncate">{lead.name}</h4>
+                      <p className="text-[10px] text-emerald-700 font-semibold flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
+                        {lead.title}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setSelectedCallContact({
+                          name: lead.name,
+                          title: lead.title,
+                          phone: lead.phone,
+                          avatar: lead.avatar,
+                        })
+                      }
+                      className="flex items-center justify-center gap-1 py-1.5 px-2 bg-[#0f5238] hover:bg-[#2d6a4f] text-white rounded-xl text-xs font-bold active:scale-95 transition-all shadow-2xs cursor-pointer"
+                    >
+                      <Phone className="w-3.5 h-3.5" /> Call
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setSelectedChatContact({
+                          name: lead.name,
+                          title: lead.title,
+                          avatar: lead.avatar,
+                        })
+                      }
+                      className="flex items-center justify-center gap-1 py-1.5 px-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold active:scale-95 transition-all border border-slate-200 cursor-pointer"
+                    >
+                      <MessageSquare className="w-3.5 h-3.5" /> Chat
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
           </div>
         </div>
 
@@ -524,63 +553,81 @@ export const EmergencySOSScreen: React.FC<EmergencySOSScreenProps> = ({
               title="Add a custom emergency helpline number"
             >
               <Plus className="w-3.5 h-3.5" />
-              <span>Add Number</span>
+              <span>Add Line</span>
             </button>
           </div>
 
           <div className="space-y-2">
-            {helplines.map((item, idx) => (
-              <div
-                key={item.id}
-                className={`flex items-center justify-between py-1 ${
-                  idx > 0 ? 'border-t border-slate-100 pt-2.5' : ''
-                }`}
-              >
-                <div className="flex items-center gap-3 min-w-0">
-                  <div
-                    className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
-                      item.iconType === 'emergency'
-                        ? 'bg-rose-100 text-rose-700'
-                        : item.iconType === 'police'
-                        ? 'bg-sky-100 text-sky-700'
-                        : 'bg-emerald-100 text-emerald-800'
-                    }`}
-                  >
-                    <Phone className="w-4 h-4" />
-                  </div>
-                  <div className="min-w-0">
-                    <p className="text-xs font-bold text-slate-900 truncate">{item.name}</p>
-                    <p className="text-[11px] text-slate-500 truncate">{item.subtext}</p>
-                    <p className="text-[10px] font-mono text-emerald-700 font-semibold">{item.phone}</p>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-1.5 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setSelectedCallContact({
-                        name: item.name,
-                        title: item.subtext,
-                        phone: item.phone,
-                      })
-                    }
-                    className="h-8 px-3 rounded-xl bg-[#0f5238] hover:bg-[#2d6a4f] text-white flex items-center gap-1 text-xs font-bold shadow-2xs active:scale-95 transition-all cursor-pointer"
-                  >
-                    <Phone className="w-3.5 h-3.5" /> Call
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => handleDeleteHelpline(item.id, item.name)}
-                    className="w-8 h-8 rounded-xl bg-slate-100 hover:bg-rose-50 hover:text-rose-600 text-slate-400 flex items-center justify-center transition-colors cursor-pointer"
-                    title={`Remove ${item.name}`}
-                  >
-                    <Minus className="w-3.5 h-3.5 stroke-[2.5]" />
-                  </button>
-                </div>
+            {helplines.length === 0 ? (
+              <div className="p-5 rounded-2xl bg-slate-50 border border-dashed border-slate-200 text-center space-y-2">
+                <Phone className="w-7 h-7 text-slate-300 mx-auto" />
+                <p className="text-xs font-bold text-slate-700">No Emergency Helplines Added</p>
+                <p className="text-[11px] text-slate-500 max-w-xs mx-auto">
+                  Add local ranger, rescue, doctor, or guide phone numbers. Numbers you add will sync to every squad member's phone.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setIsAddHelplineModalOpen(true)}
+                  className="mt-1 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-600 text-white text-xs font-bold hover:bg-rose-700 active:scale-95 transition-all cursor-pointer shadow-xs"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Add First Helpline</span>
+                </button>
               </div>
-            ))}
+            ) : (
+              helplines.map((item, idx) => (
+                <div
+                  key={item.id}
+                  className={`flex items-center justify-between py-1 ${
+                    idx > 0 ? 'border-t border-slate-100 pt-2.5' : ''
+                  }`}
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div
+                      className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+                        item.iconType === 'emergency'
+                          ? 'bg-rose-100 text-rose-700'
+                          : item.iconType === 'police'
+                          ? 'bg-sky-100 text-sky-700'
+                          : 'bg-emerald-100 text-emerald-800'
+                      }`}
+                    >
+                      <Phone className="w-4 h-4" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-xs font-bold text-slate-900 truncate">{item.name}</p>
+                      <p className="text-[11px] text-slate-500 truncate">{item.subtext}</p>
+                      <p className="text-[10px] font-mono text-emerald-700 font-semibold">{item.phone}</p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setSelectedCallContact({
+                          name: item.name,
+                          title: item.subtext,
+                          phone: item.phone,
+                        })
+                      }
+                      className="h-8 px-3 rounded-xl bg-[#0f5238] hover:bg-[#2d6a4f] text-white flex items-center gap-1 text-xs font-bold shadow-2xs active:scale-95 transition-all cursor-pointer"
+                    >
+                      <Phone className="w-3.5 h-3.5" /> Call
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteHelpline(item.id, item.name)}
+                      className="w-8 h-8 rounded-xl bg-slate-100 hover:bg-rose-50 hover:text-rose-600 text-slate-400 flex items-center justify-center transition-colors cursor-pointer"
+                      title={`Remove ${item.name}`}
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
           </div>
         </div>
 

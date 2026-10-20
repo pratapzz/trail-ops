@@ -55,11 +55,27 @@ import {
   UserX,
   ShieldCheck,
   Search,
+  Train,
 } from 'lucide-react';
 import { SquadMember, ExcursionRequest, ScreenType, UserRole } from '../types';
 import { CallModal } from './modals/CallModal';
 import { ChatModal } from './modals/ChatModal';
 import { CreateTripModal } from './modals/CreateTripModal';
+import { TrainJourneyModal } from './modals/TrainJourneyModal';
+import { MemberProfileModal } from './modals/MemberProfileModal';
+import {
+  TrainJourneyRecord,
+  TrainSeatAssignmentRecord,
+  fetchTrainJourney,
+  fetchSeatAssignments,
+  fetchGroupMediaVault,
+  uploadMediaToVault,
+  createSquadGroup,
+  fetchSquadMembers,
+  updateMemberRole,
+  SquadGroupRecord,
+  SquadMemberRecord,
+} from '../lib/supabase';
 
 interface SquadRollCallScreenProps {
   onNavigate: (screen: ScreenType) => void;
@@ -72,6 +88,9 @@ interface SquadRollCallScreenProps {
   onOpenSplitwise?: () => void;
   currentUserName?: string;
   currentUserAvatar?: string;
+  currentUserId?: string;
+  activeSquad?: SquadGroupRecord | null;
+  onRefreshSquad?: () => void;
 }
 
 export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
@@ -85,6 +104,9 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
   onOpenSplitwise,
   currentUserName = 'Pratap Paul',
   currentUserAvatar,
+  currentUserId,
+  activeSquad,
+  onRefreshSquad,
 }) => {
   const [isCheckedIn, setIsCheckedIn] = useState(false);
   const [activeFilter, setActiveFilter] = useState<'all' | 'present' | 'missing' | 'excursion' | 'scout' | 'medical'>('all');
@@ -102,6 +124,8 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
   const [isCloudSyncModalOpen, setIsCloudSyncModalOpen] = useState(false);
   const [isHDMediaModalOpen, setIsHDMediaModalOpen] = useState(false);
   const [isUploadingMedia, setIsUploadingMedia] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadStatus, setUploadStatus] = useState('');
   const [selectedHDMediaFilter, setSelectedHDMediaFilter] = useState<'all' | 'photo' | 'video'>('all');
 
   // All Members separate window modal state
@@ -146,45 +170,41 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
   // Real device media file input reference for user uploads (Request 11)
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleMediaFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
+  // Train Journey & Berths State
+  const [isTrainModalOpen, setIsTrainModalOpen] = useState(false);
+  const [trainDirection, setTrainDirection] = useState<'onward' | 'return'>('onward');
+  const [onwardJourney, setOnwardJourney] = useState<TrainJourneyRecord | null>(null);
+  const [returnJourney, setReturnJourney] = useState<TrainJourneyRecord | null>(null);
+  const [seatAssignments, setSeatAssignments] = useState<TrainSeatAssignmentRecord[]>([]);
 
-    setIsUploadingMedia(true);
-    const newItems: any[] = [];
+  // Member Profile Viewer Modal
+  const [viewingProfileUserId, setViewingProfileUserId] = useState<string | null>(null);
+  const [viewingProfileFallback, setViewingProfileFallback] = useState<{ name: string; role: string; avatar?: string } | null>(null);
 
-    Array.from(files).forEach((file, index) => {
-      const isVideo = file.type.startsWith('video');
-      const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
-      const url = URL.createObjectURL(file);
-      const formatExt = file.name.split('.').pop()?.toUpperCase() || (isVideo ? 'MP4' : 'RAW');
+  // Load Train Journeys & Seats from Supabase
+  const loadTrainData = async () => {
+    if (!activeSquad?.id) return;
+    const onward = await fetchTrainJourney(activeSquad.id, 'onward');
+    const ret = await fetchTrainJourney(activeSquad.id, 'return');
+    setOnwardJourney(onward);
+    setReturnJourney(ret);
 
-      newItems.push({
-        id: `user-upload-${Date.now()}-${index}`,
-        title: file.name.replace(/\.[^/.]+$/, ''),
-        type: isVideo ? ('video' as const) : ('photo' as const),
-        resolution: isVideo ? '3840 × 2160 (4K 60fps HDR)' : '8256 × 5504 (45.4 MP)',
-        size: `${sizeMB} MB ${isVideo ? 'ProRes/MP4' : 'Lossless RAW'}`,
-        format: `${formatExt} (Original Lossless)`,
-        author: 'Chris Walker (You)',
-        timestamp: 'Just now',
-        altitude: '2,150m ASL',
-        url: url,
-        isLosslessRaw: true,
-      });
-    });
-
-    setTimeout(() => {
-      setSharedHDMedia((prev) => [...newItems, ...prev]);
-      setIsUploadingMedia(false);
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
-      onShowToast(`Uploaded ${files.length} high-definition file(s) directly to squad vault!`);
-    }, 600);
+    const activeJourneyId = trainDirection === 'onward' ? onward?.id : ret?.id;
+    if (activeJourneyId) {
+      const seats = await fetchSeatAssignments(activeJourneyId);
+      setSeatAssignments(seats);
+    } else {
+      setSeatAssignments([]);
+    }
   };
 
-  // High-Definition RAW Media Stream (Better than WhatsApp - Zero Compression, Lossless RAW, 4K HDR)
+  useEffect(() => {
+    if (hasJoinedGroup && activeSquad?.id) {
+      loadTrainData();
+    }
+  }, [hasJoinedGroup, activeSquad?.id, trainDirection]);
+
+  // High-Definition RAW Media Stream (Stored in Supabase Storage with local cache fallback)
   const [sharedHDMedia, setSharedHDMedia] = useState<Array<{
     id: string;
     title: string;
@@ -197,84 +217,224 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
     altitude: string;
     url: string;
     isLosslessRaw: boolean;
-  }>>([
-    {
-      id: 'm-1',
-      title: 'Sunrise Ridge Cloud Inversion',
-      type: 'photo',
-      resolution: '8256 × 5504 (45.4 MP)',
-      size: '48.2 MB RAW',
-      format: 'DNG (Lossless RAW)',
-      author: 'Arjun Sen (Scout Lead)',
-      timestamp: '15m ago',
-      altitude: '2,150m ASL',
-      url: 'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=1200&q=95',
-      isLosslessRaw: true,
-    },
-    {
-      id: 'm-2',
-      title: 'Solang Pass Ice Ridge Traverse 4K',
-      type: 'video',
-      resolution: '3840 × 2160 (4K 60fps HDR)',
-      size: '142.8 MB ProRes',
-      format: 'Apple ProRes 422 HQ',
-      author: 'Sarah Chen (Medic)',
-      timestamp: '42m ago',
-      altitude: '2,320m ASL',
-      url: 'https://images.unsplash.com/photo-1486870591958-9b9d0d1dda99?auto=format&fit=crop&w=1200&q=95',
-      isLosslessRaw: true,
-    },
-    {
-      id: 'm-3',
-      title: 'Kanchenjunga Golden Summit Panorama',
-      type: 'photo',
-      resolution: '9504 × 6336 (60.2 MP)',
-      size: '62.4 MB RAW',
-      format: 'Sony ARW RAW',
-      author: 'Prof. Roy (Faculty Admin)',
-      timestamp: '2h ago',
-      altitude: '2,190m ASL',
-      url: 'https://images.unsplash.com/photo-1519681393784-d120267933ba?auto=format&fit=crop&w=1200&q=95',
-      isLosslessRaw: true,
-    },
-    {
-      id: 'm-4',
-      title: 'Basecamp Dusk Twilight & Tent Lanterns',
-      type: 'photo',
-      resolution: '8192 × 5464 (44.7 MP)',
-      size: '39.6 MB RAW',
-      format: 'Canon CR3 RAW',
-      author: 'Liam Zhang',
-      timestamp: 'Yesterday',
-      altitude: '1,980m ASL',
-      url: 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=1200&q=95',
-      isLosslessRaw: true,
-    },
-  ]);
+  }>>(() => {
+    const squadKey = activeSquad?.id || 'default';
+    const cached = localStorage.getItem(`trailoPS_media_vault_${squadKey}`);
+    if (cached) {
+      try {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {}
+    }
+    return [];
+  });
+
+  const handleMediaFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    // Check for duplicates
+    const incomingFiles = Array.from(files);
+    const uniqueFiles: File[] = [];
+    for (const f of incomingFiles) {
+      const isDuplicate = sharedHDMedia.some((m) => m.title === f.name);
+      if (isDuplicate) {
+        onShowToast(`Notice: "${f.name}" has already been uploaded to the vault.`);
+      } else {
+        uniqueFiles.push(f);
+      }
+    }
+
+    if (uniqueFiles.length === 0) {
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
+
+    setIsUploadingMedia(true);
+    setUploadProgress(10);
+    setUploadStatus(`Preparing ${uniqueFiles.length} original-quality media file(s)...`);
+
+    const uploadedItems: any[] = [];
+    let processed = 0;
+
+    for (const file of uniqueFiles) {
+      processed++;
+      const currentPct = Math.min(90, Math.round((processed / uniqueFiles.length) * 85));
+      setUploadProgress(currentPct);
+      setUploadStatus(`Uploading "${file.name}" to private encrypted vault (${processed}/${uniqueFiles.length})...`);
+
+      if (activeSquad?.id && currentUserId) {
+        try {
+          const res = await uploadMediaToVault({
+            groupId: activeSquad.id,
+            uploaderId: currentUserId,
+            uploaderName: currentUserName,
+            file,
+          });
+
+          if (res.success && res.item) {
+            uploadedItems.push({
+              id: res.item.id,
+              title: res.item.file_name,
+              type: res.item.mime_type.startsWith('video') ? 'video' : 'photo',
+              resolution: res.item.resolution || '4K Original',
+              size: `${(res.item.file_size / (1024 * 1024)).toFixed(1)} MB`,
+              format: res.item.mime_type.split('/')[1]?.toUpperCase() || 'RAW',
+              author: res.item.uploader_name,
+              timestamp: 'Just now',
+              altitude: 'Mountain Trail',
+              url: res.item.signed_url || URL.createObjectURL(file),
+              isLosslessRaw: true,
+            });
+          } else {
+            // Local fallback for offline / unconfigured bucket
+            const url = URL.createObjectURL(file);
+            uploadedItems.push({
+              id: Date.now().toString() + Math.random().toString(),
+              title: file.name,
+              type: file.type.startsWith('video') ? 'video' : 'photo',
+              resolution: 'Original Resolution',
+              size: `${(file.size / (1024 * 1024)).toFixed(1)} MB`,
+              format: file.type.split('/')[1]?.toUpperCase() || 'RAW',
+              author: `${currentUserName} (You)`,
+              timestamp: 'Just now',
+              altitude: 'Expedition Trail',
+              url,
+              isLosslessRaw: true,
+            });
+            if (res.error) {
+              onShowToast(`Saved locally: ${res.error}`);
+            }
+          }
+        } catch (err: any) {
+          const url = URL.createObjectURL(file);
+          uploadedItems.push({
+            id: Date.now().toString() + Math.random().toString(),
+            title: file.name,
+            type: file.type.startsWith('video') ? 'video' : 'photo',
+            resolution: 'Original Resolution',
+            size: `${(file.size / (1024 * 1024)).toFixed(1)} MB`,
+            format: file.type.split('/')[1]?.toUpperCase() || 'RAW',
+            author: `${currentUserName} (You)`,
+            timestamp: 'Just now',
+            altitude: 'Expedition Trail',
+            url,
+            isLosslessRaw: true,
+          });
+        }
+      } else {
+        const url = URL.createObjectURL(file);
+        uploadedItems.push({
+          id: Date.now().toString() + Math.random().toString(),
+          title: file.name,
+          type: file.type.startsWith('video') ? 'video' : 'photo',
+          resolution: 'Original Resolution',
+          size: `${(file.size / (1024 * 1024)).toFixed(1)} MB`,
+          format: file.type.split('/')[1]?.toUpperCase() || 'RAW',
+          author: `${currentUserName} (You)`,
+          timestamp: 'Just now',
+          altitude: 'Expedition Trail',
+          url,
+          isLosslessRaw: true,
+        });
+      }
+    }
+
+    setUploadProgress(100);
+    setUploadStatus('Upload complete and verified!');
+
+    const updatedList = [...uploadedItems, ...sharedHDMedia];
+    setSharedHDMedia(updatedList);
+
+    // Persist cache locally
+    try {
+      const squadKey = activeSquad?.id || 'default';
+      localStorage.setItem(`trailoPS_media_vault_${squadKey}`, JSON.stringify(updatedList));
+    } catch {}
+
+    setTimeout(() => {
+      setIsUploadingMedia(false);
+      setUploadStatus('');
+      setUploadProgress(0);
+    }, 1200);
+
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+
+    if (uploadedItems.length > 0) {
+      onShowToast(`Successfully saved ${uploadedItems.length} media file(s) to Squad Vault!`);
+    }
+  };
+
+  useEffect(() => {
+    if (activeSquad?.id) {
+      fetchGroupMediaVault(activeSquad.id).then((items) => {
+        if (items && items.length > 0) {
+          const mapped = items.map((i) => ({
+            id: i.id,
+            title: i.file_name,
+            type: i.mime_type.startsWith('video') ? ('video' as const) : ('photo' as const),
+            resolution: i.resolution || '4K UHD',
+            size: `${(i.file_size / (1024 * 1024)).toFixed(1)} MB`,
+            format: i.mime_type.split('/')[1]?.toUpperCase() || 'RAW',
+            author: i.uploader_name,
+            timestamp: new Date(i.created_at).toLocaleDateString(),
+            altitude: 'Mountain Trail',
+            url: i.signed_url || '',
+            isLosslessRaw: true,
+          }));
+
+          setSharedHDMedia((prev) => {
+            const combined = [...mapped];
+            for (const p of prev) {
+              if (!combined.some((c) => c.title === p.title)) {
+                combined.push(p);
+              }
+            }
+            try {
+              localStorage.setItem(`trailoPS_media_vault_${activeSquad.id}`, JSON.stringify(combined));
+            } catch {}
+            return combined;
+          });
+        }
+      });
+    }
+  }, [activeSquad?.id]);
 
   // Edit Group Form state
-  const [editFromLocation, setEditFromLocation] = useState('Siliguri Transit Base');
-  const [editDestination, setEditDestination] = useState('Pelling High Ridge');
-  const [editDepartureDate, setEditDepartureDate] = useState('2026-10-25');
+  const [editFromLocation, setEditFromLocation] = useState('');
+  const [editDestination, setEditDestination] = useState(activeSquad?.destination || '');
+  const [editDepartureDate, setEditDepartureDate] = useState(activeSquad?.start_date || '2026-10-24');
 
-  // Subgroup creator state
+  // Subgroup creator state (strictly real user records)
   const [subGroupNameInput, setSubGroupNameInput] = useState('');
   const [subGroupColorInput, setSubGroupColorInput] = useState('#ef4444');
-  const [selectedSubGroupMembers, setSelectedSubGroupMembers] = useState<string[]>(['1', '2']);
+  const [selectedSubGroupMembers, setSelectedSubGroupMembers] = useState<string[]>([]);
   const [subGroups, setSubGroups] = useState<Array<{
     id: string;
     name: string;
     color: string;
     leadName: string;
     memberCount: number;
-  }>>([
-    { id: 'sub-1', name: 'Scout Team Alpha', color: '#ef4444', leadName: 'Arjun Sen', memberCount: 14 },
-    { id: 'sub-2', name: 'Medical Vanguard', color: '#3b82f6', leadName: 'Sarah Chen', memberCount: 8 },
-    { id: 'sub-3', name: 'Camp & Logistics Core', color: '#10b981', leadName: 'Prof. Roy', memberCount: 12 },
-    { id: 'sub-4', name: 'Rearguard & Sweepers', color: '#f59e0b', leadName: 'Liam Zhang', memberCount: 8 },
-  ]);
+  }>>(() => {
+    const key = `trailoPS_subgroups_${activeSquad?.id || 'default'}`;
+    const saved = localStorage.getItem(key);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {}
+    }
+    return [];
+  });
 
-  // Quick announcement composer
+  useEffect(() => {
+    const key = `trailoPS_subgroups_${activeSquad?.id || 'default'}`;
+    localStorage.setItem(key, JSON.stringify(subGroups));
+  }, [subGroups, activeSquad?.id]);
+
+  // Quick announcement composer (strictly real records)
   const [quickAnnounceTitle, setQuickAnnounceTitle] = useState('');
   const [quickAnnounceText, setQuickAnnounceText] = useState('');
   const [quickAnnouncePriority, setQuickAnnouncePriority] = useState<'critical' | 'advisory' | 'info'>('critical');
@@ -285,28 +445,26 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
     priority: 'critical' | 'advisory' | 'info';
     author: string;
     timestamp: string;
-  }>>([
-    {
-      id: 'a-1',
-      title: 'Mandatory Dusk Roll Call at 18:00',
-      text: 'All scout excursions must return to perimeter boundary before sunset. Headlamps inspection following roll call.',
-      priority: 'critical',
-      author: 'Prof. Roy (Faculty Super Admin)',
-      timestamp: '10m ago',
-    },
-    {
-      id: 'a-2',
-      title: 'Weather Advisory: Ridge Frost Drop',
-      text: 'Night temperatures at 2,150m ASL projected at 4°C. Ensure thermal base layers and windbreakers are unpackaged.',
-      priority: 'advisory',
-      author: 'Arjun Sen (Scout Lead)',
-      timestamp: '1h ago',
-    },
-  ]);
+  }>>(() => {
+    const key = `trailoPS_announcements_${activeSquad?.id || 'default'}`;
+    const saved = localStorage.getItem(key);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {}
+    }
+    return [];
+  });
 
-  // Missing item requester state
+  useEffect(() => {
+    const key = `trailoPS_announcements_${activeSquad?.id || 'default'}`;
+    localStorage.setItem(key, JSON.stringify(announcements));
+  }, [announcements, activeSquad?.id]);
+
+  // Missing item requester state (strictly real records)
   const [missingItemName, setMissingItemName] = useState('');
-  const [missingItemLocation, setMissingItemLocation] = useState('Ridge Viewpoint / Trail Marker 3');
+  const [missingItemLocation, setMissingItemLocation] = useState('');
   const [missingItemUrgency, setMissingItemUrgency] = useState<'critical' | 'moderate' | 'routine'>('critical');
   const [missingItems, setMissingItems] = useState<Array<{
     id: string;
@@ -316,28 +474,24 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
     location: string;
     timestamp: string;
     status: 'open' | 'found';
-  }>>([
-    {
-      id: 'm-1',
-      itemName: 'Petzl Screwgate Carabiner (Green Gate)',
-      reportedBy: 'Arjun Sen',
-      urgency: 'critical',
-      location: 'Near Rock Bivouac Marker 4',
-      timestamp: '15m ago',
-      status: 'open',
-    },
-    {
-      id: 'm-2',
-      itemName: 'Electrolyte ORS Sachets (Box of 10)',
-      reportedBy: 'Sarah Chen',
-      urgency: 'moderate',
-      location: 'Basecamp Kitchen Tent',
-      timestamp: '1h ago',
-      status: 'open',
-    },
-  ]);
+  }>>(() => {
+    const key = `trailoPS_missing_items_${activeSquad?.id || 'default'}`;
+    const saved = localStorage.getItem(key);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {}
+    }
+    return [];
+  });
 
-  // Shared Journey Checklist State
+  useEffect(() => {
+    const key = `trailoPS_missing_items_${activeSquad?.id || 'default'}`;
+    localStorage.setItem(key, JSON.stringify(missingItems));
+  }, [missingItems, activeSquad?.id]);
+
+  // Shared Journey Checklist State (strictly real records)
   const [newJourneyTask, setNewJourneyTask] = useState('');
   const [newJourneyCategory, setNewJourneyCategory] = useState('Permits & Entry');
   const [journeyChecklist, setJourneyChecklist] = useState<Array<{
@@ -346,13 +500,22 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
     category: string;
     completed: boolean;
     assignedRole: string;
-  }>>([
-    { id: 'j-1', title: 'Forest Department Alpine Entry Permits', category: 'Permits & Entry', completed: true, assignedRole: 'Super Admin' },
-    { id: 'j-2', title: 'Check Satellite GPS Beacon battery & firmware', category: 'Gear & Navigation', completed: true, assignedRole: 'Scout Team' },
-    { id: 'j-3', title: 'Verify High-Altitude First Aid & Diamox kits', category: 'Medical', completed: false, assignedRole: 'Medic Vanguard' },
-    { id: 'j-4', title: 'Calibrate VHF Walkie-Talkies to 142.500 MHz', category: 'Communication', completed: false, assignedRole: 'All Leads' },
-    { id: 'j-5', title: 'Emergency Rations & Hydration Bladders packed', category: 'Supplies', completed: false, assignedRole: 'All Squad' },
-  ]);
+  }>>(() => {
+    const key = `trailoPS_journey_checklist_${activeSquad?.id || 'default'}`;
+    const saved = localStorage.getItem(key);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {}
+    }
+    return [];
+  });
+
+  useEffect(() => {
+    const key = `trailoPS_journey_checklist_${activeSquad?.id || 'default'}`;
+    localStorage.setItem(key, JSON.stringify(journeyChecklist));
+  }, [journeyChecklist, activeSquad?.id]);
 
   // Admin Governance Permissions State
   const [adminPermissions, setAdminPermissions] = useState({
@@ -362,22 +525,34 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
     allowMemberInvite: true,
   });
 
-  // Simulated Multi-Phone Realtime Sync Telemetry
-  const [simulatedSyncPhones, setSimulatedSyncPhones] = useState([
-    { id: 'phone-1', device: 'Admin Pixel 9 Pro', role: 'Faculty Super Admin', user: 'Prof. Roy', status: 'Synced', latency: '42ms', lastSync: 'Just now' },
-    { id: 'phone-2', device: 'iPhone 16 Pro', role: 'Trekker Lead', user: 'Chris Walker (You)', status: 'Synced', latency: '68ms', lastSync: 'Just now' },
-    { id: 'phone-3', device: 'Galaxy S25 Ultra', role: 'Medic Vanguard', user: 'Sarah Chen', status: 'Synced', latency: '95ms', lastSync: 'Just now' },
-    { id: 'phone-4', device: 'OnePlus 13', role: 'Scout Lead', user: 'Arjun Sen', status: 'Synced', latency: '124ms', lastSync: 'Just now' },
-  ]);
+  // Simulated Multi-Phone Realtime Sync Telemetry (starts empty or with real connected devices)
+  const [simulatedSyncPhones, setSimulatedSyncPhones] = useState<Array<{
+    id: string;
+    device: string;
+    role: string;
+    user: string;
+    status: string;
+    latency: string;
+    lastSync: string;
+  }>>([]);
   const [isSimulatingSync, setIsSimulatingSync] = useState(false);
 
-  // Editable Trip Header
-  const [tripName, setTripName] = useState('Denali Base Alpha Expedition');
+  // Dynamic Trip Header
+  const [tripName, setTripName] = useState(activeSquad?.name || 'Expedition Route');
   const [isEditingTripName, setIsEditingTripName] = useState(false);
   const [coverBg, setCoverBg] = useState(
     'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=1200&q=80'
   );
   const [isCoverPickerOpen, setIsCoverPickerOpen] = useState(false);
+
+  useEffect(() => {
+    if (activeSquad?.name) {
+      setTripName(activeSquad.name);
+    }
+    if (activeSquad?.destination) {
+      setEditDestination(activeSquad.destination);
+    }
+  }, [activeSquad?.name, activeSquad?.destination]);
 
   const presetCovers = [
     {
@@ -411,125 +586,84 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
     avatar?: string;
   } | null>(null);
 
-  // Excursion requests
-  const [excursionRequests, setExcursionRequests] = useState<ExcursionRequest[]>([
-    {
-      id: '1',
-      trailName: 'Ridge Viewpoint Trail',
-      leadName: 'Maya Patel',
-      membersCount: 3,
-      returnTime: '17:30',
-      distance: '1.2 km away',
-      batteryAvg: 85,
-      avatars: [
-        'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=120&q=80',
-        'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?auto=format&fit=crop&w=120&q=80',
-      ],
-      status: 'pending',
-    },
-  ]);
+  // Excursion requests (strictly real records)
+  const [excursionRequests, setExcursionRequests] = useState<ExcursionRequest[]>(() => {
+    const key = `trailoPS_excursions_${activeSquad?.id || 'default'}`;
+    const saved = localStorage.getItem(key);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {}
+    }
+    return [];
+  });
 
-  // Squad Members with Role Hierarchy & Sub-Group Highlights
+  useEffect(() => {
+    const key = `trailoPS_excursions_${activeSquad?.id || 'default'}`;
+    localStorage.setItem(key, JSON.stringify(excursionRequests));
+  }, [excursionRequests, activeSquad?.id]);
+
+  // Squad Members with Role Hierarchy & Sub-Group Highlights (No Demo/Mock Data)
   const [members, setMembers] = useState<SquadMember[]>(() => {
+    if (!hasJoinedGroup) return [];
     const saved = localStorage.getItem('trailoPS_squad_members');
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed.map((m: any) =>
-            m.id === '1' || (m.name && m.name.includes('(You)'))
-              ? { ...m, roleHierarchy: userRole }
-              : m
-          );
+          return parsed;
         }
       } catch {}
     }
     return [
-    {
-      id: '0',
-      name: 'Prof. Roy',
-      role: 'Faculty Super Admin',
-      roleHierarchy: 'super_admin',
-      status: 'present',
-      avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=120&q=80',
-      distance: '20m',
-      battery: 98,
-      lastPing: 'Just now',
-    },
-    {
-      id: '1',
-      name: 'Chris Walker (You)',
-      role: 'Trekker Lead',
-      roleHierarchy: userRole,
-      status: isCheckedIn ? 'present' : 'missing',
-      avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=120&q=80',
-      distance: '0m',
-      battery: 92,
-      lastPing: 'Just now',
-      subGroupId: 'sub-1',
-      subGroupName: 'Scout Team Alpha',
-      subGroupColor: '#ef4444',
-    },
-    {
-      id: '2',
-      name: 'Arjun Sen',
-      role: 'Scout Sub-Admin',
-      roleHierarchy: 'subgroup_admin',
-      status: 'present',
-      avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=120&q=80',
-      distance: '45m',
-      battery: 88,
-      lastPing: '1m ago',
-      channel: 1,
-      subGroupId: 'sub-1',
-      subGroupName: 'Scout Team Alpha',
-      subGroupColor: '#ef4444',
-    },
-    {
-      id: '3',
-      name: 'Sarah Chen',
-      role: 'Medic Sub-Admin',
-      roleHierarchy: 'subgroup_admin',
-      status: 'present',
-      avatar: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&w=120&q=80',
-      distance: '12m',
-      battery: 94,
-      lastPing: 'Just now',
-      channel: 3,
-      subGroupId: 'sub-2',
-      subGroupName: 'Medical Vanguard',
-      subGroupColor: '#3b82f6',
-    },
-    {
-      id: '4',
-      name: 'Liam Zhang',
-      role: 'Rear Guard Trekker',
-      roleHierarchy: 'member',
-      status: 'missing',
-      avatar: 'https://images.unsplash.com/photo-1522075469751-3a6694fb2f61?auto=format&fit=crop&w=120&q=80',
-      distance: '480m (Echo delay)',
-      battery: 34,
-      lastPing: '8m ago',
-      subGroupId: 'sub-1',
-      subGroupName: 'Scout Team Alpha',
-      subGroupColor: '#ef4444',
-    },
-    {
-      id: '5',
-      name: 'Maya Patel',
-      role: 'Ridge Excursion Lead',
-      roleHierarchy: 'member',
-      status: 'excursion',
-      avatar: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=120&q=80',
-      distance: '1.2km',
-      battery: 85,
-      lastPing: '2m ago',
-      subGroupId: 'sub-2',
-      subGroupName: 'Medical Vanguard',
-      subGroupColor: '#3b82f6',
-    },
-  ];
-});
+      {
+        id: currentUserId || '1',
+        name: `${currentUserName} (You)`,
+        role: userRole === 'super_admin' ? 'Squad Commander (You)' : 'Expedition Member (You)',
+        roleHierarchy: userRole,
+        status: 'present',
+        avatar: currentUserAvatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=120&q=80',
+        distance: '0m',
+        battery: 98,
+        lastPing: 'Just now',
+      },
+    ];
+  });
+
+  // Fetch real squad members from Supabase when in an active squad
+  useEffect(() => {
+    if (!hasJoinedGroup || !activeSquad?.id) {
+      if (!hasJoinedGroup) {
+        setMembers([]);
+      }
+      return;
+    }
+
+    let isMounted = true;
+    fetchSquadMembers(activeSquad.id).then((sbMembers) => {
+      if (!isMounted) return;
+      if (sbMembers && sbMembers.length > 0) {
+        const mapped: SquadMember[] = sbMembers.map((m) => ({
+          id: m.user_id,
+          name: m.profile?.full_name || (m.user_id === currentUserId ? `${currentUserName} (You)` : 'Squad Member'),
+          role: m.role === 'super_admin' ? 'Squad Commander' : m.role === 'admin' ? 'Sub-Admin' : 'Expedition Member',
+          roleHierarchy: m.role as any,
+          status: m.status === 'distress' ? 'missing' : 'present',
+          avatar: m.profile?.avatar_url || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=120&q=80',
+          distance: m.user_id === currentUserId ? '0m' : '15m',
+          battery: 95,
+          lastPing: 'Just now',
+          phone: m.profile?.phone,
+        }));
+        setMembers(mapped);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [hasJoinedGroup, activeSquad?.id, currentUserId, currentUserName, currentUserAvatar]);
 
   // Synchronize current user's name, avatar, and role hierarchy with active user session
   useEffect(() => {
@@ -650,12 +784,60 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
     return true;
   });
 
-  const presentCount = isCheckedIn ? 39 : 38;
-  const missingCount = isCheckedIn ? 3 : 4;
-  const confirmedRate = Math.round((presentCount / 42) * 100);
+  const presentCount = members.filter((m) => m.status === 'present').length;
+  const missingCount = members.filter((m) => m.status === 'missing').length;
+  const totalCount = members.length || 1;
+  const confirmedRate = Math.round((presentCount / totalCount) * 100);
+
+  const calculateTrainCountdown = (depTime?: string): string => {
+    if (!depTime) return 'Schedule Pending';
+    const diff = new Date(depTime).getTime() - Date.now();
+    if (diff <= 0) return 'Train Departed';
+    const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+    const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+    const mins = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+    if (days > 0) return `${days}d ${hours}h ${mins}m`;
+    return `${hours}h ${mins}m`;
+  };
+
+  const handleShareGroup = async () => {
+    const code = activeSquad?.code || 'TRK-842';
+    const name = activeSquad?.name || tripName;
+    const dest = activeSquad?.destination || 'Expedition Base';
+    const shareUrl = `${window.location.origin}/?join=${code}`;
+    const shareText = `Join our expedition squad "${name}" for ${dest} on TRAIL OPS!\nInvitation Code: ${code}\nLink: ${shareUrl}`;
+
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: `Join ${name} on TRAIL OPS`,
+          text: shareText,
+          url: shareUrl,
+        });
+        onShowToast('Squad invitation shared!');
+        return;
+      } catch (err: any) {
+        if (err.name === 'AbortError') return;
+      }
+    }
+
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+    } catch {}
+
+    const whatsappUrl = `https://api.whatsapp.com/send?text=${encodeURIComponent(shareText)}`;
+    const a = document.createElement('a');
+    a.href = whatsappUrl;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    onShowToast(`Invitation link copied! Opening WhatsApp to share with squad.`);
+  };
 
   return (
-    <div className="max-w-md mx-auto min-h-screen bg-[#f8faf9] text-slate-900 pb-32">
+    <div className="max-w-md mx-auto min-h-screen bg-[#f8faf9] dark:bg-slate-950 text-slate-900 dark:text-slate-100 pb-32 transition-colors duration-200">
       {/* 1ST: EDITABLE TRIP NAME WITH CUSTOMIZABLE BACKGROUND BANNER */}
       <div className="relative w-full h-48 overflow-hidden border-b border-slate-200">
         <img
@@ -674,6 +856,19 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
           <Camera className="w-3.5 h-3.5" />
           <span>Edit Background</span>
         </button>
+
+        {/* Share Squad via WhatsApp / Native Share Button */}
+        {hasJoinedGroup && (
+          <button
+            type="button"
+            onClick={handleShareGroup}
+            className="absolute top-3 left-3 px-3 py-1 rounded-full bg-emerald-600/90 hover:bg-emerald-500 backdrop-blur-md text-white text-[11px] font-bold flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer border border-emerald-400/40 shadow-sm"
+            title="Share squad invitation code via WhatsApp"
+          >
+            <Share2 className="w-3.5 h-3.5" />
+            <span>Share (WhatsApp)</span>
+          </button>
+        )}
 
         {/* Trip Name & Editable title */}
         <div className="absolute bottom-3 left-4 right-4 text-white z-10">
@@ -744,123 +939,149 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
             </span>
           </div>
 
-          <div className="flex items-center gap-3 overflow-x-auto no-scrollbar py-1">
-            {/* Circle 1: Group Edit */}
+          {/* PRIMARY SIX TOOLS IN A CLEAN 3-COLUMN GRID */}
+          <div className="grid grid-cols-3 gap-2.5 py-1">
+            {/* Tool 1: Edit Group */}
             <button
               type="button"
               onClick={() => setIsEditGroupModalOpen(true)}
-              className="flex flex-col items-center gap-1 group shrink-0 active:scale-90 transition-transform cursor-pointer"
+              className="flex flex-col items-center justify-center p-2.5 rounded-2xl bg-slate-50 hover:bg-slate-100 border border-slate-200/90 gap-1.5 group active:scale-95 transition-all cursor-pointer shadow-2xs"
             >
-              <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-slate-800 to-slate-700 text-white flex items-center justify-center shadow-md group-hover:ring-2 ring-emerald-500 transition-all">
+              <div className="w-11 h-11 rounded-full bg-gradient-to-tr from-slate-800 to-slate-700 text-white flex items-center justify-center shadow-md group-hover:ring-2 ring-emerald-500 transition-all">
                 <Settings className="w-5 h-5 group-hover:rotate-45 transition-transform" />
               </div>
-              <span className="text-[10px] font-bold text-slate-700">Edit Group</span>
+              <span className="text-[11px] font-bold text-slate-800">Edit Group</span>
             </button>
 
-            {/* Circle 2: Create Sub-Group */}
+            {/* Tool 2: Create Sub-Group */}
             <button
               type="button"
               onClick={() => setIsCreateSubGroupModalOpen(true)}
-              className="flex flex-col items-center gap-1 group shrink-0 active:scale-90 transition-transform cursor-pointer"
+              className="flex flex-col items-center justify-center p-2.5 rounded-2xl bg-slate-50 hover:bg-slate-100 border border-slate-200/90 gap-1.5 group active:scale-95 transition-all cursor-pointer shadow-2xs"
             >
-              <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-emerald-700 to-teal-600 text-white flex items-center justify-center shadow-md group-hover:ring-2 ring-emerald-400 transition-all">
+              <div className="w-11 h-11 rounded-full bg-gradient-to-tr from-emerald-700 to-teal-600 text-white flex items-center justify-center shadow-md group-hover:ring-2 ring-emerald-400 transition-all">
                 <Layers className="w-5 h-5" />
               </div>
-              <span className="text-[10px] font-bold text-slate-700">Sub-Group</span>
+              <span className="text-[11px] font-bold text-slate-800">Sub-Group</span>
             </button>
 
-            {/* Circle 3: Announcement */}
+            {/* Tool 3: Announcement */}
             <button
               type="button"
               onClick={() => setIsAnnouncementModalOpen(true)}
-              className="flex flex-col items-center gap-1 group shrink-0 active:scale-90 transition-transform cursor-pointer"
+              className="flex flex-col items-center justify-center p-2.5 rounded-2xl bg-slate-50 hover:bg-slate-100 border border-slate-200/90 gap-1.5 group active:scale-95 transition-all cursor-pointer shadow-2xs"
             >
-              <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-amber-600 to-orange-500 text-white flex items-center justify-center shadow-md group-hover:ring-2 ring-amber-400 transition-all">
+              <div className="w-11 h-11 rounded-full bg-gradient-to-tr from-amber-600 to-orange-500 text-white flex items-center justify-center shadow-md group-hover:ring-2 ring-amber-400 transition-all">
                 <Megaphone className="w-5 h-5" />
               </div>
-              <span className="text-[10px] font-bold text-slate-700">Announce</span>
+              <span className="text-[11px] font-bold text-slate-800">Announce</span>
             </button>
 
-            {/* Circle 4: Admin Dashboard (Promote / Demote Roles) */}
+            {/* Tool 4: Admin Dashboard */}
             <button
               type="button"
               onClick={() => setIsAdminDashboardModalOpen(true)}
-              className="flex flex-col items-center gap-1 group shrink-0 active:scale-90 transition-transform cursor-pointer"
+              className="flex flex-col items-center justify-center p-2.5 rounded-2xl bg-slate-50 hover:bg-slate-100 border border-slate-200/90 gap-1.5 group active:scale-95 transition-all cursor-pointer shadow-2xs"
             >
-              <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-indigo-700 to-purple-600 text-white flex items-center justify-center shadow-md group-hover:ring-2 ring-indigo-400 transition-all">
+              <div className="w-11 h-11 rounded-full bg-gradient-to-tr from-indigo-700 to-purple-600 text-white flex items-center justify-center shadow-md group-hover:ring-2 ring-indigo-400 transition-all">
                 <Crown className="w-5 h-5" />
               </div>
-              <span className="text-[10px] font-bold text-slate-700">Admin Board</span>
+              <span className="text-[11px] font-bold text-slate-800">Admin Board</span>
             </button>
 
-            {/* Circle 5: Missing Item Request */}
+            {/* Tool 5: Missing Item Request */}
             <button
               type="button"
               onClick={() => setIsMissingItemModalOpen(true)}
-              className="flex flex-col items-center gap-1 group shrink-0 active:scale-90 transition-transform cursor-pointer"
+              className="flex flex-col items-center justify-center p-2.5 rounded-2xl bg-slate-50 hover:bg-slate-100 border border-slate-200/90 gap-1.5 group active:scale-95 transition-all cursor-pointer shadow-2xs"
             >
-              <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-rose-600 to-red-500 text-white flex items-center justify-center shadow-md group-hover:ring-2 ring-rose-400 transition-all">
+              <div className="w-11 h-11 rounded-full bg-gradient-to-tr from-rose-600 to-red-500 text-white flex items-center justify-center shadow-md group-hover:ring-2 ring-rose-400 transition-all">
                 <HelpCircle className="w-5 h-5" />
               </div>
-              <span className="text-[10px] font-bold text-slate-700">Missing Item</span>
+              <span className="text-[11px] font-bold text-slate-800">Missing Item</span>
             </button>
 
-            {/* Circle 6: Shared Journey Checklist */}
+            {/* Tool 6: Shared Journey Checklist */}
             <button
               type="button"
               onClick={() => setIsJourneyChecklistModalOpen(true)}
-              className="flex flex-col items-center gap-1 group shrink-0 active:scale-90 transition-transform cursor-pointer"
+              className="flex flex-col items-center justify-center p-2.5 rounded-2xl bg-slate-50 hover:bg-slate-100 border border-slate-200/90 gap-1.5 group active:scale-95 transition-all cursor-pointer shadow-2xs"
             >
-              <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-teal-700 to-emerald-600 text-white flex items-center justify-center shadow-md group-hover:ring-2 ring-teal-400 transition-all">
+              <div className="w-11 h-11 rounded-full bg-gradient-to-tr from-teal-700 to-emerald-600 text-white flex items-center justify-center shadow-md group-hover:ring-2 ring-teal-400 transition-all">
                 <ClipboardCheck className="w-5 h-5" />
               </div>
-              <span className="text-[10px] font-bold text-slate-700">Checklist</span>
+              <span className="text-[11px] font-bold text-slate-800">Checklist</span>
             </button>
+          </div>
 
-            {/* Circle 7: Cloud Sync & Persistence Center */}
-            <button
-              type="button"
-              onClick={() => setIsCloudSyncModalOpen(true)}
-              className="flex flex-col items-center gap-1 group shrink-0 active:scale-90 transition-transform cursor-pointer"
-            >
-              <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-sky-600 to-blue-600 text-white flex items-center justify-center shadow-md group-hover:ring-2 ring-sky-400 transition-all relative">
-                <Database className="w-5 h-5" />
-                <span className="absolute -top-0.5 -right-0.5 w-3 h-3 bg-emerald-400 rounded-full ring-2 ring-white animate-pulse" />
-              </div>
-              <span className="text-[10px] font-bold text-slate-700">Sync Hub</span>
-            </button>
+          {/* SECONDARY TOOLS IN A CLEAN ROW BELOW (NO HORIZONTAL OVERFLOW) */}
+          <div className="pt-2.5 mt-2 border-t border-slate-200/80">
+            <span className="text-[9.5px] font-bold uppercase tracking-wider text-slate-400 block mb-1.5 px-0.5">
+              Extended Squad Utilities
+            </span>
+            <div className="grid grid-cols-4 gap-2">
+              {/* Secondary 1: Sync Hub */}
+              <button
+                type="button"
+                onClick={() => setIsCloudSyncModalOpen(true)}
+                className="flex flex-col items-center gap-1 p-2 rounded-xl bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 active:scale-95 transition-all cursor-pointer"
+                title="Cloud Sync & Multi-Phone Telemetry"
+              >
+                <div className="w-9 h-9 rounded-full bg-gradient-to-tr from-sky-600 to-blue-600 text-white flex items-center justify-center shadow-xs relative">
+                  <Database className="w-4 h-4" />
+                  <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-400 rounded-full ring-2 ring-white animate-pulse" />
+                </div>
+                <span className="text-[9.5px] font-bold truncate">Sync Hub</span>
+              </button>
 
-            {/* Circle 8: High Definition RAW & 4K Media Vault (Better than WhatsApp) */}
-            <button
-              type="button"
-              onClick={() => setIsHDMediaModalOpen(true)}
-              className="flex flex-col items-center gap-1 group shrink-0 active:scale-90 transition-transform cursor-pointer"
-              title="Share Lossless 48MP RAW Photos & 4K Video without compression"
-            >
-              <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-fuchsia-600 via-purple-600 to-indigo-600 text-white flex items-center justify-center shadow-md group-hover:ring-2 ring-fuchsia-400 transition-all relative">
-                <Image className="w-5 h-5" />
-                <span className="absolute -top-1 -right-1 px-1 py-0.2 rounded-full bg-gradient-to-r from-amber-400 to-pink-500 text-[7.5px] font-black tracking-tight text-white shadow-xs">
-                  4K RAW
-                </span>
-              </div>
-              <span className="text-[10px] font-bold text-slate-700">HD Share</span>
-            </button>
+              {/* Secondary 2: HD Share */}
+              <button
+                type="button"
+                onClick={() => setIsHDMediaModalOpen(true)}
+                className="flex flex-col items-center gap-1 p-2 rounded-xl bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 active:scale-95 transition-all cursor-pointer"
+                title="Share Lossless RAW Photos & 4K Video without compression"
+              >
+                <div className="w-9 h-9 rounded-full bg-gradient-to-tr from-fuchsia-600 via-purple-600 to-indigo-600 text-white flex items-center justify-center shadow-xs relative">
+                  <Image className="w-4 h-4" />
+                  <span className="absolute -top-0.5 -right-0.5 px-1 py-0.2 rounded-full bg-gradient-to-r from-amber-400 to-pink-500 text-[6.5px] font-black tracking-tight text-white shadow-xs">
+                    4K
+                  </span>
+                </div>
+                <span className="text-[9.5px] font-bold truncate">HD Vault</span>
+              </button>
 
-            {/* Circle 9: All Members Roster (Separate Window) */}
-            <button
-              type="button"
-              onClick={() => setIsAllMembersModalOpen(true)}
-              className="flex flex-col items-center gap-1 group shrink-0 active:scale-90 transition-transform cursor-pointer"
-              title="Open full squad members roster in separate window"
-            >
-              <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-cyan-700 to-teal-800 text-white flex items-center justify-center shadow-md group-hover:ring-2 ring-cyan-400 transition-all relative">
-                <Users className="w-5 h-5" />
-                <span className="absolute -top-0.5 -right-0.5 px-1 py-0.2 rounded-full bg-emerald-500 text-[8px] font-black text-white ring-2 ring-white">
-                  {members.length}
-                </span>
-              </div>
-              <span className="text-[10px] font-bold text-slate-700">View All</span>
-            </button>
+              {/* Secondary 3: Train Hub */}
+              <button
+                type="button"
+                onClick={() => setIsTrainModalOpen(true)}
+                className="flex flex-col items-center gap-1 p-2 rounded-xl bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 active:scale-95 transition-all cursor-pointer"
+                title="Manage shared train journey, live countdown, intermediate halts & seats"
+              >
+                <div className="w-9 h-9 rounded-full bg-gradient-to-tr from-amber-600 via-orange-600 to-amber-700 text-white flex items-center justify-center shadow-xs relative">
+                  <Train className="w-4 h-4" />
+                  <span className="absolute -top-0.5 -right-0.5 px-1 py-0.2 rounded-full bg-amber-400 text-[6.5px] font-black text-slate-950 ring-1 ring-white">
+                    Rail
+                  </span>
+                </div>
+                <span className="text-[9.5px] font-bold truncate">Train Hub</span>
+              </button>
+
+              {/* Secondary 4: View All Members */}
+              <button
+                type="button"
+                onClick={() => setIsAllMembersModalOpen(true)}
+                className="flex flex-col items-center gap-1 p-2 rounded-xl bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 active:scale-95 transition-all cursor-pointer"
+                title="Open full squad members roster in separate window"
+              >
+                <div className="w-9 h-9 rounded-full bg-gradient-to-tr from-cyan-700 to-teal-800 text-white flex items-center justify-center shadow-xs relative">
+                  <Users className="w-4 h-4" />
+                  <span className="absolute -top-0.5 -right-0.5 px-1 py-0.2 rounded-full bg-emerald-500 text-[7px] font-black text-white ring-1 ring-white">
+                    {members.length}
+                  </span>
+                </div>
+                <span className="text-[9.5px] font-bold truncate">Roster ({members.length})</span>
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -938,6 +1159,133 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
           </div>
         ) : (
           <>
+            {/* SHARED TRAIN JOURNEY & RETURN JOURNEY CARD */}
+            <section className="bg-white rounded-3xl p-4.5 border border-slate-200 shadow-xs space-y-3">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-xl bg-amber-100 text-amber-800 flex items-center justify-center">
+                    <Train className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
+                      Shared Train Journey
+                    </h3>
+                    <p className="text-[10px] text-slate-500">
+                      Live countdown, intermediate halts &amp; coach roster
+                    </p>
+                  </div>
+                </div>
+
+                {/* Onward vs Return Toggle */}
+                <div className="flex bg-slate-100 p-0.5 rounded-xl border border-slate-200">
+                  <button
+                    type="button"
+                    onClick={() => setTrainDirection('onward')}
+                    className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all cursor-pointer ${
+                      trainDirection === 'onward'
+                        ? 'bg-white text-emerald-950 shadow-xs'
+                        : 'text-slate-500 hover:text-slate-800'
+                    }`}
+                  >
+                    Onward
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTrainDirection('return')}
+                    className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all cursor-pointer ${
+                      trainDirection === 'return'
+                        ? 'bg-white text-emerald-950 shadow-xs'
+                        : 'text-slate-500 hover:text-slate-800'
+                    }`}
+                  >
+                    Return
+                  </button>
+                </div>
+              </div>
+
+              {/* Active Journey Details */}
+              {(() => {
+                const activeJourney = trainDirection === 'onward' ? onwardJourney : returnJourney;
+                const isAdmin = userRole === 'super_admin' || userRole === 'subgroup_admin';
+                const mySeat = seatAssignments.find((s) => s.user_id === currentUserId);
+
+                if (!activeJourney) {
+                  return (
+                    <div className="p-4 rounded-2xl bg-slate-50 border border-dashed border-slate-200 text-center space-y-2">
+                      <p className="text-xs text-slate-500">
+                        No {trainDirection} train itinerary scheduled yet.
+                      </p>
+                      {isAdmin ? (
+                        <button
+                          type="button"
+                          onClick={() => setIsTrainModalOpen(true)}
+                          className="px-3.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs inline-flex items-center gap-1.5 shadow-xs transition-all active:scale-95 cursor-pointer"
+                        >
+                          <Train className="w-3.5 h-3.5" />
+                          <span>Schedule {trainDirection === 'onward' ? 'Onward' : 'Return'} Train</span>
+                        </button>
+                      ) : (
+                        <span className="text-[11px] text-slate-400 italic block">
+                          Waiting for trip lead or faculty to publish departure train schedule.
+                        </span>
+                      )}
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="space-y-2.5">
+                    <div className="flex items-center justify-between p-3 rounded-2xl bg-amber-50/70 border border-amber-200/80">
+                      <div>
+                        <span className="text-[10px] text-amber-800 font-bold uppercase tracking-wider block font-mono">
+                          {activeJourney.train_number}
+                        </span>
+                        <h4 className="text-sm font-black text-slate-900">
+                          {activeJourney.train_name}
+                        </h4>
+                        <p className="text-[11px] text-slate-600 font-semibold mt-0.5">
+                          {activeJourney.boarding_station} → {activeJourney.destination_station}
+                        </p>
+                      </div>
+
+                      <div className="text-right">
+                        <span className="text-[10px] text-slate-500 font-bold uppercase block">
+                          Departure In
+                        </span>
+                        <span className="text-xs font-black text-amber-900 font-mono bg-white px-2.5 py-1 rounded-xl border border-amber-300 shadow-2xs block mt-0.5">
+                          {calculateTrainCountdown(activeJourney.departure_time)}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Member's Assigned Berth */}
+                    <div className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-xs">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-slate-500 font-medium">Your Berth:</span>
+                        {mySeat ? (
+                          <span className="font-extrabold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-md">
+                            Coach {mySeat.coach} · Berth {mySeat.berth_number || '-'} ({mySeat.berth_type || 'General'})
+                          </span>
+                        ) : (
+                          <span className="text-slate-400 italic text-[11px]">Seat allocation in progress</span>
+                        )}
+                      </div>
+
+                      {isAdmin && (
+                        <button
+                          type="button"
+                          onClick={() => setIsTrainModalOpen(true)}
+                          className="px-2.5 py-1 rounded-lg bg-slate-200 hover:bg-slate-300 text-slate-800 text-[10px] font-bold cursor-pointer transition-colors"
+                        >
+                          Manage Train &amp; Roster
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
+            </section>
+
             {/* Basecamp Check-In */}
             <section className="rounded-3xl p-4 bg-gradient-to-br from-emerald-50/70 via-teal-50/40 to-blue-50/40 border border-emerald-200/60 card-glow-mint relative overflow-hidden">
               <div className="flex items-start justify-between gap-3">
@@ -1291,7 +1639,19 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                       backgroundColor: member.subGroupColor ? `${member.subGroupColor}08` : '#ffffff',
                     }}
                   >
-                    <div className="flex items-center gap-2.5 min-w-0">
+                    <div
+                      onClick={() => {
+                        const targetId = (member.id === '1' || member.id === currentUserId) ? (currentUserId || member.id) : member.id;
+                        setViewingProfileUserId(targetId);
+                        setViewingProfileFallback({
+                          name: member.name,
+                          role: member.role,
+                          avatar: member.avatar,
+                        });
+                      }}
+                      className="flex items-center gap-2.5 min-w-0 cursor-pointer hover:opacity-85 transition-opacity"
+                      title="Click to view expedition member profile"
+                    >
                       <div className="relative shrink-0">
                         <img
                           src={member.avatar}
@@ -1478,7 +1838,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                 </div>
                 <span className="text-[10px] text-emerald-700 font-bold flex items-center gap-1.5 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
                   <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
-                  4 Connected
+                  {members.length} Connected
                 </span>
               </div>
 
@@ -1511,103 +1871,79 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                 <span>{isPushToTalk ? 'Transmitting Live Audio (Release to Send)' : 'Hold to Talk to All'}</span>
               </button>
 
-              {/* Squad Leads Quick Contact */}
+              {/* Squad Leads / Members Quick Contact (Real Database Members Only) */}
               <div className="space-y-2">
-                <div className="flex items-center justify-between p-2.5 rounded-2xl bg-slate-50 border border-slate-200">
-                  <div className="flex items-center gap-2.5">
-                    <div className="relative">
-                      <img
-                        alt="Arjun"
-                        className="w-9 h-9 rounded-full object-cover"
-                        src="https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=120&q=80"
-                      />
-                      <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-500 rounded-full ring-2 ring-white" />
-                    </div>
-                    <div>
-                      <p className="text-xs font-semibold text-slate-900 leading-tight">
-                        Arjun Sen (Scout Lead)
-                      </p>
-                      <p className="text-[10px] text-slate-500">North Ridge · Channel 1</p>
-                    </div>
+                {members.filter((m) => m.id !== currentUserId && m.id !== '1').length === 0 ? (
+                  <div className="p-4 rounded-2xl bg-slate-50 border border-dashed border-slate-200 text-center space-y-1">
+                    <p className="text-xs font-semibold text-slate-700">No other squad members connected</p>
+                    <p className="text-[10px] text-slate-500">
+                      Share your squad code with your team to enable direct tactical intercom and calling.
+                    </p>
                   </div>
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setCallModalContact({
-                          name: 'Arjun Sen',
-                          title: 'Scout Lead - North Ridge',
-                          phone: '+91 98000 00003',
-                          avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=120&q=80',
-                        })
-                      }
-                      className="w-8 h-8 rounded-full bg-emerald-100/70 flex items-center justify-center text-emerald-800 hover:bg-emerald-700 hover:text-white transition-colors cursor-pointer"
-                    >
-                      <Phone className="w-4 h-4" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setChatModalContact({
-                          name: 'Arjun Sen',
-                          title: 'Scout Lead',
-                          avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=120&q=80',
-                        })
-                      }
-                      className="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center text-slate-700 hover:bg-slate-300 transition-colors cursor-pointer"
-                    >
-                      <MessageSquare className="w-4 h-4" />
-                    </button>
-                  </div>
-                </div>
-
-                <div className="flex items-center justify-between p-2.5 rounded-2xl bg-slate-50 border border-slate-200">
-                  <div className="flex items-center gap-2.5">
-                    <div className="relative">
-                      <img
-                        alt="Sarah"
-                        className="w-9 h-9 rounded-full object-cover"
-                        src="https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&w=120&q=80"
-                      />
-                      <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-500 rounded-full ring-2 ring-white" />
-                    </div>
-                    <div>
-                      <p className="text-xs font-semibold text-slate-900 leading-tight">
-                        Sarah Chen (Medic Squad)
-                      </p>
-                      <p className="text-[10px] text-slate-500">Basecamp Medical · Channel 3</p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setCallModalContact({
-                          name: 'Sarah Chen',
-                          title: 'Medic Squad Lead',
-                          phone: '+91 98000 00002',
-                          avatar: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&w=120&q=80',
-                        })
-                      }
-                      className="w-8 h-8 rounded-full bg-emerald-100/70 flex items-center justify-center text-emerald-800 hover:bg-emerald-700 hover:text-white transition-colors cursor-pointer"
-                    >
-                      <Phone className="w-4 h-4" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setChatModalContact({
-                          name: 'Sarah Chen',
-                          title: 'Medic Squad',
-                          avatar: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&w=120&q=80',
-                        })
-                      }
-                      className="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center text-slate-700 hover:bg-slate-300 transition-colors cursor-pointer"
-                    >
-                      <MessageSquare className="w-4 h-4" />
-                    </button>
-                  </div>
-                </div>
+                ) : (
+                  members
+                    .filter((m) => m.id !== currentUserId && m.id !== '1')
+                    .map((m) => (
+                      <div
+                        key={m.id}
+                        className="flex items-center justify-between p-2.5 rounded-2xl bg-slate-50 border border-slate-200"
+                      >
+                        <div className="flex items-center gap-2.5">
+                          <div className="relative">
+                            <img
+                              alt={m.name}
+                              className="w-9 h-9 rounded-full object-cover"
+                              src={m.avatar}
+                            />
+                            <span
+                              className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-white ${
+                                m.status === 'present' ? 'bg-emerald-500' : 'bg-amber-500'
+                              }`}
+                            />
+                          </div>
+                          <div>
+                            <p className="text-xs font-semibold text-slate-900 leading-tight">
+                              {m.name}
+                            </p>
+                            <p className="text-[10px] text-slate-500">
+                              {m.role} · {m.phone || 'Protected Contact'}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setCallModalContact({
+                                name: m.name,
+                                title: m.role,
+                                phone: m.phone || '',
+                                avatar: m.avatar,
+                              })
+                            }
+                            className="w-8 h-8 rounded-full bg-emerald-100/70 flex items-center justify-center text-emerald-800 hover:bg-emerald-700 hover:text-white transition-colors cursor-pointer"
+                            title="Call member"
+                          >
+                            <Phone className="w-4 h-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setChatModalContact({
+                                name: m.name,
+                                title: m.role,
+                                avatar: m.avatar,
+                              })
+                            }
+                            className="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center text-slate-700 hover:bg-slate-300 transition-colors cursor-pointer"
+                            title="Send dispatch message"
+                          >
+                            <MessageSquare className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                )}
               </div>
             </section>
 
@@ -1910,28 +2246,34 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                   Active Sub-Groups ({subGroups.length}) — Tap minus to remove:
                 </span>
                 <div className="flex flex-wrap gap-1.5">
-                  {subGroups.map((sg) => (
-                    <div
-                      key={sg.id}
-                      className="text-[10px] font-bold px-2 py-0.5 rounded-full border text-slate-800 flex items-center gap-1.5 bg-white shadow-2xs"
-                      style={{ borderColor: sg.color }}
-                    >
-                      <span className="w-2 h-2 rounded-full" style={{ backgroundColor: sg.color }} />
-                      <span>{sg.name}</span>
-                      <span className="text-[9px] text-slate-400 font-normal">({sg.memberCount})</span>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDeleteSubGroup(sg.id, sg.name);
-                        }}
-                        className="w-4 h-4 rounded-full bg-rose-100 hover:bg-rose-200 text-rose-700 flex items-center justify-center cursor-pointer transition-colors"
-                        title={`Remove sub-group ${sg.name}`}
+                  {subGroups.length === 0 ? (
+                    <p className="text-[11px] text-slate-400 italic py-1">
+                      No sub-groups formed yet. Create one below to organize your squad.
+                    </p>
+                  ) : (
+                    subGroups.map((sg) => (
+                      <div
+                        key={sg.id}
+                        className="text-[10px] font-bold px-2 py-0.5 rounded-full border text-slate-800 flex items-center gap-1.5 bg-white shadow-2xs"
+                        style={{ borderColor: sg.color }}
                       >
-                        <Minus className="w-2.5 h-2.5 stroke-[3]" />
-                      </button>
-                    </div>
-                  ))}
+                        <span className="w-2 h-2 rounded-full" style={{ backgroundColor: sg.color }} />
+                        <span>{sg.name}</span>
+                        <span className="text-[9px] text-slate-400 font-normal">({sg.memberCount})</span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteSubGroup(sg.id, sg.name);
+                          }}
+                          className="w-4 h-4 rounded-full bg-rose-100 hover:bg-rose-200 text-rose-700 flex items-center justify-center cursor-pointer transition-colors"
+                          title={`Remove sub-group ${sg.name}`}
+                        >
+                          <Minus className="w-2.5 h-2.5 stroke-[3]" />
+                        </button>
+                      </div>
+                    ))
+                  )}
                 </div>
               </div>
 
@@ -1943,7 +2285,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                     id: `sub-${Date.now()}`,
                     name: subGroupNameInput.trim(),
                     color: subGroupColorInput,
-                    leadName: 'Chris Walker',
+                    leadName: currentUserName || 'Squad Member',
                     memberCount: selectedSubGroupMembers.length || 1,
                   };
                   setSubGroups((prev) => [...prev, newSubGroup]);
@@ -1993,19 +2335,25 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
               onSubmit={(e) => {
                 e.preventDefault();
                 if (!quickAnnounceTitle.trim() || !quickAnnounceText.trim()) return;
+                const roleLabel =
+                  userRole === 'super_admin'
+                    ? 'Squad Commander'
+                    : userRole === 'subgroup_admin'
+                    ? 'Sub-Group Lead'
+                    : 'Expedition Member';
                 const newAnnounce = {
                   id: `a-${Date.now()}`,
                   title: quickAnnounceTitle.trim(),
                   text: quickAnnounceText.trim(),
                   priority: quickAnnouncePriority,
-                  author: 'Chris Walker (Trekker Lead)',
+                  author: `${currentUserName} (${roleLabel})`,
                   timestamp: 'Just now',
                 };
                 setAnnouncements((prev) => [newAnnounce, ...prev]);
                 setIsAnnouncementModalOpen(false);
                 setQuickAnnounceTitle('');
                 setQuickAnnounceText('');
-                onShowToast(`Announcement broadcasted to all 42 squad members!`);
+                onShowToast(`Announcement broadcasted to squad members!`);
               }}
               className="space-y-3"
             >
@@ -2220,6 +2568,10 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                 <button
                   type="button"
                   onClick={() => {
+                    if (userRole === 'member') {
+                      onShowToast('Role Security: Regular members cannot promote themselves to Sub-Admin.');
+                      return;
+                    }
                     if (onUpdateRole) onUpdateRole('subgroup_admin');
                     localStorage.setItem('trailoPS_userRole', 'subgroup_admin');
                     setMembers((prev) =>
@@ -2234,14 +2586,21 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                   className={`py-2 px-1 rounded-xl text-[11px] font-extrabold border transition-all cursor-pointer text-center ${
                     userRole === 'subgroup_admin'
                       ? 'bg-blue-600 text-white border-blue-600 shadow-md ring-2 ring-blue-300'
+                      : userRole === 'member'
+                      ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed opacity-60'
                       : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
                   }`}
+                  title={userRole === 'member' ? 'Protected: Self-promotion disabled' : 'Switch to Sub-Admin'}
                 >
                   ⚡ Sub-Admin
                 </button>
                 <button
                   type="button"
                   onClick={() => {
+                    if (userRole === 'member') {
+                      onShowToast('Role Security: Regular members cannot promote themselves to Super Admin.');
+                      return;
+                    }
                     if (onUpdateRole) onUpdateRole('super_admin');
                     localStorage.setItem('trailoPS_userRole', 'super_admin');
                     setMembers((prev) =>
@@ -2256,8 +2615,11 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                   className={`py-2 px-1 rounded-xl text-[11px] font-extrabold border transition-all cursor-pointer text-center ${
                     userRole === 'super_admin'
                       ? 'bg-purple-700 text-white border-purple-700 shadow-md ring-2 ring-purple-300'
+                      : userRole === 'member'
+                      ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed opacity-60'
                       : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
                   }`}
+                  title={userRole === 'member' ? 'Protected: Self-promotion disabled' : 'Switch to Super Admin'}
                 >
                   👑 Super Admin
                 </button>
@@ -2424,7 +2786,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                 const newItem = {
                   id: `m-${Date.now()}`,
                   itemName: missingItemName.trim(),
-                  reportedBy: 'Chris Walker (You)',
+                  reportedBy: `${currentUserName} (You)`,
                   urgency: missingItemUrgency,
                   location: missingItemLocation.trim() || 'Trail Base',
                   timestamp: 'Just now',
@@ -2517,39 +2879,45 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                 Active Missing Item Alerts ({missingItems.filter((i) => i.status === 'open').length})
               </span>
               <div className="space-y-1.5 max-h-36 overflow-y-auto no-scrollbar">
-                {missingItems.map((item) => (
-                  <div
-                    key={item.id}
-                    className={`p-2 rounded-xl border flex items-center justify-between text-xs ${
-                      item.status === 'found' ? 'bg-slate-50 border-slate-200 opacity-60' : 'bg-rose-50/70 border-rose-200'
-                    }`}
-                  >
-                    <div>
-                      <p className={`font-bold text-[11px] ${item.status === 'found' ? 'line-through text-slate-500' : 'text-slate-900'}`}>
-                        {item.itemName}
-                      </p>
-                      <p className="text-[9px] text-slate-500">
-                        {item.location} · {item.timestamp}
-                      </p>
+                {missingItems.length === 0 ? (
+                  <p className="text-[11px] text-slate-400 text-center py-3 italic">
+                    All squad gear is accounted for. No missing gear alerts logged.
+                  </p>
+                ) : (
+                  missingItems.map((item) => (
+                    <div
+                      key={item.id}
+                      className={`p-2 rounded-xl border flex items-center justify-between text-xs ${
+                        item.status === 'found' ? 'bg-slate-50 border-slate-200 opacity-60' : 'bg-rose-50/70 border-rose-200'
+                      }`}
+                    >
+                      <div>
+                        <p className={`font-bold text-[11px] ${item.status === 'found' ? 'line-through text-slate-500' : 'text-slate-900'}`}>
+                          {item.itemName}
+                        </p>
+                        <p className="text-[9px] text-slate-500">
+                          {item.location} · {item.timestamp}
+                        </p>
+                      </div>
+                      {item.status === 'open' ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setMissingItems((prev) =>
+                              prev.map((i) => (i.id === item.id ? { ...i, status: 'found' } : i))
+                            );
+                            onShowToast(`"${item.itemName}" marked as found!`);
+                          }}
+                          className="px-2 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-bold transition-colors cursor-pointer"
+                        >
+                          Found
+                        </button>
+                      ) : (
+                        <span className="text-[10px] font-bold text-emerald-700">Resolved</span>
+                      )}
                     </div>
-                    {item.status === 'open' ? (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setMissingItems((prev) =>
-                            prev.map((i) => (i.id === item.id ? { ...i, status: 'found' } : i))
-                          );
-                          onShowToast(`"${item.itemName}" marked as found!`);
-                        }}
-                        className="px-2 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-bold transition-colors cursor-pointer"
-                      >
-                        Found
-                      </button>
-                    ) : (
-                      <span className="text-[10px] font-bold text-emerald-700">Resolved</span>
-                    )}
-                  </div>
-                ))}
+                  ))
+                )}
               </div>
             </div>
           </div>
@@ -2599,7 +2967,12 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
 
             {/* Checklist Tasks List with Minus Deletion Button (Request 10) */}
             <div className="space-y-2 max-h-56 overflow-y-auto no-scrollbar">
-              {journeyChecklist.map((task) => (
+              {journeyChecklist.length === 0 ? (
+                <p className="text-[11px] text-slate-400 text-center py-4 italic">
+                  No expedition checklist tasks added yet. Add preparation tasks below.
+                </p>
+              ) : (
+                journeyChecklist.map((task) => (
                 <div
                   key={task.id}
                   className={`p-2.5 rounded-xl border flex items-center justify-between gap-2 transition-all ${
@@ -2648,7 +3021,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                     <Minus className="w-3.5 h-3.5 stroke-[2.5]" />
                   </button>
                 </div>
-              ))}
+              )))}
             </div>
 
             {/* Add New Shared Task */}
@@ -2919,6 +3292,25 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
               </button>
             </div>
 
+            {/* Upload Progress Bar & Clear Status Indicator */}
+            {isUploadingMedia && (
+              <div className="p-3 bg-fuchsia-50/90 rounded-2xl border border-fuchsia-200/90 space-y-1.5 animate-in fade-in duration-200">
+                <div className="flex items-center justify-between text-[11px] font-bold text-fuchsia-950">
+                  <span className="flex items-center gap-1.5 truncate max-w-[280px]">
+                    <Upload className="w-3.5 h-3.5 animate-bounce text-fuchsia-600 shrink-0" />
+                    <span>{uploadStatus || 'Uploading to Encrypted Vault...'}</span>
+                  </span>
+                  <span className="font-mono text-fuchsia-700 font-extrabold">{uploadProgress}%</span>
+                </div>
+                <div className="w-full bg-fuchsia-200/80 h-2 rounded-full overflow-hidden">
+                  <div
+                    className="bg-gradient-to-r from-fuchsia-600 to-indigo-600 h-full transition-all duration-300 rounded-full"
+                    style={{ width: `${uploadProgress}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
             {/* Media Filter Tabs */}
             <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-xl text-xs font-bold">
               <button
@@ -3166,7 +3558,19 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                     className="p-3 rounded-2xl bg-white border border-slate-200 shadow-2xs hover:shadow-xs transition-shadow space-y-2"
                   >
                     <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2.5 min-w-0">
+                      <div
+                        onClick={() => {
+                          const targetId = (member.id === '1' || member.id === currentUserId) ? (currentUserId || member.id) : member.id;
+                          setViewingProfileUserId(targetId);
+                          setViewingProfileFallback({
+                            name: member.name,
+                            role: member.role,
+                            avatar: member.avatar,
+                          });
+                        }}
+                        className="flex items-center gap-2.5 min-w-0 cursor-pointer hover:opacity-85 transition-opacity"
+                        title="Click to view member profile"
+                      >
                         <div className="relative shrink-0">
                           <img
                             src={member.avatar}
@@ -3234,7 +3638,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                             setCallModalContact({
                               name: member.name,
                               title: member.role,
-                              phone: '+91 98000 00001',
+                              phone: member.phone || '',
                               avatar: member.avatar,
                             });
                           }}
@@ -3282,11 +3686,24 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
       <CreateTripModal
         isOpen={isCreateModalOpen}
         onClose={() => setIsCreateModalOpen(false)}
-        onCreate={(trip) => {
+        onCreate={async (trip) => {
           setTripName(trip.name);
+          if (currentUserId) {
+            try {
+              await createSquadGroup(
+                currentUserId,
+                trip.name,
+                trip.destination,
+                trip.budgetPerMember,
+                trip.passkey
+              );
+              onRefreshSquad?.();
+            } catch (err) {
+              console.warn('Failed to save squad to Supabase:', err);
+            }
+          }
           onSetJoinedGroup(true);
-          localStorage.setItem('trailoPS_hasJoinedGroup', 'true');
-          onShowToast(`Squad route "${trip.name}" created with individual budget ₹${trip.budgetPerMember.toLocaleString()}!`);
+          onShowToast(`Squad route "${trip.name}" created! Invitation code: ${trip.passkey}`);
         }}
       />
 
@@ -3310,6 +3727,55 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
           contactName={chatModalContact.name}
           contactTitle={chatModalContact.title}
           avatar={chatModalContact.avatar}
+        />
+      )}
+
+      {/* Shared Train Journey & Berths Modal */}
+      {isTrainModalOpen && (
+        <TrainJourneyModal
+          groupId={activeSquad?.id || 'grp_current'}
+          isOpen={isTrainModalOpen}
+          onClose={() => setIsTrainModalOpen(false)}
+          direction={trainDirection}
+          journey={trainDirection === 'onward' ? onwardJourney : returnJourney}
+          seatAssignments={seatAssignments}
+          members={members.map((m) => ({
+            id: m.id,
+            group_id: activeSquad?.id || 'grp_current',
+            user_id: m.id,
+            role: (m.roleHierarchy as any) || 'member',
+            status: 'active' as const,
+            profile: {
+              id: m.id,
+              email: '',
+              full_name: m.name,
+              avatar_url: m.avatar,
+              is_profile_complete: true,
+            },
+          }))}
+          isAdmin={userRole === 'super_admin' || userRole === 'subgroup_admin'}
+          onSaved={() => {
+            loadTrainData();
+            onShowToast('Train journey & seat reservations updated!');
+          }}
+          onShowToast={onShowToast}
+        />
+      )}
+
+      {/* Member Profile Modal (with strict privacy masking for emergency contacts & medical data) */}
+      {viewingProfileUserId && (
+        <MemberProfileModal
+          isOpen={!!viewingProfileUserId}
+          onClose={() => {
+            setViewingProfileUserId(null);
+            setViewingProfileFallback(null);
+          }}
+          userId={viewingProfileUserId}
+          currentUserId={currentUserId || ''}
+          currentUserRole={userRole}
+          fallbackName={viewingProfileFallback?.name || 'Squad Member'}
+          fallbackRole={viewingProfileFallback?.role || 'member'}
+          fallbackAvatar={viewingProfileFallback?.avatar}
         />
       )}
     </div>

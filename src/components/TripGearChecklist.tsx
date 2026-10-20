@@ -18,6 +18,7 @@ import {
   Layers,
   X,
   Minus,
+  Backpack,
 } from 'lucide-react';
 
 export interface GearItem {
@@ -55,116 +56,20 @@ export const TripGearChecklist: React.FC<TripGearChecklistProps> = ({
   const [newItemWeight, setNewItemWeight] = useState(300);
   const [newItemSpec, setNewItemSpec] = useState('');
 
-  const [gearList, setGearList] = useState<GearItem[]>([
-    {
-      id: 'g-1',
-      name: 'LoRa Mesh Transceiver (868MHz)',
-      category: 'navigation',
-      isPacked: true,
-      isMandatory: true,
-      weightGrams: 180,
-      spec: 'Squad channel 1-4 synced',
-    },
-    {
-      id: 'g-2',
-      name: 'High-Altitude Alpine First-Aid Kit',
-      category: 'medical',
-      isPacked: true,
-      isMandatory: true,
-      weightGrams: 650,
-      spec: 'Trauma gauze, suture, antiseptics',
-    },
-    {
-      id: 'g-3',
-      name: 'Acetazolamide (Diamox 250mg)',
-      category: 'medical',
-      isPacked: true,
-      isMandatory: true,
-      weightGrams: 50,
-      spec: 'Acute mountain sickness prophylaxis',
-    },
-    {
-      id: 'g-4',
-      name: 'Waterproof Gore-Tex Pro Shell Jacket',
-      category: 'apparel',
-      isPacked: true,
-      isMandatory: true,
-      weightGrams: 480,
-      spec: '28,000mm hydrostatic head',
-    },
-    {
-      id: 'g-5',
-      name: 'Cat 4 High-Altitude Glacier Sunglasses',
-      category: 'apparel',
-      isPacked: true,
-      isMandatory: true,
-      weightGrams: 90,
-      spec: '100% UV400 side-shielded',
-    },
-    {
-      id: 'g-6',
-      name: 'LED Headlamp + 2x Lithium Spares',
-      category: 'navigation',
-      isPacked: false,
-      isMandatory: true,
-      weightGrams: 140,
-      spec: '450 lumens, sub-zero rated',
-    },
-    {
-      id: 'g-7',
-      name: 'Emergency Thermal Bivy Space Blanket',
-      category: 'medical',
-      isPacked: false,
-      isMandatory: true,
-      weightGrams: 120,
-      spec: '90% radiant body heat reflection',
-    },
-    {
-      id: 'g-8',
-      name: '10-Point Steel Hiking Crampons / Spikes',
-      category: 'apparel',
-      isPacked: false,
-      isMandatory: true,
-      weightGrams: 750,
-      spec: 'Pelling ice ridge grip',
-    },
-    {
-      id: 'g-9',
-      name: 'Dehydrated High-Calorie Rations (3 Days)',
-      category: 'camp',
-      isPacked: false,
-      isMandatory: false,
-      weightGrams: 1200,
-      spec: '3,200 kcal/day pack',
-    },
-    {
-      id: 'g-10',
-      name: 'Vacuum Insulated Titanium Flask (1L)',
-      category: 'camp',
-      isPacked: true,
-      isMandatory: false,
-      weightGrams: 320,
-      spec: 'Keeps liquids hot for 18h',
-    },
-    {
-      id: 'g-11',
-      name: 'Topo Map & Magnetic Compass (Mirror)',
-      category: 'navigation',
-      isPacked: true,
-      isMandatory: true,
-      weightGrams: 110,
-      spec: '1:25,000 Sikkim Survey grid',
-    },
-    {
-      id: 'g-12',
-      name: 'Multi-Tool & Ferrocerium Fire Steel',
-      category: 'camp',
-      isPacked: false,
-      isMandatory: false,
-      weightGrams: 260,
-      spec: 'Titanium blade & whistle',
-    },
-  ]);
+  const [gearList, setGearList] = useState<GearItem[]>(() => {
+    const saved = localStorage.getItem('trailoPS_trip_gear');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {}
+    }
+    return [];
+  });
+
+  React.useEffect(() => {
+    localStorage.setItem('trailoPS_trip_gear', JSON.stringify(gearList));
+  }, [gearList]);
 
   // Calculations
   const totalItems = gearList.length;
@@ -408,90 +313,108 @@ export const TripGearChecklist: React.FC<TripGearChecklistProps> = ({
 
           {/* Interactive Checklist Items List */}
           <div className="space-y-2 max-h-64 overflow-y-auto no-scrollbar pr-0.5">
-            {filteredItems.map((item) => (
-              <div
-                key={item.id}
-                onClick={() => toggleGear(item.id)}
-                className={`p-2.5 rounded-2xl border transition-colors duration-150 cursor-pointer flex items-center justify-between gap-2 shadow-2xs select-none min-h-[58px] ${
-                  item.isPacked
-                    ? 'bg-emerald-50/60 border-emerald-300'
-                    : 'bg-white border-slate-200 hover:border-emerald-400'
-                }`}
-              >
-                <div className="flex items-center gap-2.5 min-w-0">
-                  {/* Interactive Checkbox Icon */}
-                  <div className="shrink-0 flex items-center justify-center">
-                    {item.isPacked ? (
-                      <CheckCircle2 className="w-5 h-5 text-emerald-700 fill-emerald-100" />
-                    ) : (
-                      <Circle className="w-5 h-5 text-slate-300 group-hover:text-emerald-600" />
-                    )}
-                  </div>
-
-                  {/* Gear Info */}
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <span
-                        className={`text-xs font-bold truncate ${
-                          item.isPacked
-                            ? 'text-slate-500 line-through decoration-emerald-600/70'
-                            : 'text-slate-900'
-                        }`}
-                      >
-                        {item.name}
-                      </span>
-
-                      {item.isMandatory && (
-                        <span className="px-1.5 py-0.2 rounded text-[9px] font-black uppercase tracking-wider bg-rose-100 text-rose-800 border border-rose-300">
-                          Mandatory
-                        </span>
-                      )}
-
-                      {item.isCustom && (
-                        <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-purple-100 text-purple-800">
-                          Custom
-                        </span>
-                      )}
-                    </div>
-
-                    <div className="flex items-center gap-2 text-[10px] text-slate-500 mt-0.5">
-                      {item.spec && <span>{item.spec}</span>}
-                      <span>·</span>
-                      <span className="font-mono text-slate-600 font-semibold">
-                        {item.weightGrams >= 1000
-                          ? `${(item.weightGrams / 1000).toFixed(1)} kg`
-                          : `${item.weightGrams}g`}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Right side status / delete */}
-                <div className="flex items-center gap-1.5 shrink-0">
-                  <span
-                    className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                      item.isPacked
-                        ? 'bg-emerald-100 text-emerald-900'
-                        : 'bg-slate-100 text-slate-500'
-                    }`}
-                  >
-                    {item.isPacked ? 'Packed' : 'Pending'}
-                  </span>
-
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDeleteItem(item.id, item.name);
-                    }}
-                    className="w-7 h-7 rounded-lg bg-slate-50 hover:bg-rose-50 text-slate-400 hover:text-rose-600 border border-slate-200 hover:border-rose-300 flex items-center justify-center cursor-pointer transition-colors"
-                    title={`Remove (-) ${item.name} from checklist`}
-                  >
-                    <Minus className="w-3.5 h-3.5 stroke-[2.5]" />
-                  </button>
-                </div>
+            {filteredItems.length === 0 ? (
+              <div className="p-6 rounded-2xl bg-slate-50 border border-dashed border-slate-200 text-center space-y-2">
+                <Backpack className="w-8 h-8 text-slate-300 mx-auto" />
+                <h5 className="text-xs font-bold text-slate-700">No Gear Items Logged</h5>
+                <p className="text-[11px] text-slate-500 max-w-xs mx-auto">
+                  Your expedition packing list is empty. Tap "+ Add Item" above to add equipment.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setIsAddModalOpen(true)}
+                  className="mt-1 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-700 text-white text-[11px] font-bold hover:bg-emerald-800 transition-colors cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Add First Item</span>
+                </button>
               </div>
-            ))}
+            ) : (
+              filteredItems.map((item) => (
+                <div
+                  key={item.id}
+                  onClick={() => toggleGear(item.id)}
+                  className={`p-2.5 rounded-2xl border transition-colors duration-150 cursor-pointer flex items-center justify-between gap-2 shadow-2xs select-none min-h-[58px] ${
+                    item.isPacked
+                      ? 'bg-emerald-50/60 border-emerald-300'
+                      : 'bg-white border-slate-200 hover:border-emerald-400'
+                  }`}
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    {/* Interactive Checkbox Icon */}
+                    <div className="shrink-0 flex items-center justify-center">
+                      {item.isPacked ? (
+                        <CheckCircle2 className="w-5 h-5 text-emerald-700 fill-emerald-100" />
+                      ) : (
+                        <Circle className="w-5 h-5 text-slate-300 group-hover:text-emerald-600" />
+                      )}
+                    </div>
+
+                    {/* Gear Info */}
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span
+                          className={`text-xs font-bold truncate ${
+                            item.isPacked
+                              ? 'text-slate-500 line-through decoration-emerald-600/70'
+                              : 'text-slate-900'
+                          }`}
+                        >
+                          {item.name}
+                        </span>
+
+                        {item.isMandatory && (
+                          <span className="px-1.5 py-0.2 rounded text-[9px] font-black uppercase tracking-wider bg-rose-100 text-rose-800 border border-rose-300">
+                            Mandatory
+                          </span>
+                        )}
+
+                        {item.isCustom && (
+                          <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-purple-100 text-purple-800">
+                            Custom
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-2 text-[10px] text-slate-500 mt-0.5">
+                        {item.spec && <span>{item.spec}</span>}
+                        <span>·</span>
+                        <span className="font-mono text-slate-600 font-semibold">
+                          {item.weightGrams >= 1000
+                            ? `${(item.weightGrams / 1000).toFixed(1)} kg`
+                            : `${item.weightGrams}g`}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Right side status / delete */}
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <span
+                      className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                        item.isPacked
+                          ? 'bg-emerald-100 text-emerald-900'
+                          : 'bg-slate-100 text-slate-500'
+                      }`}
+                    >
+                      {item.isPacked ? 'Packed' : 'Pending'}
+                    </span>
+
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteItem(item.id, item.name);
+                      }}
+                      className="w-7 h-7 rounded-lg bg-slate-50 hover:bg-rose-50 text-slate-400 hover:text-rose-600 border border-slate-200 hover:border-rose-300 flex items-center justify-center cursor-pointer transition-colors"
+                      title={`Remove (-) ${item.name} from checklist`}
+                    >
+                      <Minus className="w-3.5 h-3.5 stroke-[2.5]" />
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
           </div>
 
           {/* Bottom Footer Actions */}

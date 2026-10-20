@@ -28,43 +28,20 @@ export const PersonalPackingNotes: React.FC<PersonalPackingNotesProps> = ({
     'document' | 'clothes' | 'electronics' | 'snack' | 'other'
   >('document');
 
-  const [todos, setTodos] = useState<PersonalTodoItem[]>([
-    {
-      id: 't-1',
-      text: 'Government Photo ID Card & 4 Passport Photos',
-      completed: true,
-      category: 'document',
-      priority: 'high',
-    },
-    {
-      id: 't-2',
-      text: 'Thermal inner wear & 3 pairs of merino wool socks',
-      completed: true,
-      category: 'clothes',
-      priority: 'high',
-    },
-    {
-      id: 't-3',
-      text: '20,000mAh Powerbank & Multi-USB braided cable',
-      completed: false,
-      category: 'electronics',
-      priority: 'high',
-    },
-    {
-      id: 't-4',
-      text: 'Electrolyte ORS sachets & High-calorie trail mix',
-      completed: false,
-      category: 'snack',
-      priority: 'normal',
-    },
-    {
-      id: 't-5',
-      text: 'Personal toiletries, lip balm with SPF & wet wipes',
-      completed: false,
-      category: 'other',
-      priority: 'normal',
-    },
-  ]);
+  const [todos, setTodos] = useState<PersonalTodoItem[]>(() => {
+    const saved = localStorage.getItem('trailoPS_personal_todos');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {}
+    }
+    return [];
+  });
+
+  React.useEffect(() => {
+    localStorage.setItem('trailoPS_personal_todos', JSON.stringify(todos));
+  }, [todos]);
 
   const completedCount = todos.filter((t) => t.completed).length;
   const totalCount = todos.length;
@@ -221,18 +198,26 @@ export const PersonalPackingNotes: React.FC<PersonalPackingNotesProps> = ({
 
           {/* List of Personal Todos */}
           <div className="space-y-2 max-h-56 overflow-y-auto no-scrollbar pr-0.5">
-            {todos.map((todo) => {
-              const badge = getCategoryBadge(todo.category);
-              return (
-                <div
-                  key={todo.id}
-                  onClick={() => toggleTodo(todo.id)}
-                  className={`p-2.5 rounded-2xl border transition-colors duration-150 cursor-pointer flex items-center justify-between gap-2 shadow-2xs select-none min-h-[54px] ${
-                    todo.completed
-                      ? 'bg-amber-50/50 border-amber-200/80'
-                      : 'bg-white border-slate-200 hover:border-amber-400'
-                  }`}
-                >
+            {todos.length === 0 ? (
+              <div className="p-5 rounded-2xl bg-slate-50 border border-dashed border-slate-200 text-center space-y-1.5">
+                <p className="text-xs font-bold text-slate-700">No Personal Packing Items</p>
+                <p className="text-[11px] text-slate-500 max-w-xs mx-auto">
+                  Type an essential packing note above and tap "+" to keep track of your expedition gear.
+                </p>
+              </div>
+            ) : (
+              todos.map((todo) => {
+                const badge = getCategoryBadge(todo.category);
+                return (
+                  <div
+                    key={todo.id}
+                    onClick={() => toggleTodo(todo.id)}
+                    className={`p-2.5 rounded-2xl border transition-colors duration-150 cursor-pointer flex items-center justify-between gap-2 shadow-2xs select-none min-h-[54px] ${
+                      todo.completed
+                        ? 'bg-amber-50/50 border-amber-200/80'
+                        : 'bg-white border-slate-200 hover:border-amber-400'
+                    }`}
+                  >
                   <div className="flex items-center gap-2.5 min-w-0">
                     <div className="shrink-0 flex items-center justify-center">
                       {todo.completed ? (
@@ -273,7 +258,7 @@ export const PersonalPackingNotes: React.FC<PersonalPackingNotesProps> = ({
                   </button>
                 </div>
               );
-            })}
+            }))}
           </div>
         </div>
       )}

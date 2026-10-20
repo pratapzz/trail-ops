@@ -1,13 +1,14 @@
-import React, { useState, useEffect } from 'react';
-import { PhoneOff, Mic, MicOff, Volume2, Shield, Radio } from 'lucide-react';
+import React from 'react';
+import { Phone, PhoneCall, X, Shield, Lock, AlertCircle, Copy, Check } from 'lucide-react';
 
 interface CallModalProps {
   contactName: string;
   contactTitle: string;
-  phoneNumber: string;
+  phoneNumber?: string;
   avatar?: string;
   isOpen: boolean;
   onClose: () => void;
+  onShowToast?: (message: string) => void;
 }
 
 export const CallModal: React.FC<CallModalProps> = ({
@@ -17,129 +18,112 @@ export const CallModal: React.FC<CallModalProps> = ({
   avatar,
   isOpen,
   onClose,
+  onShowToast,
 }) => {
-  const [duration, setDuration] = useState(0);
-  const [isMuted, setIsMuted] = useState(false);
-  const [isSpeaker, setIsSpeaker] = useState(true);
-  const [callStatus, setCallStatus] = useState<'connecting' | 'connected'>('connecting');
-
-  useEffect(() => {
-    if (!isOpen) {
-      setDuration(0);
-      setCallStatus('connecting');
-      return;
-    }
-
-    const connectTimeout = setTimeout(() => {
-      setCallStatus('connected');
-    }, 1500);
-
-    const interval = setInterval(() => {
-      if (callStatus === 'connected') {
-        setDuration((prev) => prev + 1);
-      }
-    }, 1000);
-
-    return () => {
-      clearTimeout(connectTimeout);
-      clearInterval(interval);
-    };
-  }, [isOpen, callStatus]);
+  const [copied, setCopied] = React.useState(false);
 
   if (!isOpen) return null;
 
-  const formatTime = (secs: number) => {
-    const m = Math.floor(secs / 60);
-    const s = secs % 60;
-    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  const isMaskedOrMissing =
+    !phoneNumber ||
+    phoneNumber.toLowerCase().includes('protect') ||
+    phoneNumber.toLowerCase().includes('mask') ||
+    phoneNumber.trim() === '';
+
+  const cleanPhone = phoneNumber ? phoneNumber.replace(/[^0-9+]/g, '') : '';
+
+  const handleCopy = () => {
+    if (!phoneNumber) return;
+    navigator.clipboard.writeText(phoneNumber);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+    if (onShowToast) {
+      onShowToast(`Phone number copied to clipboard: ${phoneNumber}`);
+    }
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-md animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/75 backdrop-blur-md animate-in fade-in duration-200">
       <div className="w-full max-w-sm bg-gradient-to-b from-slate-900 to-slate-950 text-white rounded-3xl p-6 border border-emerald-500/30 shadow-2xl flex flex-col items-center text-center relative overflow-hidden">
-        {/* Ambient glow */}
-        <div className="absolute -top-12 left-1/2 -translate-x-1/2 w-48 h-48 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
+        {/* Close Button */}
+        <button
+          type="button"
+          onClick={onClose}
+          className="absolute top-4 right-4 p-1.5 text-slate-400 hover:text-white rounded-xl hover:bg-slate-800 transition-colors cursor-pointer"
+        >
+          <X className="w-5 h-5" />
+        </button>
 
-        {/* Tactical Mesh Tag */}
-        <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-xs font-bold mb-5">
-          <Radio className="w-3.5 h-3.5 animate-pulse" />
-          <span>Encrypted Tactical VoIP • LoRa Relay</span>
+        {/* Tactical Header Tag */}
+        <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-xs font-bold mb-4">
+          <Phone className="w-3.5 h-3.5" />
+          <span>Squad Direct Telephony</span>
         </div>
 
         {/* Avatar or Icon */}
-        <div className="relative mb-4">
-          <div className="w-24 h-24 rounded-full overflow-hidden border-4 border-emerald-500/40 shadow-xl ring-4 ring-emerald-500/10 flex items-center justify-center bg-slate-800">
+        <div className="relative mb-3">
+          <div className="w-20 h-20 rounded-full overflow-hidden border-2 border-emerald-500/40 shadow-xl ring-4 ring-emerald-500/10 flex items-center justify-center bg-slate-800">
             {avatar ? (
               <img src={avatar} alt={contactName} className="w-full h-full object-cover" />
             ) : (
-              <Shield className="w-10 h-10 text-emerald-400" />
+              <Shield className="w-8 h-8 text-emerald-400" />
             )}
           </div>
-          {callStatus === 'connected' && (
-            <span className="absolute bottom-1 right-1 w-5 h-5 rounded-full bg-emerald-500 border-2 border-slate-900 flex items-center justify-center">
-              <span className="w-2 h-2 rounded-full bg-white animate-ping" />
-            </span>
-          )}
         </div>
 
         {/* Contact Info */}
-        <h3 className="text-xl font-bold tracking-tight text-white mb-0.5">{contactName}</h3>
+        <h3 className="text-lg font-bold tracking-tight text-white mb-0.5">{contactName}</h3>
         <p className="text-xs text-emerald-400 font-medium mb-1">{contactTitle}</p>
-        <p className="text-xs text-slate-400 font-mono mb-4">{phoneNumber}</p>
 
-        {/* Status / Timer */}
-        <div className="py-1 px-4 rounded-full bg-slate-800/80 border border-slate-700/60 mb-6">
-          {callStatus === 'connecting' ? (
-            <span className="text-xs text-amber-400 font-semibold animate-pulse">Connecting satellite uplink...</span>
-          ) : (
-            <span className="text-sm font-mono text-emerald-300 font-bold">{formatTime(duration)}</span>
-          )}
-        </div>
+        {isMaskedOrMissing ? (
+          <div className="my-4 p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-200 text-xs text-left space-y-1.5 w-full">
+            <div className="flex items-center gap-1.5 font-bold text-amber-300">
+              <Lock className="w-3.5 h-3.5" />
+              <span>Contact Number Protected</span>
+            </div>
+            <p className="text-[11px] text-amber-200/90 leading-relaxed">
+              This member has restricted their direct telephone number according to expedition privacy permissions. Only authorized commanders can view unmasked contact details.
+            </p>
+          </div>
+        ) : (
+          <div className="my-4 w-full space-y-3">
+            <div className="p-3 rounded-2xl bg-slate-800/80 border border-slate-700/60 flex items-center justify-between">
+              <span className="font-mono text-sm text-emerald-300 font-bold">{phoneNumber}</span>
+              <button
+                type="button"
+                onClick={handleCopy}
+                className="p-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs flex items-center gap-1 transition-colors cursor-pointer"
+                title="Copy phone number"
+              >
+                {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+              </button>
+            </div>
 
-        {/* Audio Wave Simulation */}
-        {callStatus === 'connected' && (
-          <div className="flex items-center justify-center gap-1 h-6 mb-6">
-            <span className="w-1 h-3 bg-emerald-400 rounded-full animate-pulse" />
-            <span className="w-1 h-5 bg-emerald-300 rounded-full animate-pulse delay-75" />
-            <span className="w-1 h-6 bg-emerald-500 rounded-full animate-pulse delay-150" />
-            <span className="w-1 h-4 bg-emerald-400 rounded-full animate-pulse delay-100" />
-            <span className="w-1 h-2 bg-emerald-300 rounded-full animate-pulse" />
+            <p className="text-[11px] text-slate-400">
+              Tapping below will open your device's native dialer to place a call over cellular or satellite.
+            </p>
+
+            <a
+              href={`tel:${cleanPhone}`}
+              onClick={() => {
+                if (onShowToast) onShowToast(`Opening device dialer for ${contactName}...`);
+                onClose();
+              }}
+              className="w-full py-3 px-4 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-emerald-950/40 active:scale-95 transition-all cursor-pointer"
+            >
+              <PhoneCall className="w-4 h-4" />
+              <span>Open Device Dialer</span>
+            </a>
           </div>
         )}
 
-        {/* Call Controls */}
-        <div className="flex items-center justify-center gap-5 w-full pt-2">
-          {/* Mute */}
-          <button
-            type="button"
-            onClick={() => setIsMuted(!isMuted)}
-            className={`w-12 h-12 rounded-full flex items-center justify-center transition-all ${
-              isMuted ? 'bg-amber-500 text-white shadow-md' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-            }`}
-          >
-            {isMuted ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
-          </button>
-
-          {/* End Call */}
-          <button
-            type="button"
-            onClick={onClose}
-            className="w-16 h-16 rounded-full bg-rose-600 hover:bg-rose-500 active:scale-95 text-white flex items-center justify-center shadow-lg shadow-rose-600/40 transition-all cursor-pointer"
-          >
-            <PhoneOff className="w-7 h-7" />
-          </button>
-
-          {/* Speaker */}
-          <button
-            type="button"
-            onClick={() => setIsSpeaker(!isSpeaker)}
-            className={`w-12 h-12 rounded-full flex items-center justify-center transition-all ${
-              isSpeaker ? 'bg-emerald-600 text-white shadow-md' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-            }`}
-          >
-            <Volume2 className="w-5 h-5" />
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="mt-2 py-2 px-5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors cursor-pointer w-full"
+        >
+          Cancel
+        </button>
       </div>
     </div>
   );

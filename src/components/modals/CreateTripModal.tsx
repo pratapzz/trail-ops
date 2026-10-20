@@ -53,16 +53,16 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({
   const [wizardStep, setWizardStep] = useState<1 | 2>(1);
 
   // Step 1: Group Basics, Cover, Destination, Dates & Budget
-  const [name, setName] = useState('Denali Base Alpha Expedition');
+  const [name, setName] = useState('');
   const [coverBg, setCoverBg] = useState(
     'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=1200&q=80'
   );
-  const [fromLocation, setFromLocation] = useState('Siliguri / Bagdogra Junction');
-  const [destination, setDestination] = useState('Pelling High Ridge (2,150m ASL)');
-  const [departureDate, setDepartureDate] = useState('2026-10-24');
-  const [returnDate, setReturnDate] = useState('2026-10-30');
-  const [budgetPerMember, setBudgetPerMember] = useState<number>(6000);
-  const [generatedPasskey] = useState('TR89K2');
+  const [fromLocation, setFromLocation] = useState('');
+  const [destination, setDestination] = useState('');
+  const [departureDate, setDepartureDate] = useState('');
+  const [returnDate, setReturnDate] = useState('');
+  const [budgetPerMember, setBudgetPerMember] = useState<number>(0);
+  const [generatedPasskey] = useState(() => 'TR' + Math.random().toString(36).substring(2, 6).toUpperCase());
 
   // Step 2: Google Maps Pointing with Red Markers
   const [mapCenter, setMapCenter] = useState<{ lat: number; lng: number }>({
@@ -71,44 +71,7 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({
   });
   const [mapGestureMode, setMapGestureMode] = useState<'greedy' | 'cooperative'>('greedy');
   const [searchLocationQuery, setSearchLocationQuery] = useState('');
-  const [waypoints, setWaypoints] = useState<Waypoint[]>([
-    {
-      id: '1',
-      name: 'Start: Siliguri Base Transit',
-      elevation: '120m',
-      type: 'start',
-      isRedMarked: true,
-      lat: 26.7271,
-      lng: 88.3953,
-    },
-    {
-      id: '2',
-      name: 'Pass 1: Yuksom Foothills',
-      elevation: '1,780m',
-      type: 'pass',
-      isRedMarked: true,
-      lat: 27.3698,
-      lng: 88.2212,
-    },
-    {
-      id: '3',
-      name: 'Camp: Pelling Ridge Marker #3',
-      elevation: '2,150m',
-      type: 'camp',
-      isRedMarked: true,
-      lat: 27.3184,
-      lng: 88.2412,
-    },
-    {
-      id: '4',
-      name: 'Summit: Dzongri High Point',
-      elevation: '4,020m',
-      type: 'summit',
-      isRedMarked: true,
-      lat: 27.5028,
-      lng: 88.1697,
-    },
-  ]);
+  const [waypoints, setWaypoints] = useState<Waypoint[]>([]);
   const [newPointElevation, setNewPointElevation] = useState('2,650m');
 
   const [searchedLocation, setSearchedLocation] = useState<{
@@ -311,7 +274,7 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({
                   type="text"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  placeholder="e.g. Denali Base Alpha Expedition"
+                  placeholder="e.g. Alpine Ascent Expedition"
                   className="w-full px-3.5 py-2.5 rounded-xl bg-white border border-slate-200 text-xs font-bold text-slate-900 focus:border-emerald-600 outline-none"
                   required
                 />
@@ -373,7 +336,7 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({
                     type="text"
                     value={fromLocation}
                     onChange={(e) => setFromLocation(e.target.value)}
-                    placeholder="e.g. Siliguri / Bagdogra"
+                    placeholder="e.g. Transit Base / City"
                     className="w-full px-3 py-2 rounded-xl bg-white border border-slate-200 text-xs text-slate-900 focus:border-emerald-600 outline-none"
                     required
                   />
@@ -387,7 +350,7 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({
                     type="text"
                     value={destination}
                     onChange={(e) => setDestination(e.target.value)}
-                    placeholder="e.g. Pelling High Pass"
+                    placeholder="e.g. Mountain Basecamp / Pass"
                     className="w-full px-3 py-2 rounded-xl bg-white border border-slate-200 text-xs text-slate-900 focus:border-emerald-600 outline-none"
                     required
                   />
@@ -641,35 +604,41 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({
                 <span className="text-[11px] font-bold text-slate-700 block">
                   Marked Red Pins ({waypoints.filter((w) => w.isRedMarked).length}) — Tap minus to remove:
                 </span>
-                {waypoints.map((wp) => (
-                  <div
-                    key={wp.id}
-                    onClick={() => toggleWaypointMark(wp.id)}
-                    className="flex items-center justify-between p-2 rounded-xl bg-white border border-slate-200 shadow-2xs cursor-pointer hover:border-rose-400 text-xs transition-colors"
-                  >
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={`w-3 h-3 rounded-full ${
-                          wp.isRedMarked ? 'bg-rose-600' : 'bg-slate-300'
-                        }`}
-                      />
-                      <span className="font-bold text-slate-800">{wp.name}</span>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      <span className="text-[10px] font-mono text-slate-500">{wp.elevation}</span>
-                      {/* Minus Sign Button to delete marked pin */}
-                      <button
-                        type="button"
-                        onClick={(e) => handleDeleteWaypoint(wp.id, e)}
-                        className="w-6 h-6 rounded-lg bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-600 flex items-center justify-center cursor-pointer active:scale-90 transition-all"
-                        title="Remove this pin from route"
-                      >
-                        <Minus className="w-3.5 h-3.5 stroke-[2.5]" />
-                      </button>
-                    </div>
+                {waypoints.length === 0 ? (
+                  <div className="p-3 text-center rounded-xl bg-slate-50 border border-dashed border-slate-200 text-[11px] text-slate-500">
+                    No waypoints marked yet. Search a location or click on the map above to add waypoints.
                   </div>
-                ))}
+                ) : (
+                  waypoints.map((wp) => (
+                    <div
+                      key={wp.id}
+                      onClick={() => toggleWaypointMark(wp.id)}
+                      className="flex items-center justify-between p-2 rounded-xl bg-white border border-slate-200 shadow-2xs cursor-pointer hover:border-rose-400 text-xs transition-colors"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`w-3 h-3 rounded-full ${
+                            wp.isRedMarked ? 'bg-rose-600' : 'bg-slate-300'
+                          }`}
+                        />
+                        <span className="font-bold text-slate-800">{wp.name}</span>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] font-mono text-slate-500">{wp.elevation}</span>
+                        {/* Minus Sign Button to delete marked pin */}
+                        <button
+                          type="button"
+                          onClick={(e) => handleDeleteWaypoint(wp.id, e)}
+                          className="w-6 h-6 rounded-lg bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-600 flex items-center justify-center cursor-pointer active:scale-90 transition-all"
+                          title="Remove this pin from route"
+                        >
+                          <Minus className="w-3.5 h-3.5 stroke-[2.5]" />
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
               </div>
 
               {/* Action Buttons: Skip Map Pointing OR Confirm & Create Group */}

@@ -52,6 +52,7 @@ export interface SquadMember {
   subGroupColor?: string;
   amountPaid?: number;
   amountPending?: number;
+  phone?: string;
 }
 
 export interface ExcursionRequest {
@@ -121,6 +122,7 @@ export interface FacultyDocument {
   status: 'approved' | 'pending';
   fileType: 'pdf' | 'img' | 'doc';
   notes?: string;
+  url?: string;
 }
 
 export interface ExpenseSplit {
@@ -144,6 +146,7 @@ export interface SubGroup {
   adminId: string;
   adminName: string;
   memberIds: string[];
+  memberCount?: number;
 }
 
 export interface Waypoint {

@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   Folder,
   FileText,
@@ -18,7 +18,11 @@ import {
   Cloud,
   Check,
   ExternalLink,
+  RefreshCw,
+  Trash2,
   Image as ImageIcon,
+  HardDrive,
+  Loader2,
 } from 'lucide-react';
 import { FacultyDocument, UserRole } from '../types';
 
@@ -38,14 +42,27 @@ export const FacultyDriveModal: React.FC<FacultyDriveModalProps> = ({
   const [activeCategory, setActiveCategory] = useState<'all' | 'ticket' | 'bill' | 'permit' | 'sop'>('all');
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const [previewDoc, setPreviewDoc] = useState<FacultyDocument | null>(null);
+  const [deleteConfirmDoc, setDeleteConfirmDoc] = useState<FacultyDocument | null>(null);
 
   // Google Drive Cloud Vault Connection State
-  const [isDriveConnected, setIsDriveConnected] = useState(true);
+  const [isDriveConnected, setIsDriveConnected] = useState<boolean>(() => {
+    return Boolean(sessionStorage.getItem('trailoPS_google_drive_token'));
+  });
+  const [googleAccessToken, setGoogleAccessToken] = useState<string | null>(() => {
+    return sessionStorage.getItem('trailoPS_google_drive_token');
+  });
+  const [isSyncing, setIsSyncing] = useState(false);
 
-  // Upload form state with real file upload
+  // Google Drive Real Storage Quota State
+  const [driveQuota, setDriveQuota] = useState<{ usedBytes: number; totalBytes: number } | null>(null);
+  const [isTokenModalOpen, setIsTokenModalOpen] = useState(false);
+  const [manualTokenInput, setManualTokenInput] = useState('');
+
+  // Upload form state
   const [docName, setDocName] = useState('');
   const [docCategory, setDocCategory] = useState<'ticket' | 'bill' | 'permit' | 'medical' | 'sop'>('ticket');
   const [docNotes, setDocNotes] = useState('');
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadedFileMeta, setUploadedFileMeta] = useState<{
     name: string;
     size: string;
@@ -55,9 +72,145 @@ export const FacultyDriveModal: React.FC<FacultyDriveModalProps> = ({
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
+  // Documents state - strictly initialized to saved storage or empty (ZERO mock/demo records)
+  const [documents, setDocuments] = useState<FacultyDocument[]>(() => {
+    const saved = localStorage.getItem('trailoPS_faculty_documents_v2');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {}
+    }
+    return [];
+  });
+
+  useEffect(() => {
+    localStorage.setItem('trailoPS_faculty_documents_v2', JSON.stringify(documents));
+  }, [documents]);
+
+  // Fetch real Google Drive files when connected
+  const fetchDriveFiles = async (token: string) => {
+    setIsSyncing(true);
+    try {
+      // 1. Fetch storage quota
+      const aboutRes = await fetch('https://www.googleapis.com/drive/v3/about?fields=storageQuota,user', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (aboutRes.ok) {
+        const aboutData = await aboutRes.json();
+        if (aboutData.storageQuota) {
+          setDriveQuota({
+            usedBytes: parseInt(aboutData.storageQuota.usage || '0', 10),
+            totalBytes: parseInt(aboutData.storageQuota.limit || '16106127360', 10), // Default 15GB
+          });
+        }
+      }
+
+      // 2. Fetch files from Drive
+      const filesRes = await fetch(
+        "https://www.googleapis.com/drive/v3/files?pageSize=30&fields=files(id,name,mimeType,size,webViewLink,webContentLink,createdTime)&q=trashed=false",
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      if (filesRes.ok) {
+        const filesData = await filesRes.json();
+        if (Array.isArray(filesData.files)) {
+          const driveDocs: FacultyDocument[] = filesData.files.map((f: any) => {
+            const isImg = (f.mimeType || '').startsWith('image/');
+            const sizeInBytes = parseInt(f.size || '0', 10);
+            const sizeStr = sizeInBytes > 1048576
+              ? `${(sizeInBytes / 1048576).toFixed(1)} MB`
+              : `${Math.max(1, Math.round(sizeInBytes / 1024))} KB`;
+
+            let cat: 'ticket' | 'bill' | 'permit' | 'sop' = 'permit';
+            const lowerName = f.name.toLowerCase();
+            if (lowerName.includes('ticket') || lowerName.includes('train') || lowerName.includes('flight')) cat = 'ticket';
+            else if (lowerName.includes('bill') || lowerName.includes('receipt') || lowerName.includes('invoice')) cat = 'bill';
+            else if (lowerName.includes('sop') || lowerName.includes('protocol')) cat = 'sop';
+
+            return {
+              id: f.id,
+              name: f.name,
+              category: cat,
+              uploadedBy: 'Google Drive Account',
+              uploaderRole: 'super_admin',
+              date: new Date(f.createdTime || Date.now()).toLocaleDateString(),
+              size: sizeStr,
+              status: 'approved',
+              fileType: isImg ? 'img' : 'pdf',
+              url: f.webViewLink || f.webContentLink,
+              notes: 'Synchronized with Google Drive official workspace',
+            };
+          });
+
+          // Merge without duplicates
+          setDocuments((prev) => {
+            const existingIds = new Set(prev.map((d) => d.id));
+            const newFromDrive = driveDocs.filter((d) => !existingIds.has(d.id));
+            return [...newFromDrive, ...prev];
+          });
+
+          onShowToast(`Synchronized ${filesData.files.length} documents from Google Drive!`);
+        }
+      } else {
+        if (filesRes.status === 401) {
+          sessionStorage.removeItem('trailoPS_google_drive_token');
+          setIsDriveConnected(false);
+          setGoogleAccessToken(null);
+          onShowToast('Google Drive session expired. Please reconnect.');
+        }
+      }
+    } catch (err: any) {
+      console.error('Error fetching Google Drive files:', err);
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  const handleConnectDrive = () => {
+    // Check if Google Identity token client is available
+    if (typeof (window as any).google?.accounts?.oauth2?.initTokenClient === 'function') {
+      try {
+        const client = (window as any).google.accounts.oauth2.initTokenClient({
+          client_id: (import.meta as any).env.VITE_GOOGLE_CLIENT_ID || '',
+          scope: 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly',
+          callback: (response: any) => {
+            if (response.access_token) {
+              sessionStorage.setItem('trailoPS_google_drive_token', response.access_token);
+              setGoogleAccessToken(response.access_token);
+              setIsDriveConnected(true);
+              onShowToast('Google Drive successfully authenticated!');
+              fetchDriveFiles(response.access_token);
+            }
+          },
+        });
+        client.requestAccessToken();
+      } catch (err) {
+        promptManualDriveToken();
+      }
+    } else {
+      promptManualDriveToken();
+    }
+  };
+
+  const promptManualDriveToken = () => {
+    setIsTokenModalOpen(true);
+  };
+
+  const handleDisconnectDrive = () => {
+    sessionStorage.removeItem('trailoPS_google_drive_token');
+    setIsDriveConnected(false);
+    setGoogleAccessToken(null);
+    setDriveQuota(null);
+    onShowToast('Google Drive workspace unlinked.');
+  };
+
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
+      setSelectedFile(file);
       const isImg = file.type.startsWith('image/');
       const formattedSize =
         file.size > 1024 * 1024
@@ -74,7 +227,6 @@ export const FacultyDriveModal: React.FC<FacultyDriveModalProps> = ({
       });
 
       if (!docName.trim()) {
-        // Auto-fill title from filename
         const cleanName = file.name.replace(/\.[^/.]+$/, '');
         setDocName(cleanName.replace(/[-_]/g, ' '));
       }
@@ -83,136 +235,89 @@ export const FacultyDriveModal: React.FC<FacultyDriveModalProps> = ({
     }
   };
 
-  const [documents, setDocuments] = useState<FacultyDocument[]>(() => {
-    const saved = localStorage.getItem('trailoPS_faculty_documents');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-      } catch {}
-    }
-    return [
-    {
-      id: 'doc-1',
-      name: 'Yuksom-Pelling Special Area Permits 2026',
-      category: 'permit',
-      uploadedBy: 'Prof. Roy (Faculty Lead)',
-      uploaderRole: 'super_admin',
-      date: '14 Oct 2026',
-      size: '2.4 MB',
-      status: 'approved',
-      fileType: 'pdf',
-      notes: 'State Forest Dept & Police verified for 42 participants.',
-    },
-    {
-      id: 'doc-2',
-      name: 'Group Railway Tickets (Howrah to NJP)',
-      category: 'ticket',
-      uploadedBy: 'Prof. Roy (Faculty Lead)',
-      uploaderRole: 'super_admin',
-      date: '12 Oct 2026',
-      size: '1.8 MB',
-      status: 'approved',
-      fileType: 'pdf',
-      notes: 'Coach B3 & B4 reserved for Denali Base Alpha crew.',
-    },
-    {
-      id: 'doc-3',
-      name: 'Tempo Traveller Advance Fuel & Rental Receipt',
-      category: 'bill',
-      uploadedBy: 'Arjun Sen (Scout Lead)',
-      uploaderRole: 'subgroup_admin',
-      date: '15 Oct 2026',
-      size: '840 KB',
-      status: 'approved',
-      fileType: 'img',
-      notes: 'Siliguri to Yuksom transport advance invoice ₹14,000.',
-    },
-    {
-      id: 'doc-4',
-      name: 'High-Altitude Emergency Evacuation Protocol SOP',
-      category: 'sop',
-      uploadedBy: 'Dr. Anita Roy',
-      uploaderRole: 'super_admin',
-      date: '10 Oct 2026',
-      size: '3.1 MB',
-      status: 'approved',
-      fileType: 'pdf',
-      notes: 'Sikkim SDRF heli-rescue coordination frequencies.',
-    },
-    {
-      id: 'doc-5',
-      name: 'Basecamp Grocery & First-Aid Supplies Bill',
-      category: 'bill',
-      uploadedBy: 'Chris Walker (Trekker)',
-      uploaderRole: 'member',
-      date: '16 Oct 2026',
-      size: '1.2 MB',
-      status: 'pending',
-      fileType: 'img',
-      notes: 'Local market re-supply voucher submitted for faculty sign-off.',
-    },
-    {
-      id: 'doc-6',
-      name: 'Student ID Medical Clearance Certificates (Batch A)',
-      category: 'permit',
-      uploadedBy: 'Sarah Chen (Medic Squad)',
-      uploaderRole: 'subgroup_admin',
-      date: '15 Oct 2026',
-      size: '4.5 MB',
-      status: 'approved',
-      fileType: 'pdf',
-    },
-  ];
-});
-
-  React.useEffect(() => {
-    localStorage.setItem('trailoPS_faculty_documents', JSON.stringify(documents));
-  }, [documents]);
-
-  if (!isOpen) return null;
-
-  const isSuperAdmin = userRole === 'super_admin';
+  const isSuperAdmin = userRole === 'super_admin' || (userRole as string) === 'faculty';
 
   const handleApprove = (id: string, name: string) => {
     setDocuments((prev) =>
       prev.map((doc) => (doc.id === id ? { ...doc, status: 'approved' } : doc))
     );
-    onShowToast(`Super Admin Approved: "${name}" is now live in Faculty Drive.`);
+    onShowToast(`Approved: "${name}" is now active in Faculty Drive.`);
   };
 
-  const handleReject = (id: string, name: string) => {
+  const handleReject = (id: string) => {
     setDocuments((prev) => prev.filter((doc) => doc.id !== id));
-    onShowToast(`Upload request rejected for document.`);
+    onShowToast(`Document request rejected.`);
   };
 
-  const handleCreateDocument = (e: React.FormEvent) => {
+  const handleDeleteConfirmed = () => {
+    if (!deleteConfirmDoc) return;
+    setDocuments((prev) => prev.filter((d) => d.id !== deleteConfirmDoc.id));
+    onShowToast(`Document "${deleteConfirmDoc.name}" removed.`);
+    setDeleteConfirmDoc(null);
+  };
+
+  const handleCreateDocument = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!docName.trim()) return;
+
+    let cloudUrl = uploadedFileMeta?.url;
+
+    // If connected to Google Drive and token is available, perform real upload
+    if (isDriveConnected && googleAccessToken && selectedFile) {
+      try {
+        const metadata = {
+          name: docName.trim(),
+          mimeType: selectedFile.type,
+        };
+
+        const form = new FormData();
+        form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+        form.append('file', selectedFile);
+
+        const uploadRes = await fetch(
+          'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink',
+          {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${googleAccessToken}` },
+            body: form,
+          }
+        );
+
+        if (uploadRes.ok) {
+          const resData = await uploadRes.json();
+          cloudUrl = resData.webViewLink;
+          onShowToast(`Uploaded directly to Google Drive!`);
+        }
+      } catch (err) {
+        console.warn('Direct Drive upload warning, saving to local vault:', err);
+      }
+    }
 
     const newDoc: FacultyDocument = {
       id: Date.now().toString(),
       name: docName.trim(),
       category: docCategory,
-      uploadedBy: isSuperAdmin ? 'You (Super Admin)' : 'You (Member)',
+      uploadedBy: isSuperAdmin ? 'Faculty Lead' : 'Expedition Member',
       uploaderRole: userRole,
-      date: 'Today',
-      size: uploadedFileMeta?.size || '1.8 MB',
+      date: new Date().toLocaleDateString(),
+      size: uploadedFileMeta?.size || '1.2 MB',
       status: isSuperAdmin ? 'approved' : 'pending',
       fileType: uploadedFileMeta?.type || 'pdf',
+      url: cloudUrl,
       notes: docNotes.trim() || undefined,
     };
 
     setDocuments([newDoc, ...documents]);
     setDocName('');
     setDocNotes('');
+    setSelectedFile(null);
     setUploadedFileMeta(null);
     setIsUploadModalOpen(false);
 
     if (isSuperAdmin) {
-      onShowToast(`File "${newDoc.name}" uploaded directly to Faculty Drive.`);
+      onShowToast(`File "${newDoc.name}" published to Faculty Drive.`);
     } else {
-      onShowToast(`Upload request for "${newDoc.name}" sent to Super Admin for approval.`);
+      onShowToast(`Upload request for "${newDoc.name}" submitted for approval.`);
     }
   };
 
@@ -223,9 +328,17 @@ export const FacultyDriveModal: React.FC<FacultyDriveModalProps> = ({
 
   const pendingRequests = documents.filter((doc) => doc.status === 'pending');
 
+  if (!isOpen) return null;
+
+  // Realistic quota calculation: 5 GB allocation target
+  const expeditionQuotaTarget = 5 * 1024 * 1024 * 1024; // 5 GB
+  const usedBytes = driveQuota ? driveQuota.usedBytes : documents.length * 2.5 * 1024 * 1024;
+  const usedPercent = Math.min(Math.round((usedBytes / expeditionQuotaTarget) * 100), 100);
+  const usedMB = (usedBytes / (1024 * 1024)).toFixed(1);
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-md animate-in fade-in duration-200">
-      <div className="w-full max-w-md bg-white rounded-3xl border border-slate-200 shadow-2xl flex flex-col max-h-[85vh] overflow-hidden">
+      <div className="w-full max-w-md bg-white rounded-3xl border border-slate-200 shadow-2xl flex flex-col max-h-[88vh] overflow-hidden">
         {/* Header */}
         <div className="px-5 py-4 bg-gradient-to-r from-emerald-900 to-[#0f5238] text-white flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -240,7 +353,7 @@ export const FacultyDriveModal: React.FC<FacultyDriveModalProps> = ({
                 </span>
               </div>
               <p className="text-[11px] text-emerald-200">
-                Official Tickets, Permits, Bills &amp; Protocols
+                Official Permits, Rail Vouchers, Bills &amp; Protocols
               </p>
             </div>
           </div>
@@ -264,7 +377,7 @@ export const FacultyDriveModal: React.FC<FacultyDriveModalProps> = ({
                   : 'bg-emerald-100 text-emerald-900 border border-emerald-300'
               }`}
             >
-              {isSuperAdmin ? 'Super Admin (Direct Add & Approval)' : 'Member (Upload Request)'}
+              {isSuperAdmin ? 'Faculty Overseer' : 'Squad Member'}
             </span>
           </div>
 
@@ -278,74 +391,109 @@ export const FacultyDriveModal: React.FC<FacultyDriveModalProps> = ({
           </button>
         </div>
 
-        {/* GOOGLE DRIVE INTEGRATION & CLOUD VAULT STATUS */}
-        <div className="px-4 py-2.5 bg-gradient-to-r from-sky-50 via-indigo-50/30 to-slate-50 border-b border-sky-100 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            {/* Google Drive Logo */}
-            <div className="w-8 h-8 rounded-xl bg-white shadow-xs border border-slate-200 flex items-center justify-center p-1 shrink-0">
-              <svg viewBox="0 0 87.3 78" className="w-5 h-5">
-                <path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8h-27.5c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/>
-                <path d="m43.65 25-13.75-23.8c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44c-.8 1.4-1.2 2.95-1.2 4.5h27.5z" fill="#00ac47"/>
-                <path d="m73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5h-27.502l5.852 11.5z" fill="#ea4335"/>
-                <path d="m43.65 25 13.75-23.8c-1.35-.8-2.9-1.2-4.5-1.2h-18.5c-1.6 0-3.15.45-4.5 1.2z" fill="#00832d"/>
-                <path d="m59.8 53h-32.3l-13.75 23.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" fill="#2684fc"/>
-                <path d="m73.4 26.5-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3l-13.75 23.8 16.15 28h27.45c0-1.55-.4-3.1-1.2-4.5z" fill="#ffba00"/>
-              </svg>
-            </div>
-            <div>
-              <div className="flex items-center gap-1.5">
-                <span className="text-xs font-bold text-slate-900">Google Drive Cloud</span>
-                {isDriveConnected && (
-                  <span className="px-1.5 py-0.2 rounded text-[9px] font-black bg-emerald-100 text-emerald-800 border border-emerald-300">
-                    SYNCED
-                  </span>
-                )}
+        {/* GOOGLE DRIVE CONNECTION STATUS & QUOTA */}
+        <div className="px-4 py-2.5 bg-gradient-to-r from-sky-50 via-indigo-50/30 to-slate-50 border-b border-sky-100 space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="w-7 h-7 rounded-lg bg-white shadow-xs border border-slate-200 flex items-center justify-center p-1 shrink-0">
+                <svg viewBox="0 0 87.3 78" className="w-4 h-4">
+                  <path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8h-27.5c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/>
+                  <path d="m43.65 25-13.75-23.8c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44c-.8 1.4-1.2 2.95-1.2 4.5h27.5z" fill="#00ac47"/>
+                  <path d="m73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5h-27.502l5.852 11.5z" fill="#ea4335"/>
+                  <path d="m43.65 25 13.75-23.8c-1.35-.8-2.9-1.2-4.5-1.2h-18.5c-1.6 0-3.15.45-4.5 1.2z" fill="#00832d"/>
+                  <path d="m59.8 53h-32.3l-13.75 23.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" fill="#2684fc"/>
+                  <path d="m73.4 26.5-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3l-13.75 23.8 16.15 28h27.45c0-1.55-.4-3.1-1.2-4.5z" fill="#ffba00"/>
+                </svg>
               </div>
-              <span className="text-[10px] text-slate-500 font-medium block">
-                {isDriveConnected ? '/TrailoPS_Expedition_Vault (Direct In-App Storage)' : 'Connect Google Drive to auto-sync permits'}
-              </span>
+              <div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs font-bold text-slate-900">Google Drive API</span>
+                  <span
+                    className={`px-1.5 py-0.2 rounded text-[9px] font-bold ${
+                      isDriveConnected
+                        ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                        : 'bg-amber-100 text-amber-800 border border-amber-300'
+                    }`}
+                  >
+                    {isDriveConnected ? 'CONNECTED' : 'DISCONNECTED'}
+                  </span>
+                </div>
+                <span className="text-[10px] text-slate-500 font-medium block">
+                  {isDriveConnected
+                    ? 'Drive OAuth Verified (drive.file & drive.readonly)'
+                    : 'Connect Google account to sync official files'}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              {isDriveConnected ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => googleAccessToken && fetchDriveFiles(googleAccessToken)}
+                    disabled={isSyncing}
+                    className="p-1 rounded-lg hover:bg-slate-200 text-slate-600 transition-colors"
+                    title="Refresh Drive Files"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDisconnectDrive}
+                    className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-slate-200 hover:bg-slate-300 text-slate-700 transition-colors"
+                  >
+                    Unlink
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleConnectDrive}
+                  className="px-3 py-1 rounded-full text-[10px] font-bold bg-[#0f5238] hover:bg-emerald-900 text-white transition-colors flex items-center gap-1"
+                >
+                  <Cloud className="w-3 h-3" /> Connect
+                </button>
+              )}
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={() => {
-              setIsDriveConnected(!isDriveConnected);
-              onShowToast(
-                isDriveConnected
-                  ? 'Google Drive unlinked.'
-                  : '✓ Google Drive connected! Files are now synchronized with your Google Drive.'
-              );
-            }}
-            className={`px-3 py-1 rounded-full text-[10px] font-bold transition-all flex items-center gap-1 shadow-2xs active:scale-95 cursor-pointer ${
-              isDriveConnected
-                ? 'bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100'
-                : 'bg-[#0f5238] text-white hover:bg-emerald-900'
-            }`}
-          >
-            <Cloud className="w-3 h-3" />
-            <span>{isDriveConnected ? 'Connected' : 'Connect Drive'}</span>
-          </button>
+          {/* Quota Progress Bar */}
+          <div className="space-y-1 pt-1">
+            <div className="flex items-center justify-between text-[10px] text-slate-500">
+              <span className="flex items-center gap-1">
+                <HardDrive className="w-3 h-3 text-emerald-700" />
+                <span>Expedition Allocation: {usedMB} MB / 5.0 GB</span>
+              </span>
+              <span>{usedPercent}% Used</span>
+            </div>
+            <div className="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden">
+              <div
+                className="bg-emerald-600 h-full rounded-full transition-all duration-300"
+                style={{ width: `${Math.max(2, usedPercent)}%` }}
+              />
+            </div>
+          </div>
         </div>
 
-        {/* SUPER ADMIN PENDING APPROVALS NOTICE */}
+        {/* Pending approvals notice for Super Admin */}
         {isSuperAdmin && pendingRequests.length > 0 && (
-          <div className="bg-amber-50 px-4 py-2.5 border-b border-amber-200 flex items-center justify-between">
+          <div className="bg-amber-50 px-4 py-2 border-b border-amber-200 flex items-center justify-between">
             <div className="flex items-center gap-2">
               <AlertCircle className="w-4 h-4 text-amber-700 shrink-0" />
               <div>
                 <span className="text-xs font-bold text-amber-950 block">
-                  {pendingRequests.length} Pending Upload Request(s)
+                  {pendingRequests.length} Pending Approval(s)
                 </span>
                 <span className="text-[10px] text-amber-800">
-                  Members requested document addition for expedition records.
+                  Review member document upload requests before approving.
                 </span>
               </div>
             </div>
           </div>
         )}
 
-        {/* Category Filter Pills */}
+        {/* Category Filter */}
         <div className="flex items-center gap-1.5 px-4 py-2 overflow-x-auto no-scrollbar border-b border-slate-100 bg-white">
           {(['all', 'ticket', 'bill', 'permit', 'sop'] as const).map((cat) => (
             <button
@@ -366,8 +514,14 @@ export const FacultyDriveModal: React.FC<FacultyDriveModalProps> = ({
         {/* Documents List */}
         <div className="flex-1 p-4 overflow-y-auto space-y-3 bg-[#f8faf9]">
           {filteredDocs.length === 0 ? (
-            <div className="text-center py-10 text-slate-400 text-xs">
-              No documents found in this category.
+            <div className="text-center py-12 text-slate-400 text-xs space-y-2">
+              <Folder className="w-10 h-10 mx-auto text-slate-300" />
+              <p className="font-semibold text-slate-600">No documents in this category.</p>
+              <p className="text-[11px] text-slate-400 max-w-xs mx-auto">
+                {isDriveConnected
+                  ? 'Uploaded files and permits will synchronize directly with your connected Google Drive.'
+                  : 'Upload permits, bills, or connect Google Drive to synchronize files.'}
+              </p>
             </div>
           ) : (
             filteredDocs.map((doc) => (
@@ -403,7 +557,7 @@ export const FacultyDriveModal: React.FC<FacultyDriveModalProps> = ({
                         </span>
                         {doc.status === 'pending' && (
                           <span className="px-1.5 py-0.5 rounded text-[9px] font-black uppercase bg-amber-200 text-amber-900">
-                            Awaiting Super Admin
+                            Pending Approval
                           </span>
                         )}
                       </div>
@@ -422,11 +576,11 @@ export const FacultyDriveModal: React.FC<FacultyDriveModalProps> = ({
                 {/* Actions row */}
                 <div className="mt-2.5 pt-2 border-t border-slate-100 flex items-center justify-between">
                   <span className="text-[10px] text-slate-400 font-mono">
-                    ID: {doc.id} · SHA-256 Verified
+                    ID: {doc.id.slice(0, 10)}
                   </span>
 
                   <div className="flex items-center gap-1.5">
-                    {/* In-App Direct Document Viewer */}
+                    {/* View */}
                     <button
                       type="button"
                       onClick={() => setPreviewDoc(doc)}
@@ -436,12 +590,24 @@ export const FacultyDriveModal: React.FC<FacultyDriveModalProps> = ({
                       <span>View</span>
                     </button>
 
-                    {/* Super admin approval controls for pending docs */}
+                    {/* Delete button (Super Admin or owner) */}
+                    {isSuperAdmin && (
+                      <button
+                        type="button"
+                        onClick={() => setDeleteConfirmDoc(doc)}
+                        className="p-1 rounded-lg text-slate-400 hover:text-rose-600 transition-colors"
+                        title="Delete Document"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+
+                    {/* Approval controls */}
                     {doc.status === 'pending' && isSuperAdmin ? (
                       <>
                         <button
                           type="button"
-                          onClick={() => handleReject(doc.id, doc.name)}
+                          onClick={() => handleReject(doc.id)}
                           className="px-2.5 py-1 rounded-lg bg-rose-100 hover:bg-rose-200 text-rose-800 text-xs font-bold transition-colors cursor-pointer"
                         >
                           Reject
@@ -458,7 +624,13 @@ export const FacultyDriveModal: React.FC<FacultyDriveModalProps> = ({
                     ) : (
                       <button
                         type="button"
-                        onClick={() => onShowToast(`Downloading "${doc.name}" (${doc.size})...`)}
+                        onClick={() => {
+                          if (doc.url) {
+                            window.open(doc.url, '_blank');
+                          } else {
+                            onShowToast(`Downloading "${doc.name}"...`);
+                          }
+                        }}
                         className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer"
                       >
                         <Download className="w-3.5 h-3.5" />
@@ -473,7 +645,38 @@ export const FacultyDriveModal: React.FC<FacultyDriveModalProps> = ({
         </div>
       </div>
 
-      {/* Upload / Request Document Modal with REAL FILE PICKER */}
+      {/* Delete Confirmation Modal */}
+      {deleteConfirmDoc && (
+        <div className="fixed inset-0 z-70 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-fade-in">
+          <div className="bg-white rounded-2xl p-5 max-w-xs w-full shadow-2xl border border-slate-200 space-y-3">
+            <div className="flex items-center gap-2 text-rose-600 font-bold text-sm">
+              <AlertCircle className="w-5 h-5 shrink-0" />
+              <span>Confirm File Deletion</span>
+            </div>
+            <p className="text-xs text-slate-600">
+              Are you sure you want to permanently delete <strong>"{deleteConfirmDoc.name}"</strong> from Faculty Drive? This cannot be undone.
+            </p>
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setDeleteConfirmDoc(null)}
+                className="px-3 py-1.5 text-xs text-slate-500 hover:text-slate-800 font-medium"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteConfirmed}
+                className="px-3 py-1.5 text-xs bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl shadow-xs"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Upload Modal */}
       {isUploadModalOpen && (
         <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-md animate-in fade-in duration-200">
           <div className="w-full max-w-sm bg-white rounded-3xl p-5 border border-slate-200 shadow-2xl flex flex-col space-y-4">
@@ -484,10 +687,10 @@ export const FacultyDriveModal: React.FC<FacultyDriveModalProps> = ({
                 </div>
                 <div>
                   <h3 className="font-bold text-slate-900 text-sm">
-                    {isSuperAdmin ? 'Upload Document to Faculty Drive' : 'Request Document Addition'}
+                    {isSuperAdmin ? 'Upload Official Document' : 'Request Document Addition'}
                   </h3>
                   <p className="text-[11px] text-slate-500">
-                    {isSuperAdmin ? 'Direct Faculty Publish (Google Drive Linked)' : 'Submitted for Super Admin Approval'}
+                    {isSuperAdmin ? 'Faculty Publish & Drive Sync' : 'Sent to Faculty for Approval'}
                   </p>
                 </div>
               </div>
@@ -496,6 +699,7 @@ export const FacultyDriveModal: React.FC<FacultyDriveModalProps> = ({
                 onClick={() => {
                   setIsUploadModalOpen(false);
                   setUploadedFileMeta(null);
+                  setSelectedFile(null);
                 }}
                 className="w-7 h-7 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500 cursor-pointer"
               >
@@ -504,7 +708,6 @@ export const FacultyDriveModal: React.FC<FacultyDriveModalProps> = ({
             </div>
 
             <form onSubmit={handleCreateDocument} className="space-y-3">
-              {/* REAL FILE PICKER (PDF & Photos) */}
               <input
                 type="file"
                 ref={fileInputRef}
@@ -518,102 +721,75 @@ export const FacultyDriveModal: React.FC<FacultyDriveModalProps> = ({
                 className="p-3 rounded-2xl border-2 border-dashed border-emerald-400/80 bg-emerald-50/40 hover:bg-emerald-50 text-center cursor-pointer transition-all group"
               >
                 {uploadedFileMeta ? (
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2 text-left">
-                      <div className="w-8 h-8 rounded-xl bg-emerald-600 text-white flex items-center justify-center shadow-xs">
-                        {uploadedFileMeta.type === 'pdf' ? (
-                          <FileText className="w-4 h-4" />
-                        ) : (
-                          <ImageIcon className="w-4 h-4" />
-                        )}
-                      </div>
-                      <div>
-                        <span className="text-xs font-bold text-slate-900 block truncate max-w-[180px]">
-                          {uploadedFileMeta.name}
-                        </span>
-                        <span className="text-[10px] text-emerald-700 font-bold uppercase">
-                          {uploadedFileMeta.type.toUpperCase()} · {uploadedFileMeta.size} · Ready
-                        </span>
-                      </div>
+                  <div className="flex items-center gap-2.5 text-left">
+                    <div className="w-9 h-9 rounded-xl bg-emerald-700 text-white flex items-center justify-center shrink-0">
+                      <FileCheck className="w-5 h-5" />
                     </div>
-                    <span className="text-[11px] text-emerald-800 font-bold underline">Change</span>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-bold text-slate-900 truncate">{uploadedFileMeta.name}</p>
+                      <p className="text-[10px] text-emerald-800">{uploadedFileMeta.size} · Ready</p>
+                    </div>
                   </div>
                 ) : (
-                  <div>
-                    <div className="w-8 h-8 rounded-xl bg-emerald-100 text-emerald-800 mx-auto flex items-center justify-center mb-1 group-hover:scale-105 transition-transform shadow-xs">
-                      <Upload className="w-4 h-4" />
-                    </div>
-                    <span className="text-xs font-bold text-slate-800 block">
-                      Choose PDF or Photo Document
-                    </span>
-                    <span className="text-[10px] text-slate-500">
-                      Tap to select railway ticket, forest permit, or bill (.pdf, .jpg, .png)
-                    </span>
+                  <div className="space-y-1">
+                    <Upload className="w-6 h-6 text-emerald-700 mx-auto" />
+                    <p className="text-xs font-bold text-emerald-950">Tap to Select File</p>
+                    <p className="text-[10px] text-slate-500">PDF, JPG, PNG, DOCX up to 25MB</p>
                   </div>
                 )}
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Document / Ticket Title
-                </label>
+                <label className="text-[11px] font-bold text-slate-700 block mb-1">Document Title</label>
                 <input
                   type="text"
                   value={docName}
                   onChange={(e) => setDocName(e.target.value)}
-                  placeholder="e.g. Return Bus Tickets (Pelling to Siliguri)"
-                  className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-900 focus:bg-white focus:border-emerald-600 outline-none"
+                  placeholder="e.g. Sikkim Forest Dept Permit"
                   required
+                  className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 focus:border-emerald-600 focus:outline-none"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Document Category
-                </label>
+                <label className="text-[11px] font-bold text-slate-700 block mb-1">Category</label>
                 <select
                   value={docCategory}
                   onChange={(e) => setDocCategory(e.target.value as any)}
-                  className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-900 focus:bg-white focus:border-emerald-600 outline-none"
+                  className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 focus:border-emerald-600 focus:outline-none"
                 >
-                  <option value="ticket">Tickets &amp; Travel Passes</option>
-                  <option value="bill">Bills, Invoices &amp; Receipts</option>
-                  <option value="permit">Government &amp; Forest Permits</option>
-                  <option value="medical">Medical &amp; Fitness Certificates</option>
-                  <option value="sop">Emergency Rescue Protocol (SOP)</option>
+                  <option value="permit">Official Permit / Entry Pass</option>
+                  <option value="ticket">Railway / Flight Ticket</option>
+                  <option value="bill">Fuel / Food / Hotel Bill</option>
+                  <option value="medical">Medical Clearance Certificate</option>
+                  <option value="sop">Safety Protocol SOP</option>
                 </select>
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Reference Note / Description (Optional)
-                </label>
-                <textarea
-                  rows={2}
+                <label className="text-[11px] font-bold text-slate-700 block mb-1">Notes / Authority Details</label>
+                <input
+                  type="text"
                   value={docNotes}
                   onChange={(e) => setDocNotes(e.target.value)}
-                  placeholder="e.g. Paid by cash on 15 Oct, coach B3 reserved."
-                  className="w-full p-2 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-900 focus:bg-white focus:border-emerald-600 outline-none"
+                  placeholder="e.g. Issued by Forest Officer on 18 Oct"
+                  className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 focus:border-emerald-600 focus:outline-none"
                 />
               </div>
 
-              <div className="pt-1 flex gap-2">
+              <div className="flex items-center justify-end gap-2 pt-2">
                 <button
                   type="button"
-                  onClick={() => {
-                    setIsUploadModalOpen(false);
-                    setUploadedFileMeta(null);
-                  }}
-                  className="flex-1 py-2.5 rounded-xl border border-slate-200 text-slate-700 text-xs font-semibold hover:bg-slate-100"
+                  onClick={() => setIsUploadModalOpen(false)}
+                  className="px-3 py-1.5 text-xs text-slate-500 hover:text-slate-700"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-emerald-700 to-teal-800 text-white text-xs font-bold shadow-md hover:brightness-105 active:scale-95 transition-all flex items-center justify-center gap-1.5"
+                  className="px-4 py-2 bg-[#0f5238] hover:bg-emerald-800 text-white text-xs font-bold rounded-xl shadow-xs"
                 >
-                  <Upload className="w-4 h-4" />
-                  <span>{isSuperAdmin ? 'Publish to Drive' : 'Submit Request'}</span>
+                  {isSuperAdmin ? 'Publish to Drive' : 'Submit Request'}
                 </button>
               </div>
             </form>
@@ -621,80 +797,128 @@ export const FacultyDriveModal: React.FC<FacultyDriveModalProps> = ({
         </div>
       )}
 
-      {/* In-App Document Preview Modal */}
+      {/* Preview Modal */}
       {previewDoc && (
-        <div className="fixed inset-0 z-70 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-in fade-in duration-200">
-          <div className="w-full max-w-sm bg-white rounded-3xl p-5 border border-slate-200 shadow-2xl flex flex-col space-y-4">
+        <div className="fixed inset-0 z-70 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fade-in">
+          <div className="bg-white rounded-3xl max-w-sm w-full p-5 space-y-4 shadow-2xl border border-slate-200">
             <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-xl bg-emerald-100 text-[#0f5238] flex items-center justify-center">
-                  {previewDoc.fileType === 'img' ? <ImageIcon className="w-4 h-4" /> : <FileText className="w-4 h-4" />}
-                </div>
-                <div className="overflow-hidden">
-                  <h3 className="font-bold text-slate-900 text-sm truncate max-w-[200px]">
-                    {previewDoc.name}
-                  </h3>
-                  <span className="text-[10px] text-emerald-700 font-semibold block">
-                    {previewDoc.fileType.toUpperCase()} Document · {previewDoc.size}
-                  </span>
-                </div>
-              </div>
+              <h4 className="font-bold text-slate-900 text-sm truncate">{previewDoc.name}</h4>
               <button
                 type="button"
                 onClick={() => setPreviewDoc(null)}
-                className="w-7 h-7 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500 cursor-pointer"
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-700"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            {/* Document Preview Canvas */}
-            <div className="h-44 rounded-2xl bg-slate-100 border border-slate-200 flex flex-col items-center justify-center p-4 text-center relative overflow-hidden">
-              <div className="absolute inset-0 bg-gradient-to-b from-white/60 to-transparent pointer-events-none" />
-              <div className="w-12 h-12 rounded-2xl bg-white shadow-md border border-slate-200 flex items-center justify-center text-emerald-800 mb-2">
-                {previewDoc.fileType === 'img' ? <ImageIcon className="w-6 h-6" /> : <FileCheck className="w-6 h-6" />}
-              </div>
-              <span className="text-xs font-bold text-slate-900 line-clamp-1">{previewDoc.name}</span>
-              <span className="text-[10px] text-slate-500 mt-0.5">
-                Verified Cryptographic Alpine Clearance Pass
-              </span>
-              <div className="mt-2 inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-100 border border-emerald-300 text-emerald-900 text-[10px] font-extrabold">
-                <Check className="w-3 h-3" />
-                <span>OFFICIAL FACULTY COPY</span>
-              </div>
+            <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100 text-center space-y-2">
+              <FileText className="w-12 h-12 text-emerald-700 mx-auto" />
+              <div className="text-xs font-bold text-slate-800">{previewDoc.name}</div>
+              <p className="text-[11px] text-slate-500">
+                {previewDoc.size} · {previewDoc.category.toUpperCase()} · Verified
+              </p>
             </div>
 
-            <div className="text-xs space-y-1 bg-slate-50 p-3 rounded-2xl border border-slate-200">
-              <div className="flex justify-between">
-                <span className="text-slate-500">Category:</span>
-                <span className="font-bold text-slate-800 capitalize">{previewDoc.category}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Uploaded by:</span>
-                <span className="font-bold text-slate-800">{previewDoc.uploadedBy}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Date:</span>
-                <span className="font-mono text-slate-800">{previewDoc.date}</span>
-              </div>
-              {previewDoc.notes && (
-                <div className="pt-1 text-[11px] text-slate-600 border-t border-slate-200 mt-1">
-                  <strong>Notes:</strong> {previewDoc.notes}
-                </div>
+            {previewDoc.notes && (
+              <p className="text-xs text-slate-600 bg-emerald-50/50 p-2.5 rounded-xl border border-emerald-100">
+                {previewDoc.notes}
+              </p>
+            )}
+
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setPreviewDoc(null)}
+                className="px-3 py-1.5 text-xs text-slate-500 hover:text-slate-800 font-medium"
+              >
+                Close
+              </button>
+              {previewDoc.url ? (
+                <a
+                  href={previewDoc.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="px-4 py-2 text-xs bg-emerald-700 hover:bg-emerald-800 text-white font-bold rounded-xl shadow-xs flex items-center gap-1"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  <span>Open in Drive</span>
+                </a>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onShowToast(`Downloading "${previewDoc.name}"...`);
+                    setPreviewDoc(null);
+                  }}
+                  className="px-4 py-2 text-xs bg-emerald-700 hover:bg-emerald-800 text-white font-bold rounded-xl shadow-xs flex items-center gap-1"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Download</span>
+                </button>
               )}
             </div>
+          </div>
+        </div>
+      )}
+      {/* Manual OAuth Token Input Modal */}
+      {isTokenModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-in fade-in duration-150">
+          <div className="w-full max-w-sm bg-white dark:bg-slate-900 rounded-3xl p-5 border border-purple-200 dark:border-purple-800 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
+              <div className="flex items-center gap-2">
+                <Cloud className="w-5 h-5 text-purple-600 dark:text-purple-400" />
+                <h4 className="text-xs font-bold text-slate-900 dark:text-white">Connect Google Drive</h4>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsTokenModalOpen(false)}
+                className="w-7 h-7 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500 hover:text-slate-800 flex items-center justify-center"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
 
-            <button
-              type="button"
-              onClick={() => {
-                onShowToast(`Downloading "${previewDoc.name}" from Google Drive Vault...`);
-                setPreviewDoc(null);
-              }}
-              className="w-full py-2.5 rounded-xl bg-[#0f5238] hover:bg-emerald-900 text-white text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm active:scale-98 transition-transform cursor-pointer"
-            >
-              <Download className="w-4 h-4" />
-              <span>Download Document</span>
-            </button>
+            <p className="text-[11px] text-slate-600 dark:text-slate-300">
+              Enter your Google OAuth Access Token with <code className="bg-slate-100 dark:bg-slate-800 px-1 py-0.5 rounded text-[10px]">drive.file</code> and <code className="bg-slate-100 dark:bg-slate-800 px-1 py-0.5 rounded text-[10px]">drive.readonly</code> scopes:
+            </p>
+
+            <textarea
+              rows={3}
+              value={manualTokenInput}
+              onChange={(e) => setManualTokenInput(e.target.value)}
+              placeholder="ya29.a0AfH6SM..."
+              className="w-full p-2.5 rounded-xl border border-purple-300 dark:border-purple-700 bg-purple-50/40 dark:bg-slate-800 text-xs font-mono text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-purple-400"
+            />
+
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setIsTokenModalOpen(false)}
+                className="flex-1 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-bold"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (manualTokenInput.trim()) {
+                    const token = manualTokenInput.trim();
+                    sessionStorage.setItem('trailoPS_google_drive_token', token);
+                    setGoogleAccessToken(token);
+                    setIsDriveConnected(true);
+                    fetchDriveFiles(token);
+                    setIsTokenModalOpen(false);
+                    setManualTokenInput('');
+                    onShowToast('Google Drive connected! Syncing files...');
+                  }
+                }}
+                disabled={!manualTokenInput.trim()}
+                className="flex-1 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-xs font-bold shadow-md shadow-purple-600/20"
+              >
+                Connect
+              </button>
+            </div>
           </div>
         </div>
       )}

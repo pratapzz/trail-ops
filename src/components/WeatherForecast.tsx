@@ -39,21 +39,11 @@ interface WeatherForecastProps {
   onDestinationChange?: (name: string, coordinates: { lat: number; lng: number }) => void;
 }
 
-const PRESET_LOCATIONS = [
-  { name: 'Pelling High Ridge (2,150m ASL)', lat: 27.3184, lng: 88.2412, tag: 'Sikkim Ridge' },
-  { name: 'Manali Solang Valley (2,050m ASL)', lat: 32.2432, lng: 77.1892, tag: 'Himachal' },
-  { name: 'Leh Ladakh Pass (3,524m ASL)', lat: 34.1526, lng: 77.5771, tag: 'Ladakh High Pass' },
-  { name: 'Kedarkantha Summit (3,810m ASL)', lat: 31.0232, lng: 78.1724, tag: 'Uttarakhand' },
-  { name: 'Everest Base Camp (5,364m ASL)', lat: 28.0044, lng: 86.8525, tag: 'Khumbu Alpine' },
-  { name: 'Rohtang Pass (3,978m ASL)', lat: 32.3716, lng: 77.2466, tag: 'Pir Panjal' },
-  { name: 'Spiti Valley Kaza (3,800m ASL)', lat: 32.2276, lng: 78.0710, tag: 'Trans-Himalayan' },
-  { name: 'Triund Dharamshala (2,828m ASL)', lat: 32.2530, lng: 76.3540, tag: 'Dhauladhar' },
-  { name: 'Valley of Flowers (3,658m ASL)', lat: 30.7280, lng: 79.6053, tag: 'Chamoli Alpine' },
-];
+const PRESET_LOCATIONS: Array<{ name: string; lat: number; lng: number; tag: string }> = [];
 
 export const WeatherForecast: React.FC<WeatherForecastProps> = ({
   coordinates = { lat: 27.3184, lng: 88.2412 },
-  destinationName = 'Pelling High Ridge (2,150m ASL)',
+  destinationName = 'Expedition Destination',
   onShowToast,
   onDestinationChange,
 }) => {
@@ -124,7 +114,7 @@ export const WeatherForecast: React.FC<WeatherForecastProps> = ({
       );
       setWeather(data);
       if (isManualRefresh && onShowToast) {
-        onShowToast(`Weather telemetry refreshed for ${data.destinationName}`);
+        onShowToast(`Weather telemetry refreshed for ${data?.destinationName || targetLocation.name}`);
       }
     } catch {
       if (onShowToast) {
@@ -369,33 +359,35 @@ export const WeatherForecast: React.FC<WeatherForecastProps> = ({
             )}
 
             {/* Quick Himalayan & Alpine Presets */}
-            <div className="space-y-1.5">
-              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                Popular Expeditions &amp; Passes
-              </span>
-              <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto no-scrollbar">
-                {filteredPresets.map((loc) => {
-                  const isSelected = activeLocation.name === loc.name;
-                  return (
-                    <button
-                      key={loc.name}
-                      type="button"
-                      onClick={() => handleSelectLocation(loc)}
-                      className={`text-[10px] font-semibold px-2 py-1 rounded-lg border transition-all cursor-pointer flex items-center gap-1 ${
-                        isSelected
-                          ? 'bg-emerald-600 border-emerald-400 text-white font-bold'
-                          : 'bg-slate-800/80 hover:bg-slate-700 border-slate-700 text-slate-300 hover:text-white'
-                      }`}
-                    >
-                      <MapPin className="w-2.5 h-2.5 shrink-0 text-emerald-400" />
-                      <span className="truncate max-w-[140px]">{loc.name.split(' (')[0]}</span>
-                      <span className="text-[8px] text-slate-400 opacity-80">({loc.tag})</span>
-                      {isSelected && <Check className="w-2.5 h-2.5 text-white ml-0.5" />}
-                    </button>
-                  );
-                })}
+            {filteredPresets.length > 0 && (
+              <div className="space-y-1.5">
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                  Popular Expeditions &amp; Passes
+                </span>
+                <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto no-scrollbar">
+                  {filteredPresets.map((loc) => {
+                    const isSelected = activeLocation.name === loc.name;
+                    return (
+                      <button
+                        key={loc.name}
+                        type="button"
+                        onClick={() => handleSelectLocation(loc)}
+                        className={`text-[10px] font-semibold px-2 py-1 rounded-lg border transition-all cursor-pointer flex items-center gap-1 ${
+                          isSelected
+                            ? 'bg-emerald-600 border-emerald-400 text-white font-bold'
+                            : 'bg-slate-800/80 hover:bg-slate-700 border-slate-700 text-slate-300 hover:text-white'
+                        }`}
+                      >
+                        <MapPin className="w-2.5 h-2.5 shrink-0 text-emerald-400" />
+                        <span className="truncate max-w-[140px]">{loc.name.split(' (')[0]}</span>
+                        <span className="text-[8px] text-slate-400 opacity-80">({loc.tag})</span>
+                        {isSelected && <Check className="w-2.5 h-2.5 text-white ml-0.5" />}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
-            </div>
+            )}
 
             {/* Custom Destination Weather Adder */}
             <form onSubmit={handleAddCustomLocation} className="pt-2 border-t border-slate-800 space-y-2">
@@ -659,14 +651,27 @@ export const WeatherForecast: React.FC<WeatherForecastProps> = ({
           </div>
         </div>
       ) : (
-        <div className="p-6 text-center text-xs text-slate-500">
-          <p>Weather data unavailable for this coordinate.</p>
+        <div className="p-5 text-center space-y-3 bg-slate-50/70 rounded-2xl m-3 border border-dashed border-slate-200">
+          <div className="w-10 h-10 rounded-xl bg-slate-200 text-slate-700 mx-auto flex items-center justify-center">
+            <Compass className="w-5 h-5 text-emerald-800" />
+          </div>
+          <div className="space-y-1">
+            <h5 className="text-xs font-bold text-slate-800">Weather Telemetry Offline</h5>
+            <p className="text-[11px] text-slate-600 font-mono">
+              Coordinates: {activeLocation.coordinates.lat.toFixed(4)}°N, {activeLocation.coordinates.lng.toFixed(4)}°E
+            </p>
+            <p className="text-[10px] text-slate-500 max-w-xs mx-auto leading-relaxed">
+              Live meteorology requires an active network or weather provider setup. Route coordinates and offline navigation markers remain active.
+            </p>
+          </div>
           <button
             type="button"
-            onClick={() => loadWeather()}
-            className="mt-2 px-3 py-1 bg-slate-900 text-white rounded-lg font-bold"
+            onClick={() => loadWeather(true)}
+            disabled={isRefreshing}
+            className="px-3 py-1.5 bg-[#0f5238] hover:bg-[#166534] text-white rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 mx-auto cursor-pointer shadow-xs active:scale-95"
           >
-            Retry Connection
+            <RotateCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
+            <span>Retry Connection</span>
           </button>
         </div>
       )}

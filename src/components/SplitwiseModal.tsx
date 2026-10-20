@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   DollarSign,
   Receipt,
@@ -13,6 +13,7 @@ import {
   Shield,
   AlertCircle,
   Sparkles,
+  Trash2,
 } from 'lucide-react';
 import { ExpenseSplit, UserRole, SubGroup } from '../types';
 
@@ -24,6 +25,7 @@ interface SplitwiseModalProps {
   amountPaid: number;
   amountPending: number;
   subGroups?: SubGroup[];
+  memberCount?: number;
   onShowToast: (message: string) => void;
   onSettlePayment: (amount: number) => void;
 }
@@ -36,6 +38,7 @@ export const SplitwiseModal: React.FC<SplitwiseModalProps> = ({
   amountPaid,
   amountPending,
   subGroups = [],
+  memberCount = 1,
   onShowToast,
   onSettlePayment,
 }) => {
@@ -43,96 +46,78 @@ export const SplitwiseModal: React.FC<SplitwiseModalProps> = ({
   const [isSplitBillModalOpen, setIsSplitBillModalOpen] = useState(false);
 
   // New bill state
-  const [billTitle, setDocTitle] = useState('');
-  const [billAmount, setBillAmount] = useState<number>(8400);
+  const [billTitle, setBillTitle] = useState('');
+  const [billAmount, setBillAmount] = useState<number>(0);
   const [billCategory, setBillCategory] = useState('Transport');
   const [splitTarget, setSplitTarget] = useState<'all' | 'subgroup' | 'custom'>('all');
-  const [selectedSubGroup, setSelectedSubGroup] = useState<string>('alpha');
+  const [selectedSubGroupId, setSelectedSubGroupId] = useState<string>('');
 
   const isSuperAdmin = userRole === 'super_admin';
   const isSubGroupAdmin = userRole === 'subgroup_admin';
   const hasSplitAuthority = isSuperAdmin || isSubGroupAdmin;
 
-  const [expenses, setExpenses] = useState<ExpenseSplit[]>([
-    {
-      id: 'exp-1',
-      title: 'Shared Tempo Traveller (Siliguri to Yuksom)',
-      totalAmount: 14000,
-      paidBy: 'Prof. Roy (Super Admin)',
-      date: '14 Oct 2026',
-      category: 'Transport',
-      splitType: 'all',
-      memberIds: ['all'],
-      amountPerMember: 333,
-      settledMemberIds: ['user-1', 'user-2', 'user-3'],
-    },
-    {
-      id: 'exp-2',
-      title: 'Khangchendzonga Park Permits & Eco Cesses',
-      totalAmount: 8400,
-      paidBy: 'Prof. Roy (Super Admin)',
-      date: '15 Oct 2026',
-      category: 'Permits',
-      splitType: 'all',
-      memberIds: ['all'],
-      amountPerMember: 200,
-      settledMemberIds: ['user-1'],
-    },
-    {
-      id: 'exp-3',
-      title: 'Alpine Ridge Heavy Porter & Tarp Gear',
-      totalAmount: 9000,
-      paidBy: 'Arjun Sen (Scout Lead)',
-      date: '15 Oct 2026',
-      category: 'Equipment',
-      splitType: 'custom',
-      memberIds: ['user-1', 'user-4', 'user-5'],
-      amountPerMember: 642,
-      settledMemberIds: [],
-    },
-    {
-      id: 'exp-4',
-      title: 'Basecamp Ration, Evening Wood & Hot Soup',
-      totalAmount: 16800,
-      paidBy: 'Dr. Anita Roy',
-      date: '16 Oct 2026',
-      category: 'Food',
-      splitType: 'all',
-      memberIds: ['all'],
-      amountPerMember: 400,
-      settledMemberIds: ['user-1'],
-    },
-  ]);
+  // Real expenses state - ZERO mock or demo records
+  const [expenses, setExpenses] = useState<ExpenseSplit[]>(() => {
+    const saved = localStorage.getItem('trailoPS_expenses');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {}
+    }
+    return [];
+  });
+
+  useEffect(() => {
+    localStorage.setItem('trailoPS_expenses', JSON.stringify(expenses));
+  }, [expenses]);
 
   if (!isOpen) return null;
 
   const totalGroupExpenses = expenses.reduce((acc, curr) => acc + curr.totalAmount, 0);
   const paidPercent = tripBudget > 0 ? Math.min(Math.round((amountPaid / tripBudget) * 100), 100) : 0;
+  const activeMembersTotal = Math.max(1, memberCount);
 
   const handleCreateSplit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!billTitle.trim() || billAmount <= 0) return;
+    if (!billTitle.trim() || billAmount <= 0) {
+      onShowToast('Please enter a valid bill title and amount.');
+      return;
+    }
 
-    const count = splitTarget === 'all' ? 42 : 14;
-    const perMember = Math.round(billAmount / count);
+    // Accurate calculation in integer paise
+    const totalPaise = Math.round(billAmount * 100);
+    const count = splitTarget === 'all'
+      ? activeMembersTotal
+      : subGroups.find((s) => s.id === selectedSubGroupId)?.memberCount || Math.max(1, Math.round(activeMembersTotal / 2));
+
+    const perMemberPaise = Math.round(totalPaise / count);
+    const amountPerMember = perMemberPaise / 100;
 
     const newExp: ExpenseSplit = {
-      id: Date.now().toString(),
+      id: `exp-${Date.now()}`,
       title: billTitle.trim(),
       totalAmount: billAmount,
-      paidBy: isSuperAdmin ? 'You (Super Admin)' : 'You (Sub-Group Lead)',
-      date: 'Today',
+      paidBy: isSuperAdmin ? 'Squad Commander (You)' : 'Squad Lead (You)',
+      date: new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
       category: billCategory,
       splitType: splitTarget === 'all' ? 'all' : 'custom',
       memberIds: ['all'],
-      amountPerMember: perMember,
+      amountPerMember,
       settledMemberIds: [],
     };
 
     setExpenses([newExp, ...expenses]);
     setIsSplitBillModalOpen(false);
-    setDocTitle('');
-    onShowToast(`New bill "${newExp.title}" of ₹${billAmount.toLocaleString()} split created!`);
+    setBillTitle('');
+    setBillAmount(0);
+    onShowToast(`Recorded bill "${newExp.title}" of ₹${billAmount.toLocaleString()} split among ${count} member(s)!`);
+  };
+
+  const handleDeleteExpense = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setExpenses((prev) => prev.filter((item) => item.id !== id));
+    onShowToast('Expense entry removed from squad ledger.');
   };
 
   const handleSettleUp = () => {
@@ -178,14 +163,10 @@ export const SplitwiseModal: React.FC<SplitwiseModalProps> = ({
               className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wide ${
                 hasSplitAuthority
                   ? 'bg-amber-100 text-amber-900 border border-amber-300'
-                  : 'bg-slate-200 text-slate-700'
+                  : 'bg-slate-200 text-slate-600'
               }`}
             >
-              {isSuperAdmin
-                ? 'Super Admin (Full Split Authority)'
-                : isSubGroupAdmin
-                ? 'Sub-Group Lead (Team Split)'
-                : 'Member (Read & Settle)'}
+              {isSuperAdmin ? 'Squad Commander' : isSubGroupAdmin ? 'Sub-Group Lead' : 'Read-Only Member'}
             </span>
           </div>
 
@@ -193,57 +174,47 @@ export const SplitwiseModal: React.FC<SplitwiseModalProps> = ({
             <button
               type="button"
               onClick={() => setIsSplitBillModalOpen(true)}
-              className="px-3 py-1 rounded-full bg-[#0f5238] hover:bg-emerald-800 text-white text-[11px] font-bold flex items-center gap-1 shadow-2xs cursor-pointer transition-all"
+              className="py-1 px-3 rounded-xl bg-[#0f5238] hover:bg-[#166534] text-white text-[11px] font-bold flex items-center gap-1 shadow-xs active:scale-95 transition-all cursor-pointer"
             >
-              <Plus className="w-3 h-3" />
-              <span>Split New Bill</span>
+              <Plus className="w-3.5 h-3.5" />
+              <span>Add Bill</span>
             </button>
           )}
         </div>
 
-        {/* Content Body */}
-        <div className="flex-1 p-4 overflow-y-auto space-y-4 bg-[#f8faf9]">
-          {/* PERSONAL TRIP BUDGET STATUS CARD */}
-          <div className="bg-white rounded-2xl p-4 border-2 border-emerald-500/25 shadow-xs space-y-3">
+        {/* Modal Scroll Content */}
+        <div className="p-4 space-y-4 overflow-y-auto max-h-[calc(88vh-140px)] no-scrollbar">
+          {/* USER PERSONAL EXPEDITION BUDGET CARD */}
+          <div className="bg-slate-50 rounded-2xl p-4 border border-slate-200/80 space-y-3">
             <div className="flex items-center justify-between">
               <div>
-                <span className="text-[10px] font-extrabold text-emerald-700 uppercase tracking-wider">
-                  Your Individual Quota
+                <span className="text-[10px] font-extrabold text-slate-500 uppercase tracking-wider block">
+                  Your Expedition Dues
                 </span>
-                <h4 className="text-base font-extrabold text-slate-900">
-                  Total Budget: ₹{tripBudget.toLocaleString()}
-                </h4>
+                <span className="text-xl font-black text-slate-900">
+                  ₹{tripBudget.toLocaleString()} <span className="text-xs font-normal text-slate-500">total budget</span>
+                </span>
               </div>
+
               <div className="text-right">
-                <span className="text-xs font-bold text-slate-500 block">Status:</span>
-                <span
-                  className={`text-xs font-black px-2 py-0.5 rounded-full ${
-                    amountPending === 0
-                      ? 'bg-emerald-100 text-emerald-900'
-                      : 'bg-amber-100 text-amber-900'
-                  }`}
-                >
-                  {amountPending === 0 ? '✓ 100% Settled' : `₹${amountPending.toLocaleString()} Pending`}
+                <span className="text-[10px] font-bold text-amber-600 block uppercase">
+                  Pending Balance
+                </span>
+                <span className="text-base font-extrabold text-amber-600 font-mono">
+                  ₹{amountPending.toLocaleString()}
                 </span>
               </div>
             </div>
 
-            {/* Visual Dual-tone Progress Bar */}
-            <div className="space-y-1.5">
-              <div className="flex justify-between text-xs font-semibold">
-                <span className="text-emerald-800 flex items-center gap-1">
-                  <span className="w-2 h-2 rounded-full bg-emerald-500" />
-                  Paid: ₹{amountPaid.toLocaleString()} ({paidPercent}%)
-                </span>
-                <span className="text-amber-700 flex items-center gap-1">
-                  <span className="w-2 h-2 rounded-full bg-amber-500" />
-                  Pending: ₹{amountPending.toLocaleString()}
-                </span>
+            {/* Budget Progress Bar */}
+            <div className="space-y-1">
+              <div className="flex justify-between text-[10px] font-bold text-slate-600">
+                <span className="text-emerald-700">₹{amountPaid.toLocaleString()} Cleared</span>
+                <span>{paidPercent}% of Trip</span>
               </div>
-
-              <div className="w-full h-3 rounded-full bg-slate-100 border border-slate-200 overflow-hidden flex">
+              <div className="w-full bg-slate-200 h-2 rounded-full overflow-hidden flex">
                 <div
-                  className="bg-gradient-to-r from-emerald-600 to-[#0f5238] h-full transition-all duration-700"
+                  className="bg-emerald-600 h-full transition-all duration-700"
                   style={{ width: `${paidPercent}%` }}
                 />
                 <div
@@ -275,15 +246,17 @@ export const SplitwiseModal: React.FC<SplitwiseModalProps> = ({
               <span className="text-lg font-black text-slate-900">
                 ₹{totalGroupExpenses.toLocaleString()}
               </span>
-              <span className="text-[10px] text-slate-500 block mt-0.5">Across 42 members</span>
+              <span className="text-[10px] text-slate-500 block mt-0.5">
+                Across {activeMembersTotal} squad member{activeMembersTotal === 1 ? '' : 's'}
+              </span>
             </div>
 
             <div className="p-3 bg-white rounded-2xl border border-slate-200 shadow-2xs">
               <span className="text-[10px] text-slate-500 uppercase font-bold tracking-wider block">
                 Total Bills Logged
               </span>
-              <span className="text-lg font-black text-emerald-800">{expenses.length} Bills</span>
-              <span className="text-[10px] text-slate-500 block mt-0.5">Faculty Audit Passed</span>
+              <span className="text-lg font-black text-emerald-800">{expenses.length} Bill{expenses.length === 1 ? '' : 's'}</span>
+              <span className="text-[10px] text-slate-500 block mt-0.5">Real Ledger</span>
             </div>
           </div>
 
@@ -294,50 +267,82 @@ export const SplitwiseModal: React.FC<SplitwiseModalProps> = ({
                 Splitwise Bills &amp; Expenses
               </h4>
               <span className="text-[10px] font-semibold text-slate-500">
-                Sorted by latest
+                {expenses.length} recorded
               </span>
             </div>
 
-            {expenses.map((exp) => (
-              <div
-                key={exp.id}
-                className="bg-white rounded-2xl p-3.5 border border-slate-200 shadow-xs space-y-2"
-              >
-                <div className="flex items-start justify-between">
-                  <div className="flex items-start gap-2.5">
-                    <div className="w-9 h-9 rounded-xl bg-emerald-50 text-emerald-800 flex items-center justify-center shrink-0 border border-emerald-200">
-                      <Receipt className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <h5 className="text-xs font-bold text-slate-900 leading-snug">{exp.title}</h5>
-                      <p className="text-[10px] text-slate-500">
-                        Paid by <strong>{exp.paidBy}</strong> · {exp.date} · {exp.category}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <span className="text-xs font-extrabold text-slate-900 block">
-                      ₹{exp.totalAmount.toLocaleString()}
-                    </span>
-                    <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">
-                      ₹{exp.amountPerMember}/each
-                    </span>
-                  </div>
-                </div>
-
-                <div className="flex items-center justify-between text-[11px] pt-1.5 border-t border-slate-100 text-slate-600">
-                  <span className="flex items-center gap-1">
-                    <Users className="w-3 h-3 text-slate-400" />
-                    {exp.splitType === 'all' ? 'Split among All 42' : 'Sub-Group Specific'}
-                  </span>
-
-                  <span className="text-emerald-700 font-semibold flex items-center gap-1">
-                    <CheckCircle2 className="w-3 h-3 fill-current" />
-                    Your share: ₹{exp.amountPerMember}
-                  </span>
-                </div>
+            {expenses.length === 0 ? (
+              <div className="p-6 rounded-2xl bg-slate-50 border border-dashed border-slate-200 text-center space-y-2">
+                <Receipt className="w-8 h-8 text-slate-300 mx-auto" />
+                <h5 className="text-xs font-bold text-slate-700">No Expenses Recorded</h5>
+                <p className="text-[11px] text-slate-500 max-w-xs mx-auto">
+                  No shared bills or splits logged yet. {hasSplitAuthority ? 'Tap "+ Add Bill" above to record transport, permits, or food.' : 'Squad leads will log group expenses here.'}
+                </p>
+                {hasSplitAuthority && (
+                  <button
+                    type="button"
+                    onClick={() => setIsSplitBillModalOpen(true)}
+                    className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#0f5238] text-white text-xs font-bold hover:brightness-105 active:scale-95 transition-all cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Add First Bill</span>
+                  </button>
+                )}
               </div>
-            ))}
+            ) : (
+              expenses.map((exp) => (
+                <div
+                  key={exp.id}
+                  className="bg-white rounded-2xl p-3.5 border border-slate-200 shadow-xs space-y-2"
+                >
+                  <div className="flex items-start justify-between">
+                    <div className="flex items-start gap-2.5">
+                      <div className="w-9 h-9 rounded-xl bg-emerald-50 text-emerald-800 flex items-center justify-center shrink-0 border border-emerald-200">
+                        <Receipt className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <h5 className="text-xs font-bold text-slate-900 leading-snug">{exp.title}</h5>
+                        <p className="text-[10px] text-slate-500">
+                          Paid by <strong>{exp.paidBy}</strong> · {exp.date} · {exp.category}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-xs font-extrabold text-slate-900 block">
+                        ₹{exp.totalAmount.toLocaleString()}
+                      </span>
+                      <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">
+                        ₹{exp.amountPerMember.toFixed(0)}/each
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between text-[11px] pt-1.5 border-t border-slate-100 text-slate-600">
+                    <span className="flex items-center gap-1">
+                      <Users className="w-3 h-3 text-slate-400" />
+                      {exp.splitType === 'all' ? `Split among All (${activeMembersTotal})` : 'Sub-Group Specific'}
+                    </span>
+
+                    <div className="flex items-center gap-2">
+                      <span className="text-emerald-700 font-semibold flex items-center gap-1">
+                        <CheckCircle2 className="w-3 h-3 fill-current" />
+                        Share: ₹{exp.amountPerMember.toFixed(0)}
+                      </span>
+                      {hasSplitAuthority && (
+                        <button
+                          type="button"
+                          onClick={(e) => handleDeleteExpense(exp.id, e)}
+                          className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition-colors"
+                          title="Delete bill"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))
+            )}
           </div>
         </div>
       </div>
@@ -353,7 +358,7 @@ export const SplitwiseModal: React.FC<SplitwiseModalProps> = ({
                 </div>
                 <div>
                   <h3 className="font-bold text-slate-900 text-sm">Split New Group Bill</h3>
-                  <p className="text-[11px] text-slate-500">Splitwise Algorithm Engine</p>
+                  <p className="text-[11px] text-slate-500">Accurate Integer Paise Engine</p>
                 </div>
               </div>
               <button
@@ -373,7 +378,7 @@ export const SplitwiseModal: React.FC<SplitwiseModalProps> = ({
                 <input
                   type="text"
                   value={billTitle}
-                  onChange={(e) => setDocTitle(e.target.value)}
+                  onChange={(e) => setBillTitle(e.target.value)}
                   placeholder="e.g. Campsite Generator Fuel & Cooking Gas"
                   className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-900 focus:bg-white focus:border-emerald-600 outline-none"
                   required
@@ -384,12 +389,15 @@ export const SplitwiseModal: React.FC<SplitwiseModalProps> = ({
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Total Amount (₹)
+                    Amount (₹ INR)
                   </label>
                   <input
                     type="number"
-                    value={billAmount}
+                    min="1"
+                    step="1"
+                    value={billAmount || ''}
                     onChange={(e) => setBillAmount(Number(e.target.value))}
+                    placeholder="0"
                     className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs font-bold text-slate-900 focus:bg-white focus:border-emerald-600 outline-none"
                     required
                   />
@@ -427,7 +435,7 @@ export const SplitwiseModal: React.FC<SplitwiseModalProps> = ({
                         : 'border-slate-200 text-slate-600 hover:bg-slate-50'
                     }`}
                   >
-                    All 42 Members
+                    All Members ({activeMembersTotal})
                   </button>
                   <button
                     type="button"
@@ -446,23 +454,29 @@ export const SplitwiseModal: React.FC<SplitwiseModalProps> = ({
               {splitTarget === 'subgroup' && (
                 <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-200 space-y-1">
                   <span className="text-[11px] font-semibold text-slate-700 block">Choose Sub-Group:</span>
-                  <select
-                    value={selectedSubGroup}
-                    onChange={(e) => setSelectedSubGroup(e.target.value)}
-                    className="w-full p-1.5 text-xs rounded-lg border border-slate-300 bg-white"
-                  >
-                    <option value="alpha">Scout Team Alpha (Red Highlight)</option>
-                    <option value="medical">Medical Vanguard (Blue Highlight)</option>
-                    <option value="ridge">Ridge Campers (Emerald Highlight)</option>
-                  </select>
+                  {subGroups.length > 0 ? (
+                    <select
+                      value={selectedSubGroupId}
+                      onChange={(e) => setSelectedSubGroupId(e.target.value)}
+                      className="w-full p-1.5 text-xs rounded-lg border border-slate-300 bg-white"
+                    >
+                      {subGroups.map((sg) => (
+                        <option key={sg.id} value={sg.id}>
+                          {sg.name} ({sg.memberCount} members)
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <p className="text-[11px] text-slate-500">No sub-groups created yet. Split will apply across active members.</p>
+                  )}
                 </div>
               )}
 
               {/* Live calculated share pill */}
               <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-between text-xs">
-                <span className="text-emerald-900 font-semibold">Calculated Individual Share:</span>
+                <span className="text-emerald-900 font-semibold">Calculated Share:</span>
                 <span className="font-mono font-bold text-emerald-950 text-sm">
-                  ₹{Math.round(billAmount / (splitTarget === 'all' ? 42 : 14)).toLocaleString()} / person
+                  ₹{billAmount > 0 ? Math.round(billAmount / (splitTarget === 'all' ? activeMembersTotal : Math.max(1, Math.round(activeMembersTotal / 2)))).toLocaleString() : 0} / person
                 </span>
               </div>
 

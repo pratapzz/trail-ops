@@ -44,7 +44,7 @@ export const ExpeditionProfileScreen: React.FC<ExpeditionProfileScreenProps> = (
   const [formData, setFormData] = useState<ProfileFormData>(() => {
     return (
       initialData || {
-        fullName: 'Pratap Paul',
+        fullName: '',
         guardianName: '',
         dateOfBirth: '',
         age: undefined,
@@ -61,7 +61,7 @@ export const ExpeditionProfileScreen: React.FC<ExpeditionProfileScreenProps> = (
         experienceLevel: 'Intermediate',
         healthNotes: '',
         avatarUrl:
-          'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=200&q=80',
+          'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=200&q=80',
       }
     );
   });
