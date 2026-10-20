@@ -1,92 +1,107 @@
-# TRAIL OPS — Real Data Cleanup, Telephony Sync, Live Attendance & Simplified UI
+# TRAIL OPS — Mandatory Super Admin, Role Management, Group-Wide Continuous SOS Siren & Secure Group Deletion
 
-Consolidate TRAIL OPS into a clean, clutter-free, real-data expedition tool: eliminate all remaining demo records, add developer attribution for Pratap Paul, enable synchronized emergency telephony, simplify in-app wording into clear friendly language, add image attachments to squad broadcasts with live notification alerts, and transform attendance into a commander-triggered live roll call with real-time Present vs Pending counters.
+Implement strict, transactionally secure Super Admin rules, safe transfer of group control, multi-admin promotion/demotion governance, emergency platform recovery, cascading group deletion, and real-time group-wide continuous SOS multi-tone sirens with phone dialer integration for faculty and commanders.
 
 ### User Review & Critical Decisions
 
 > [!IMPORTANT]
-> The revised scope synthesizes all prior requirements with the three newly requested features:
-> 
-> - **1. Simplified, Friendly Language (Clutter-Free)**: Replace dense military/technical jargon (e.g. "Telemetry telemetry", "Biometric contraindications", "Geofence geodetic perimeter", "Lossless RAW AirBeam") with plain, clean, human-readable English across the app (Home, Roll Call, Vault, Drive, Splitwise), while keeping the SOS screen sharp and punchy for emergencies.
-> - **2. Image-Enabled Announcements & Live Squad Notifications**: Commanders and leads can attach a photo/image directly to any squad broadcast. Once published, all squad members receive a visible in-app notification banner and alert modal highlighting the new announcement with its image.
-> - **3. Commander-Initiated Live Roll Call**:
->   - Only Super Admin has the "Start Roll Call" trigger button.
->   - When triggered, an active Attendance Notification Popup opens immediately on all squad members' phones with a one-tap button: **"I Am Present"**.
->   - In real-time, the roll call card displays live stats for everyone: **Present: X**, **Pending: Y**, and a live list of who has checked in and who is still pending.
-> - **4. Home Screen Real Member Counting**: Replaces the static `38 / 42` demo counter with dynamic counts from real squad membership (`presentCount / totalCount`).
-> - **5. Group Join Pending Queue**: Removes hardcoded applicants (`Rohan Sharma` and `Ananya Verma`) from `SquadRollCallScreen.tsx`. Starts empty and manages genuine join requests.
-> - **6. Settings Developer Attribution**: Formally credits **Pratap Paul** as Lead Architect & Developer of TRAIL OPS in the Settings footer.
-> - **7. SOS Telephony Synchronization**: Purges hardcoded demo numbers (`Prof. Roy`, `Dr. Anita`, `Tenzing`, `1077`). Contacts added by any squad member synchronize to every member's app, and deletions remove the line for the entire squad.
-> - **8. HD Media Vault Delete Action**: Replaces the minus icon with a clear `<Trash2 />` **Delete** action button with confirmation.
+> The updated plan synthesizes all role management rules and the newly confirmed SOS emergency features:
+>
+> 1. **Group-Wide Continuous SOS Siren**: When any squad member presses the SOS button, an urgent, continuous multi-tone emergency siren sound (Web Audio API synthesis) along with device vibration (`navigator.vibrate`) triggers immediately across **all members' phones in the squad**. A persistent emergency popup displays the distressed member's identity, timestamp, and location, and continues ringing until silenced or acknowledged.
+> 2. **Add Faculty / Commander Emergency Numbers**: In the SOS screen, Super Admins, Admins, and Faculty can tap a `+ Add Number` button to add key emergency contact lines (Name, Role: Faculty/Super Admin/Admin, Phone Number). Every contact card provides an instant one-tap call button that redirects directly to the native phone dialer app (`tel:<number>`). Contacts synchronize across all squad members' devices in real time.
+> 3. **Mandatory Super Admin Invariant**: Every active group must always have at least 1 Super Admin. Database triggers and transactional RPC functions reject any operation that leaves a group with zero Super Admins.
+> 4. **Successor Appointment Flow**: When the last remaining Super Admin attempts to leave or step down, the system blocks the action and presents an interactive **"Appoint Successor"** modal. The transfer must succeed before the departing Super Admin can leave or demote.
+> 5. **Multiple Super Admins**: Groups can have multiple Super Admins. Any authorized Super Admin can promote/demote members and other Super Admins, provided at least one Super Admin remains.
+> 6. **Platform-Level Super Admin Recovery**: For recovering legacy groups that might lack a Super Admin, an authorized Platform Recovery tool with emergency master recovery verification is provided in Settings, preventing orphaned groups without silent random assignments.
+> 7. **Super Admin Group Deletion**: Only an authorized Super Admin can delete a group. Requires typing the exact group name in a high-consequence confirmation modal. Performs transactional cascade deletion across all linked tables (memberships, itineraries, seat assignments, vault items) and cleans up Supabase storage files with clear error boundaries, without touching user personal accounts.
 
 ---
 
 ### 1. Overview & Core Concept
 
-TRAIL OPS is transformed from a static demo into a live, collaborative expedition tool for real groups. With this update:
-1. Every string in the app is easy to read, simple, and clutter-free.
-2. Group roll call becomes a real-time event: the expedition leader starts roll call, members tap a popup on their phones to confirm presence, and the attendance dashboard updates live for all members showing who is present and who is pending.
-3. Broadcasts support visual information (trail maps, weather photos, schedules) and notify the entire group immediately.
-4. Emergency contacts and route helplines are synchronized across all devices with zero dummy records.
-5. Developer Pratap Paul is properly attributed in Settings.
+TRAIL OPS provides real-time safety, roll-call attendance, and emergency coordination for alpine and wilderness expeditions. In high-stakes outdoor environments, safety relies on two pillars: unambiguous leadership command and immediate, unignorable distress signaling.
+
+This update introduces:
+1. **Group-Wide Emergency Broadcast & Continuous Siren**: An SOS trigger by any member rings an audible, high-intensity dual-frequency oscillating siren on every squad member's device simultaneously, accompanied by device vibration and a top-priority emergency response modal.
+2. **Faculty & Commander Emergency Contacts (`+ Add Number`)**: Super Admins, Admins, and Faculty can add emergency mobile lines for professors, lead guides, and commanders, with one-tap native dialer redirection (`tel:`) and live squad-wide synchronization.
+3. **Creator Auto-Assignment & Mandatory Super Admin**: The creator is transactionally assigned as `super_admin`. Database constraints and server-side RPCs guarantee that no group can ever be left without a Super Admin.
+4. **Safe Transfer of Control**: The sole Super Admin must name an active successor before stepping down or leaving.
+5. **Secure Group Deletion**: A protected Super Admin Danger Zone that cascades deletions across all group data, removes cloud media files safely, and notifies all connected devices.
+6. **Platform Emergency Recovery**: A secure tool in Settings for platform administrators to assign a Super Admin to any group in an irregular state.
 
 ---
 
 ### 2. User Experience & Visual Design
 
-#### A. Commander-Triggered Live Roll Call System
-- **Super Admin View**:
-  - A prominent action: **"Start Squad Roll Call"** with active status indicator.
-  - When active, shows a live session timer and real-time counter: **Present: [X]** · **Pending: [Y]** (e.g., *Present: 1 · Pending: 2*).
-  - Ability to end or reset the roll-call session.
-- **Member View (All Squad Devices)**:
-  - When the Super Admin launches a roll call, a high-visibility modal opens over the app:
-    - Title: **"📢 Roll Call in Progress"**
-    - Message: *"Your Squad Commander has initiated attendance. Please tap below to confirm you are safe and present."*
-    - Action: Large green button: **"✓ I Am Present"**.
-  - Once tapped, the button turns to **"✓ Marked Present"** with a timestamp, and updates the live squad tally for everyone instantly.
-  - Members who have not yet checked in are listed under **Pending Members**, allowing leaders to quickly identify who is missing.
+#### A. Group-Wide Continuous SOS Siren & Alert Modal
+- **Member SOS Trigger**:
+  - Tapping and confirming the SOS button immediately activates distress status in Supabase (`status = 'distress'`) and broadcasts a `trailoPS_squad_sos_alarm` event via Supabase Realtime and browser channels.
+- **Audible Emergency Siren on All Squad Members' Phones**:
+  - Implemented using a synthesized Web Audio API emergency siren (oscillating between 850Hz and 1250Hz with harmonics), avoiding reliance on external audio files that could fail in offline/low-bandwidth situations.
+  - Paired with continuous vibration pulses via `navigator.vibrate([600, 200, 600, 200, 1000])`.
+  - **Emergency Siren Modal**:
+    - High-visibility red backdrop with animated beacon rings.
+    - Large text: **"EMERGENCY SOS SIGNAL RECEIVED"**.
+    - Member name, role, battery level, and timestamp.
+    - Prominent action buttons:
+      - **"Mute Siren & Acknowledge"**: Silences the continuous audio loop on this device.
+      - **"Call Distress Member"**: Direct dialer redirect (`tel:<distress_phone>`).
+      - **"Locate on Map / Coordinates"**: Displays GPS coordinates for rescue routing.
 
-#### B. Image-Supported Broadcasts & Instant Squad Alerts
-- **Composer**: When writing an announcement (Critical, Advisory, or Info), the composer includes an **"Attach Photo / Map"** button allowing device image selection or camera capture.
-- **Broadcast Delivery**:
-  - Saved to the shared squad broadcast feed.
-  - Triggers an instant in-app notification popup on every squad member's screen displaying the broadcast headline, author, priority badge, and attached photo preview.
-  - Tapping the notification takes the member directly to the full announcement.
+#### B. Faculty & Commander Number Management (`+ Add Number`) in SOS
+- Located in `EmergencySOSScreen.tsx` under **"Expedition Leadership & Faculty Contacts"**:
+  - **`+ Add Number` Button**: Visible to Super Admins, Admins, and Faculty. Clean rounded button with a plus icon.
+  - **Add Contact Modal**:
+    - Contact Name (e.g., `Dr. R. K. Banerjee`, `Prof. S. Sen`, `Lead Guide Tenzing`).
+    - Role selector: `Faculty / Medical Lead`, `Super Admin / Commander`, `Admin / Safety Officer`.
+    - Phone Number field with input validation (e.g., `+91 98300 12345`).
+    - Optional Designation/Notes.
+  - **Direct Dialer Action**:
+    - Each contact card displays a green **"Call Now"** button (`<PhoneCall />`).
+    - Clicking the button directly invokes `window.location.href = 'tel:' + sanitizedNumber`, opening the user's phone dialer app with the number pre-filled.
+  - **Shared Synchronization**:
+    - Persisted in Supabase and local storage (`trailoPS_emergency_contacts_<groupId>`).
+    - When any admin adds or removes a number, the change synchronizes across all group members' devices.
 
-#### C. Simplified, Friendly Copy (Clutter-Free)
-- **Home / Gateway**:
-  - "Squad Telemetry Online" $\rightarrow$ **"Squad Connected"**
-  - "Perimeter Marker #3 Assembly" $\rightarrow$ **"Current Camp: Base Camp"**
-  - "38 / 42 (90%) Present in Camp" $\rightarrow$ **Real squad counts: e.g. "1 / 1 Present"**
-  - "Personal Trail Packing To-Do" $\rightarrow$ **"My Packing List"**
-  - "Dual-band satellite & LoRa relay" $\rightarrow$ **"One-tap emergency help"**
-- **Roll Call & Directory**:
-  - Clear labels: "Squad Members", "Invite Code", "Announcements", "Group Expenses".
-  - Clean cards without duplicate technical tags.
-- **Settings**:
-  - Attribution clearly states: **"TRAIL OPS · Developed by Pratap Paul"**.
+#### C. Super Admin Badge & Role Management in Squad Members List
+- **Visual Display**:
+  - Super Admins display a gold `Crown` icon with a clean, unboxed label: `Super Admin · Squad Leader`.
+  - Admins display a silver `Shield` icon: `Admin · Navigator`.
+  - Faculty display an emerald `Award` icon: `Faculty · Expedition Advisor`.
+  - Regular members display: `Member · Squad Explorer`.
+- **Role Actions**:
+  - Super Admins can promote/demote members.
+  - If a Super Admin attempts to demote or remove the *last remaining Super Admin*, the action is blocked with an explanatory notice: *"At least one Super Admin must remain in the squad."*
 
-#### D. Synchronized Emergency Numbers
-- **Directory**: Leads and Route Helplines start clean with zero fabricated numbers.
-- **Add / Remove**: Any squad member can add a local rescue line, guide contact, or camp doctor. The addition broadcasts and syncs across all squad devices via shared squad records (`trailoPS_emergency_helplines_${squadId}`). Deleting a contact removes it for all members.
-- **One-Tap Calling**: Tapping any registered contact opens the device's native phone dialer (`tel:`).
+#### D. Safe Transfer of Control Modal
+- Triggered when the last Super Admin attempts to leave or step down:
+  - **Modal Header**: `Transfer Squad Leadership`
+  - Explains that a successor must be appointed before the sole Super Admin can step down.
+  - Displays eligible active members.
+  - Promoting the successor and executing the leave/demote occurs in an atomic, verified sequence.
 
-#### E. Media Vault Delete Control
-- The ambiguous minus button on media cards is replaced with an explicit, red-accented button: `<Trash2 className="w-3.5 h-3.5" />` with label **"Delete"**, accompanied by a confirmation prompt to prevent accidental removal.
+#### E. Super Admin Group Deletion in Settings (Danger Zone)
+- Visible **only** to the active Super Admin.
+- Displays summary of data that will be erased.
+- Requires typing the exact squad name to unlock the delete button.
+- Cascade-cleans DB rows and cloud storage files, emits a realtime deletion broadcast, and returns members to the Gateway screen.
 
 ---
 
 ### 3. Key Product Decisions & Trade-Offs
 
-- **Real-Time Roll Call Coordination**:
-  - *Chosen Approach*: Store live roll-call session state keyed by squad ID (`trailoPS_active_rollcall_${squadId}` and Supabase squad record). It tracks `sessionId`, `startedAt`, `active`, and `presentUserIds: string[]`.
-  - *Why*: Allows instant synchronized responses on any squad member's phone without requiring complex third-party backend servers. Members who open the app see the attendance modal immediately as long as the session is active.
-- **Broadcast Image Storage**:
-  - *Chosen Approach*: Support image attachments encoded as compressed high-quality Data URIs or Supabase media URLs, displaying inline in both the announcement card and the notification alert popup.
-  - *Why*: Allows visual warnings (e.g. photo of trail obstacle or route map) to be viewed even in offline or weak 3G conditions.
-- **Uncluttering Strategy**:
-  - *Chosen Approach*: Strip out verbose military mock descriptors ("tactical telemetry", "geodesic perimeter", "SAR synced") in favor of clear, friendly trekker terms, keeping the SOS distress section urgent, clean, and unambiguous.
+#### Decision 1: Web Audio API Oscillator vs. Static MP3 for Emergency Siren
+- **Chosen Approach**: Pure Web Audio API synthesized oscillating siren with dual oscillators (carrier 950Hz modulated by 4Hz LFO).
+- **Why**: Wilderness apps often have spotty cellular connections. A static MP3 audio file might fail to load over flaky 2G/EDGE networks or get blocked by CORS. Web Audio API generates immediate, loud, zero-latency sound entirely in-browser without any network requests.
+- **Alternatives Considered**: Bundled MP3 file was considered but Web Audio guarantees 100% offline reliability.
+
+#### Decision 2: Permission Guard for Adding Leadership Contacts
+- **Chosen Approach**: Allow Super Admins, Admins, and Faculty to add/edit emergency contact lines, while allowing all members to view and dial them.
+- **Why**: Directly aligns with the user's preference and prevents accidental vandalism of emergency numbers by junior members while keeping leadership agile.
+
+#### Decision 3: Atomic Invariant Enforcement
+- **Chosen Approach**: Database triggers (`tr_prevent_orphan_group`) and transactional PostgreSQL functions (`manage_member_role`, `leave_squad_safely`, `delete_squad_group_cascade`) coupled with client-side optimistic synchronization.
+- **Why**: Prevents race conditions where two Super Admins might try to demote each other simultaneously.
 
 ---
 
@@ -94,65 +109,83 @@ TRAIL OPS is transformed from a static demo into a live, collaborative expeditio
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
-│                              APP STATE                                 │
-│      Active Squad • User Role • Authenticated Members • Database       │
-└───────────┬────────────────────────────┬───────────────────────────────┘
-            │                            │
-            ▼                            ▼
-┌────────────────────────┐   ┌───────────────────────────────────────────┐
-│   GatewayScreen.tsx    │   │         SquadRollCallScreen.tsx           │
-│ • Real dynamic counts  │   │ • Super Admin: "Start Roll Call" button   │
-│   (Present / Total)    │   │ • Real-time counter (Present vs Pending)  │
-│ • Simplified friendly  │   │ • Member: Attendance popup notification   │
-│   text throughout      │   │ • Multimodal broadcast (Text + Image)     │
-└───────────┬────────────┘   │ • Empty pending queue (real requests)     │
-            │                │ • Trash2 "Delete" button on media vault   │
-            │                └─────────────────────┬─────────────────────┘
-            ▼                                      ▼
-┌────────────────────────┐   ┌───────────────────────────────────────────┐
-│   EmergencySOSScreen   │   │            SettingsScreen.tsx             │
-│ • Zero demo numbers    │   │ • Developer Credit: Pratap Paul           │
-│ • Shared squad sync    │   │ • Clean user-friendly settings            │
-│ • Cross-device delete  │   └───────────────────────────────────────────┘
-└────────────────────────┘
+│                        TRAIL OPS Client (React SPA)                    │
+├──────────────────────────┬─────────────────────────────┬───────────────┤
+│    EmergencySOSScreen    │     SquadRollCallScreen     │ SettingsScreen│
+│(Continuous Siren, Add Num│(Role Management, Promotion, │(Delete Squad, │
+│ Dialer Redirect, Helplines (Control Transfer Modal)    │ Recovery)     │
+└────────────┬─────────────┴──────────────┬──────────────┴───────┬───────┘
+             │                            │                      │
+             ▼                            ▼                      ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                      Audio & Realtime Services Layer                    │
+│  • Web Audio Siren Generator (Oscillating continuous alarm loop)       │
+│  • Device Vibration Controller (navigator.vibrate pattern)             │
+│  • Supabase Realtime & Broadcast Channels ('squad_emergency_alarm')    │
+│  • Native Dialer Hook (window.location.href = 'tel:...')               │
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │
+                                    ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                   src/lib/supabase.ts (API & RPC Layer)                │
+│  - triggerSquadSOS()            - manageMemberRole()                   │
+│  - addEmergencyContact()        - transferAndLeaveSquad()              │
+│  - deleteEmergencyContact()     - deleteSquadGroupCascade()            │
+│  - recoverGroupSuperAdmin()     - createSquadGroup()                   │
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │
+                                    ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                      Supabase PostgreSQL Backend                        │
+├────────────────────────────────────────────────────────────────────────┤
+│  Tables:                                                               │
+│   • squad_groups (id, name, code, created_by)                          │
+│   • squad_members (id, group_id, user_id, role, status)                │
+│   • squad_emergency_contacts (id, group_id, name, role, phone, added_by)│
+│   • squad_audit_logs (id, group_id, actor_id, action, details)         │
+│   • train_journeys / train_seat_assignments / media_vault_items        │
+│                                                                        │
+│  Triggers & RPCs:                                                      │
+│   • tr_enforce_mandatory_super_admin                                   │
+│   • rpc: manage_member_role()                                          │
+│   • rpc: transfer_and_leave_squad()                                    │
+│   • rpc: delete_squad_group_cascade()                                  │
+│   • rpc: recover_group_super_admin()                                   │
+│                                                                        │
+│  Storage:                                                              │
+│   • trailops-media bucket (purged on group deletion)                   │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
-#### Shared Squad Synchronization Models
+#### New & Updated Components
 
-| State Channel | Data Object | Cross-Device Sync Behavior |
-|---|---|---|
-| **Active Roll Call** | `{ active: boolean, startedAt: string, presentUserIds: string[] }` | When Super Admin activates, all member apps show attendance modal; real-time counter updates as users mark present |
-| **Broadcasts** | `{ id, title, text, imageUrl?, priority, author, timestamp }` | When posted, triggers squad-wide alert popup with photo preview |
-| **Emergency Helplines**| `{ id, name, phone, subtext, type }[]` | Shared across group; additions and deletions sync to all devices |
-| **Join Requests** | `{ id, userId, name, avatar, requestedAt }[]` | Super Admin can approve or decline real incoming requests |
+1. **`src/lib/emergencyAudio.ts`**:
+   - Web Audio API dual-tone siren engine (`startEmergencySiren()`, `stopEmergencySiren()`).
+   - Mobile vibration trigger (`startEmergencyVibration()`, `stopEmergencyVibration()`).
+2. **`src/components/modals/EmergencySirenAlertModal.tsx`**:
+   - Fullscreen emergency distress alert that pops up on all squad members' devices when SOS is active.
+   - Shows distress member info, GPS coordinates, one-tap "Call Distress Member" dialer link, and "Mute Siren & Acknowledge" button.
+3. **`src/components/modals/AddEmergencyContactModal.tsx`**:
+   - Modal to add Faculty, Super Admin, or Admin phone numbers.
+   - Saves to Supabase and broadcasts update to all squad members.
+4. **`src/components/EmergencySOSScreen.tsx`**:
+   - Integrated `+ Add Contact` button for Super Admin, Admin, and Faculty.
+   - One-tap phone dialer redirection (`tel:<number>`).
+   - Group-wide SOS siren trigger on emergency button activation.
+5. **`src/components/modals/TransferSuperAdminModal.tsx`**:
+   - Modal prompting sole Super Admin to select a successor before leaving or demoting.
+6. **`src/components/modals/DeleteGroupModal.tsx`**:
+   - Super Admin deletion confirmation requiring exact group name match, cascade cleanup, and storage file deletion.
+7. **`src/components/SettingsScreen.tsx`**:
+   - Danger zone for group deletion, control transfer action, and platform recovery console.
+8. **`src/components/SquadRollCallScreen.tsx`**:
+   - Role promotion/demotion actions with single Super Admin protection.
 
----
-
-### 5. Detailed Implementation Steps
-
-1. **Roll Call System & Attendance Popup**:
-   - Add roll-call session state to `App.tsx` and `SquadRollCallScreen.tsx`.
-   - Provide Super Admin with **"Start Roll Call"** and **"End Roll Call"** controls.
-   - Implement the `AttendanceAlertModal` that pops up on members' devices when a roll call is triggered, with a one-tap **"I Am Present"** button.
-   - Display real-time attendance stats: **Present: X** and **Pending: Y**, with member status badges.
-2. **Multimodal Broadcasts with Images & Squad Alerts**:
-   - Update announcement modal to include image attachment (photo upload / camera).
-   - Display announcement image in feed cards.
-   - Implement `BroadcastAlertModal` that pops up for all squad members when an announcement is posted.
-3. **App-Wide Text Simplification (Clutter-Free)**:
-   - Audit and replace dense military jargon across `GatewayScreen`, `SquadRollCallScreen`, `FeedScreen`, `SplitwiseModal`, and `FacultyDriveModal` with clean, friendly, natural wording.
-   - Maintain strong, clear emergency wording in `EmergencySOSScreen`.
-4. **Home Screen Real Member Counting**:
-   - Update `GatewayScreen.tsx` to calculate and show real member numbers (e.g. `1 / 1 Present`, `100%`) instead of hardcoded `38 / 42`.
-5. **Pending Group Queue Cleanup**:
-   - Remove `"Rohan Sharma"` and `"Ananya Verma"` from `SquadRollCallScreen.tsx`.
-   - Initialize queue empty `[]` and support real applicant approvals.
-6. **Settings Developer Attribution**:
-   - Add explicit credit in `SettingsScreen.tsx`: **"Architect & Developer: Pratap Paul"**.
-7. **Emergency Contacts & Helplines Sync**:
-   - Remove hardcoded demo leads and helplines from `EmergencySOSScreen.tsx`.
-   - Connect emergency contacts to squad-synchronized storage so adding/removing updates for all squad members.
-8. **HD Media Vault Delete Action**:
-   - Replace `<Minus />` button with an explicit `<Trash2 />` **Delete** action button with confirmation toast.
-9. **Verification**:
-   - Run `compile_applet` and `lint_applet` to confirm clean compilation and zero errors.
+#### Verification & Testing Plan
+- **Test 1: SOS Continuous Siren & Vibration**: Trigger SOS from member account; verify continuous multi-tone oscillating alarm plays and vibration activates on all squad members' devices; verify "Mute Siren" stops the sound.
+- **Test 2: Add Emergency Contact & Dialer Redirect**: With Super Admin/Faculty role, tap `+ Add Number`, add contact; verify number appears on all members' screens; tap "Call Now", verify browser triggers `tel:` protocol.
+- **Test 3: Single Super Admin Protection**: With 1 Super Admin, verify self-demotion or leaving is blocked and triggers the Transfer Successor modal.
+- **Test 4: Successor Transfer**: Appoint an active member as Super Admin; verify successor receives role and original Super Admin can leave cleanly.
+- **Test 5: Multiple Super Admins**: With 2 Super Admins, verify promotion and demotion work smoothly while keeping at least 1 Super Admin.
+- **Test 6: Emergency Recovery**: Test platform recovery tool with master key to assign Super Admin to a test squad with 0 admins.
+- **Test 7: Secure Group Deletion**: Verify only Super Admin can delete group; verify name match validation; verify cascade cleanup of DB tables and storage files; verify all members are notified and returned to Gateway screen.

@@ -14,6 +14,7 @@ import {
   Shield,
   BellRing,
   Info,
+  Camera,
 } from 'lucide-react';
 import { FeedPost, ScreenType, UserRole } from '../types';
 
@@ -31,6 +32,7 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
   const [isPosting, setIsPosting] = useState(false);
   const [announcementTitle, setAnnouncementTitle] = useState('');
   const [announcementText, setAnnouncementText] = useState('');
+  const [announcementImage, setAnnouncementImage] = useState<string | null>(null);
   const [priority, setPriority] = useState<'critical' | 'advisory' | 'info'>('critical');
 
   const isAuthorizedAdmin = userRole === 'super_admin' || userRole === 'subgroup_admin';
@@ -62,7 +64,8 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
       avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=150&q=80',
       timestamp: 'Just now',
       content: announcementTitle ? `📢 ${announcementTitle.toUpperCase()}\n${announcementText}` : announcementText,
-      type: 'text',
+      type: announcementImage ? 'image' : 'text',
+      imageUrl: announcementImage || undefined,
       isAnnouncement: true,
       announcementPriority: priority,
       likes: 0,
@@ -70,10 +73,25 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
     };
 
     setAnnouncements([newPost, ...announcements]);
+
+    // Dispatch notification to all squad member devices
+    const broadcastPayload = {
+      id: newPost.id,
+      title: announcementTitle || 'Squad Announcement',
+      text: announcementText,
+      imageUrl: announcementImage || undefined,
+      priority,
+      author: authorRoleLabel,
+      timestamp: 'Just now',
+    };
+    localStorage.setItem('trailoPS_latest_broadcast_default', JSON.stringify(broadcastPayload));
+    window.dispatchEvent(new CustomEvent('trailoPS_new_announcement', { detail: broadcastPayload }));
+
     setAnnouncementTitle('');
     setAnnouncementText('');
+    setAnnouncementImage(null);
     setIsPosting(false);
-    onShowToast('Official announcement broadcasted to all squad members!');
+    onShowToast('Official announcement with alert broadcasted to all squad members!');
   };
 
   return (
@@ -239,6 +257,16 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
                   {post.content}
                 </p>
 
+                {post.imageUrl && (
+                  <div className="rounded-2xl overflow-hidden border border-slate-200 my-2.5 max-h-56 bg-slate-900">
+                    <img
+                      src={post.imageUrl}
+                      alt="Directive Attachment"
+                      className="w-full h-full object-cover max-h-56"
+                    />
+                  </div>
+                )}
+
                 <div className="flex items-center justify-between pt-2 border-t border-slate-100 text-[11px] text-slate-500">
                   <span className="text-emerald-700 font-semibold flex items-center gap-1">
                     <span>✓ Broadcasted via LoRa &amp; Push</span>
@@ -342,6 +370,55 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
                   required
                   autoFocus
                 />
+              </div>
+
+              {/* Photo Attachment Input */}
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Attach Photo / Map (Optional)
+                </label>
+                {announcementImage ? (
+                  <div className="relative rounded-2xl overflow-hidden border border-slate-200 bg-slate-900 h-28 group">
+                    <img
+                      src={announcementImage}
+                      alt="Directive Attachment Preview"
+                      className="w-full h-full object-cover"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setAnnouncementImage(null)}
+                      className="absolute top-2 right-2 p-1.5 rounded-full bg-slate-950/80 text-white hover:bg-rose-600 transition-colors shadow-md cursor-pointer"
+                      title="Remove image"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ) : (
+                  <label className="flex items-center justify-center gap-2 py-2 px-3 rounded-xl border-2 border-dashed border-slate-200 hover:border-amber-400 bg-slate-50 text-slate-600 text-xs font-semibold cursor-pointer transition-colors">
+                    <Camera className="w-4 h-4 text-amber-600" />
+                    <span>Upload or Capture Photo</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) {
+                          if (file.size > 8 * 1024 * 1024) {
+                            onShowToast('Please choose an image under 8MB.');
+                            return;
+                          }
+                          const reader = new FileReader();
+                          reader.onload = (event) => {
+                            setAnnouncementImage(event.target?.result as string);
+                            onShowToast('Photo attached to directive!');
+                          };
+                          reader.readAsDataURL(file);
+                        }
+                      }}
+                    />
+                  </label>
+                )}
               </div>
 
               <div className="pt-1 flex gap-2">

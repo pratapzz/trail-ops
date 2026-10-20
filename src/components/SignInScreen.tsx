@@ -14,6 +14,8 @@ import {
   Database,
   AlertCircle,
   Loader2,
+  GraduationCap,
+  Code2,
 } from 'lucide-react';
 import { ScreenType } from '../types';
 import { getSupabase, isSupabaseConfigured } from '../lib/supabase';
@@ -551,7 +553,7 @@ export const SignInScreen: React.FC<SignInScreenProps> = ({
           </div>
 
           {/* Friendly Footer Invitation */}
-          <div className="mt-4 text-center">
+          <div className="mt-4 text-center space-y-3">
             <p className="text-xs text-slate-500">
               {isSignUp ? 'Already registered?' : 'New to TrailoPS?'}
               <button
@@ -565,9 +567,27 @@ export const SignInScreen: React.FC<SignInScreenProps> = ({
                 {isSignUp ? 'Sign in instead' : 'Create an account'}
               </button>
             </p>
-            <p className="text-slate-400 mt-1 text-[10px] tracking-wide">
+            <p className="text-slate-400 text-[10px] tracking-wide">
               Secure Supabase PostgreSQL &amp; Cloud Storage Protection
             </p>
+
+            {/* Developer Credit & College Attribution */}
+            <div className="pt-3 border-t border-slate-200/80 flex flex-col items-center justify-center gap-1.5">
+              <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-50 border border-emerald-300/80 shadow-2xs">
+                <Code2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                <span className="text-[11px] font-medium text-slate-700">
+                  Developed &amp; Maintained by
+                </span>
+                <span className="text-[11px] font-extrabold text-emerald-950">
+                  Pratap Paul
+                </span>
+              </div>
+              <div className="inline-flex items-center gap-1.5 text-[11px] text-slate-600 font-medium">
+                <GraduationCap className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                <span>CS Student,</span>
+                <span className="font-bold text-slate-800">Srikrishna College, Bagula</span>
+              </div>
+            </div>
           </div>
         </div>
       </main>

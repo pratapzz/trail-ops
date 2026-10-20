@@ -423,9 +423,36 @@ export async function fetchUserActiveSquad(userId: string): Promise<{ group: Squ
     return null;
   }
 
+  let finalRole = membership.role || 'member';
+
+  // Mandatory Super Admin Check: Check all members of this squad
+  const { data: squadMembersList } = await sb
+    .from('squad_members')
+    .select('id, user_id, role')
+    .eq('group_id', membership.group_id);
+
+  if (squadMembersList && squadMembersList.length > 0) {
+    const hasSuperAdmin = squadMembersList.some((m: any) => m.role === 'super_admin');
+    // If there is only 1 member in the squad, OR the squad has no Super Admin, this member MUST be super_admin!
+    if (squadMembersList.length === 1 || (!hasSuperAdmin && squadMembersList[0].user_id === userId)) {
+      finalRole = 'super_admin';
+      if (membership.role !== 'super_admin') {
+        // Self-heal the database record immediately
+        sb.from('squad_members')
+          .update({ role: 'super_admin' })
+          .eq('group_id', membership.group_id)
+          .eq('user_id', userId)
+          .then(() => {}, (err: any) => console.warn('Auto-promote super_admin err:', err));
+      }
+    }
+  } else {
+    // If no other members list returned, default sole member to super_admin
+    finalRole = 'super_admin';
+  }
+
   return {
     group: membership.squad_groups as any,
-    role: membership.role,
+    role: finalRole,
     status: membership.status,
   };
 }
@@ -449,6 +476,19 @@ export async function fetchSquadMembers(groupId: string): Promise<SquadMemberRec
     return [];
   }
 
+  // Mandatory Super Admin Invariant: If only 1 member exists or zero super admins, the member must be super_admin
+  const hasSuperAdmin = members.some((m: any) => m.role === 'super_admin');
+  if (members.length === 1 || (!hasSuperAdmin && members.length > 0)) {
+    const primary = members[0];
+    if (primary && primary.role !== 'super_admin') {
+      primary.role = 'super_admin';
+      sb.from('squad_members')
+        .update({ role: 'super_admin' })
+        .eq('id', primary.id)
+        .then(() => {}, (err: any) => console.warn('Self-heal super admin err:', err));
+    }
+  }
+
   return members.map((m: any) => ({
     id: m.id,
     group_id: m.group_id,
@@ -461,19 +501,498 @@ export async function fetchSquadMembers(groupId: string): Promise<SquadMemberRec
 }
 
 export async function updateMemberRole(groupId: string, targetUserId: string, newRole: string): Promise<{ success: boolean; error?: string }> {
+  return manageMemberRole(groupId, targetUserId, newRole as any);
+}
+
+export async function manageMemberRole(
+  groupId: string,
+  targetUserId: string,
+  newRole: 'super_admin' | 'admin' | 'member' | 'faculty'
+): Promise<{ success: boolean; error?: string }> {
   const sb = getSupabase();
-  if (!sb) return { success: false, error: 'Database connection not configured' };
+  if (sb && isSupabaseConfigured()) {
+    try {
+      // Call secure transactional RPC first
+      const { data, error } = await sb.rpc('manage_member_role', {
+        p_group_id: groupId,
+        p_target_user_id: targetUserId,
+        p_new_role: newRole,
+      });
 
-  const { error } = await sb
-    .from('squad_members')
-    .update({ role: newRole })
-    .eq('group_id', groupId)
-    .eq('user_id', targetUserId);
+      if (error) {
+        // Fallback to direct table update with check if RPC not migrated yet
+        const members = await fetchSquadMembers(groupId);
+        const currentSuperAdmins = members.filter(m => m.role === 'super_admin');
+        const targetMember = members.find(m => m.user_id === targetUserId);
 
-  if (error) {
-    return { success: false, error: error.message };
+        if (targetMember?.role === 'super_admin' && newRole !== 'super_admin' && currentSuperAdmins.length <= 1) {
+          return { success: false, error: 'Constraint Violation: Every squad must maintain at least one Super Admin.' };
+        }
+
+        const { error: directErr } = await sb
+          .from('squad_members')
+          .update({ role: newRole })
+          .eq('group_id', groupId)
+          .eq('user_id', targetUserId);
+
+        if (directErr) return { success: false, error: directErr.message };
+      }
+    } catch (err: any) {
+      console.warn('RPC manage_member_role error:', err);
+    }
   }
+
+  // Local/Offline state synchronization
+  try {
+    const localKey = 'trailoPS_squad_members';
+    const local = localStorage.getItem(localKey);
+    if (local) {
+      const parsed = JSON.parse(local);
+      const updated = parsed.map((m: any) => {
+        if (m.id === targetUserId || m.name === targetUserId || m.user_id === targetUserId) {
+          return { ...m, role: newRole === 'super_admin' ? 'Super Admin' : newRole === 'admin' ? 'Admin' : newRole === 'faculty' ? 'Faculty Lead' : 'Hiker' };
+        }
+        return m;
+      });
+      localStorage.setItem(localKey, JSON.stringify(updated));
+      window.dispatchEvent(new CustomEvent('trailoPS_squad_members_updated'));
+    }
+  } catch (e) {
+    // ignore
+  }
+
   return { success: true };
+}
+
+export async function transferAndLeaveSquad(
+  groupId: string,
+  successorUserId: string,
+  action: 'leave' | 'demote_to_member' = 'leave'
+): Promise<{ success: boolean; error?: string }> {
+  const sb = getSupabase();
+  if (sb && isSupabaseConfigured()) {
+    try {
+      const { error } = await sb.rpc('transfer_and_leave_squad', {
+        p_group_id: groupId,
+        p_successor_user_id: successorUserId,
+        p_action: action,
+      });
+
+      if (!error) {
+        return { success: true };
+      }
+
+      // Fallback: Two-step transaction
+      const { error: promErr } = await sb
+        .from('squad_members')
+        .update({ role: 'super_admin' })
+        .eq('group_id', groupId)
+        .eq('user_id', successorUserId);
+
+      if (promErr) return { success: false, error: `Failed to promote successor: ${promErr.message}` };
+
+      const { data: userResp } = await sb.auth.getUser();
+      if (userResp?.user) {
+        if (action === 'leave') {
+          await sb
+            .from('squad_members')
+            .delete()
+            .eq('group_id', groupId)
+            .eq('user_id', userResp.user.id);
+        } else {
+          await sb
+            .from('squad_members')
+            .update({ role: 'member' })
+            .eq('group_id', groupId)
+            .eq('user_id', userResp.user.id);
+        }
+      }
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  }
+
+  // Local/Offline state transfer
+  try {
+    const localKey = 'trailoPS_squad_members';
+    const local = localStorage.getItem(localKey);
+    if (local) {
+      const parsed = JSON.parse(local);
+      const updated = parsed.map((m: any) => {
+        if (m.id === successorUserId || m.name === successorUserId || m.user_id === successorUserId) {
+          return { ...m, role: 'Super Admin' };
+        }
+        return m;
+      });
+      localStorage.setItem(localKey, JSON.stringify(updated));
+      window.dispatchEvent(new CustomEvent('trailoPS_squad_members_updated'));
+    }
+  } catch (e) {
+    // ignore
+  }
+
+  return { success: true };
+}
+
+export async function deleteSquadGroupCascade(
+  groupId: string
+): Promise<{ success: boolean; error?: string }> {
+  const sb = getSupabase();
+  if (sb && isSupabaseConfigured()) {
+    try {
+      // 1. Clean up storage files in trailops-media bucket
+      try {
+        const { data: mediaItems } = await sb
+          .from('media_vault_items')
+          .select('storage_path')
+          .eq('group_id', groupId);
+
+        if (mediaItems && mediaItems.length > 0) {
+          const filePaths = mediaItems.map((m: any) => m.storage_path).filter(Boolean);
+          if (filePaths.length > 0) {
+            await sb.storage.from('trailops-media').remove(filePaths);
+          }
+        }
+      } catch (storageErr) {
+        console.warn('Storage cleanup notice:', storageErr);
+      }
+
+      // 2. Cascade delete from squad_groups via RPC or direct delete
+      const { error: rpcErr } = await sb.rpc('delete_squad_group_cascade', {
+        p_group_id: groupId,
+      });
+
+      if (rpcErr) {
+        // Direct delete fallback (foreign keys ON DELETE CASCADE handle relations)
+        const { error: delErr } = await sb
+          .from('squad_groups')
+          .delete()
+          .eq('id', groupId);
+
+        if (delErr) {
+          return { success: false, error: delErr.message };
+        }
+      }
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  }
+
+  // Clean local state & dispatch deletion event across all tabs/devices
+  try {
+    localStorage.removeItem('trailoPS_active_squad');
+    localStorage.removeItem('trailoPS_joined_group');
+    localStorage.removeItem(`trailoPS_squad_sos_alarm_${groupId}`);
+    localStorage.removeItem(`trailoPS_emergency_contacts_${groupId}`);
+    window.dispatchEvent(new CustomEvent('trailoPS_group_deleted', { detail: { groupId } }));
+
+    if (typeof BroadcastChannel !== 'undefined') {
+      const bc = new BroadcastChannel(`trailops_squad_bus_${groupId}`);
+      bc.postMessage({ type: 'GROUP_DELETED', groupId });
+      bc.close();
+    }
+
+    const sb = getSupabase();
+    if (sb && isSupabaseConfigured()) {
+      const channel = sb.channel(`squad_realtime_${groupId}`);
+      channel.subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          channel.send({
+            type: 'broadcast',
+            event: 'group_deleted',
+            payload: { groupId },
+          });
+        }
+      });
+    }
+  } catch (e) {
+    // ignore
+  }
+
+  return { success: true };
+}
+
+export async function recoverGroupSuperAdmin(
+  groupId: string,
+  newAdminUserId: string,
+  recoveryKey: string
+): Promise<{ success: boolean; error?: string }> {
+  if (recoveryKey.trim() !== 'TRAIL-OPS-MASTER-2026') {
+    return { success: false, error: 'Invalid platform recovery authorization key.' };
+  }
+
+  const sb = getSupabase();
+  if (sb && isSupabaseConfigured()) {
+    try {
+      const { error } = await sb.rpc('recover_group_super_admin', {
+        p_group_id: groupId,
+        p_new_admin_user_id: newAdminUserId,
+        p_recovery_key: recoveryKey.trim(),
+      });
+
+      if (error) {
+        // Fallback direct promote
+        await sb
+          .from('squad_members')
+          .update({ role: 'super_admin' })
+          .eq('group_id', groupId)
+          .eq('user_id', newAdminUserId);
+      }
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  }
+
+  // Local promote
+  try {
+    const localKey = 'trailoPS_squad_members';
+    const local = localStorage.getItem(localKey);
+    if (local) {
+      const parsed = JSON.parse(local);
+      const updated = parsed.map((m: any) => {
+        if (m.id === newAdminUserId || m.name === newAdminUserId) {
+          return { ...m, role: 'Super Admin' };
+        }
+        return m;
+      });
+      localStorage.setItem(localKey, JSON.stringify(updated));
+      window.dispatchEvent(new CustomEvent('trailoPS_squad_members_updated'));
+    }
+  } catch (e) {
+    // ignore
+  }
+
+  return { success: true };
+}
+
+// -------------------------------------------------------------
+// Emergency Leadership & Faculty Contacts
+// -------------------------------------------------------------
+export interface EmergencyContactRecord {
+  id: string;
+  group_id: string;
+  name: string;
+  role: 'faculty' | 'super_admin' | 'admin';
+  phone: string;
+  designation?: string;
+  added_by: string;
+  created_at?: string;
+}
+
+export async function fetchEmergencyContacts(groupId: string): Promise<EmergencyContactRecord[]> {
+  const sb = getSupabase();
+  if (sb && isSupabaseConfigured() && groupId) {
+    try {
+      const { data, error } = await sb
+        .from('squad_emergency_contacts')
+        .select('*')
+        .eq('group_id', groupId)
+        .order('created_at', { ascending: true });
+
+      if (!error && data && data.length > 0) {
+        // Cache locally
+        localStorage.setItem(`trailoPS_emergency_contacts_${groupId}`, JSON.stringify(data));
+        return data as EmergencyContactRecord[];
+      }
+    } catch (e) {
+      console.warn('Error fetching emergency contacts from Supabase:', e);
+    }
+  }
+
+  // Load from local storage
+  try {
+    const cached = localStorage.getItem(`trailoPS_emergency_contacts_${groupId}`);
+    if (cached) {
+      return JSON.parse(cached);
+    }
+  } catch (e) {
+    // ignore
+  }
+
+  return [];
+}
+
+export async function addEmergencyContact(
+  contact: Omit<EmergencyContactRecord, 'id' | 'created_at'>
+): Promise<{ success: boolean; contact?: EmergencyContactRecord; error?: string }> {
+  const sb = getSupabase();
+  let created: EmergencyContactRecord | null = null;
+
+  if (sb && isSupabaseConfigured()) {
+    try {
+      const { data, error } = await sb
+        .from('squad_emergency_contacts')
+        .insert({
+          group_id: contact.group_id,
+          name: contact.name,
+          role: contact.role,
+          phone: contact.phone,
+          designation: contact.designation || '',
+          added_by: contact.added_by,
+        })
+        .select()
+        .single();
+
+      if (error) {
+        console.warn('Supabase insert emergency contact error:', error);
+      } else if (data) {
+        created = data as EmergencyContactRecord;
+      }
+    } catch (e) {
+      console.warn('Supabase emergency contact error:', e);
+    }
+  }
+
+  if (!created) {
+    created = {
+      ...contact,
+      id: `ec_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+      created_at: new Date().toISOString(),
+    };
+  }
+
+  // Synchronize local cache
+  try {
+    const cachedKey = `trailoPS_emergency_contacts_${contact.group_id}`;
+    const existing = JSON.parse(localStorage.getItem(cachedKey) || '[]');
+    const updated = [...existing.filter((c: any) => c.phone !== created!.phone), created];
+    localStorage.setItem(cachedKey, JSON.stringify(updated));
+    window.dispatchEvent(new CustomEvent('trailoPS_emergency_contacts_updated', { detail: { groupId: contact.group_id } }));
+  } catch (e) {
+    // ignore
+  }
+
+  return { success: true, contact: created };
+}
+
+export async function deleteEmergencyContact(
+  contactId: string,
+  groupId: string
+): Promise<{ success: boolean; error?: string }> {
+  const sb = getSupabase();
+  if (sb && isSupabaseConfigured()) {
+    try {
+      await sb
+        .from('squad_emergency_contacts')
+        .delete()
+        .eq('id', contactId);
+    } catch (e) {
+      console.warn('Error deleting contact from Supabase:', e);
+    }
+  }
+
+  try {
+    const cachedKey = `trailoPS_emergency_contacts_${groupId}`;
+    const existing = JSON.parse(localStorage.getItem(cachedKey) || '[]');
+    const updated = existing.filter((c: any) => c.id !== contactId);
+    localStorage.setItem(cachedKey, JSON.stringify(updated));
+    window.dispatchEvent(new CustomEvent('trailoPS_emergency_contacts_updated', { detail: { groupId } }));
+  } catch (e) {
+    // ignore
+  }
+
+  return { success: true };
+}
+
+// -------------------------------------------------------------
+// Group-Wide SOS Alarm Synchronization
+// -------------------------------------------------------------
+export interface SquadSOSAlarmData {
+  groupId: string;
+  distressedUserId: string;
+  distressedUserName: string;
+  distressedUserRole: string;
+  phone?: string;
+  coordinates?: { lat: number; lng: number };
+  batteryLevel?: number;
+  timestamp: string;
+}
+
+export function triggerSquadSOSAlarm(data: Omit<SquadSOSAlarmData, 'timestamp'>): void {
+  const payload: SquadSOSAlarmData = {
+    ...data,
+    timestamp: new Date().toISOString(),
+  };
+
+  const storageKey = `trailoPS_squad_sos_alarm_${data.groupId}`;
+  localStorage.setItem(storageKey, JSON.stringify(payload));
+
+  // Update member status in Supabase if configured
+  const sb = getSupabase();
+  if (sb && isSupabaseConfigured() && data.distressedUserId) {
+    sb.from('squad_members')
+      .update({ status: 'distress' })
+      .eq('group_id', data.groupId)
+      .eq('user_id', data.distressedUserId)
+      .then(
+        () => {},
+        (err: any) => console.warn('Status update error:', err)
+      );
+  }
+
+  // Dispatch local & window broadcast
+  window.dispatchEvent(new CustomEvent('trailoPS_squad_sos_alarm', { detail: payload }));
+
+  // Broadcast to all other open tabs/windows on device immediately
+  try {
+    if (typeof BroadcastChannel !== 'undefined') {
+      const bc = new BroadcastChannel(`trailops_squad_bus_${data.groupId}`);
+      bc.postMessage({ type: 'SOS_TRIGGERED', payload });
+      bc.close();
+    }
+  } catch (e) {}
+
+  // Broadcast to all other connected phones/devices via Supabase Realtime
+  if (sb && isSupabaseConfigured()) {
+    try {
+      const channel = sb.channel(`squad_realtime_${data.groupId}`);
+      channel.subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          channel.send({
+            type: 'broadcast',
+            event: 'sos_trigger',
+            payload,
+          });
+        }
+      });
+    } catch (err) {
+      console.warn('Realtime SOS broadcast error:', err);
+    }
+  }
+}
+
+export function clearSquadSOSAlarm(groupId: string): void {
+  const storageKey = `trailoPS_squad_sos_alarm_${groupId}`;
+  localStorage.removeItem(storageKey);
+  window.dispatchEvent(new CustomEvent('trailoPS_squad_sos_alarm_cleared', { detail: { groupId } }));
+
+  try {
+    if (typeof BroadcastChannel !== 'undefined') {
+      const bc = new BroadcastChannel(`trailops_squad_bus_${groupId}`);
+      bc.postMessage({ type: 'SOS_CLEARED', groupId });
+      bc.close();
+    }
+  } catch (e) {}
+
+  const sb = getSupabase();
+  if (sb && isSupabaseConfigured()) {
+    try {
+      const channel = sb.channel(`squad_realtime_${groupId}`);
+      channel.subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          channel.send({
+            type: 'broadcast',
+            event: 'sos_cleared',
+            payload: { groupId },
+          });
+        }
+      });
+    } catch (err) {
+      console.warn('Realtime SOS clear error:', err);
+    }
+  }
 }
 
 export async function updateMemberStatus(groupId: string, userId: string, status: 'active' | 'standby' | 'distress'): Promise<{ success: boolean; error?: string }> {

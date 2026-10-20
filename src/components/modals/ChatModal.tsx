@@ -138,7 +138,7 @@ export const ChatModal: React.FC<ChatModalProps> = ({
           </button>
           <button
             type="button"
-            onClick={() => setInputText('All 42 hikers accounted for.')}
+            onClick={() => setInputText('All squad members accounted for.')}
             className="px-2.5 py-1 rounded-full bg-white border border-slate-200 text-slate-700 font-medium whitespace-nowrap hover:bg-slate-100"
           >
             Hikers accounted for

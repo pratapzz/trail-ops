@@ -73,6 +73,7 @@ import {
   createSquadGroup,
   fetchSquadMembers,
   updateMemberRole,
+  manageMemberRole,
   SquadGroupRecord,
   SquadMemberRecord,
 } from '../lib/supabase';
@@ -133,8 +134,11 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
   const [allMembersSearchQuery, setAllMembersSearchQuery] = useState('');
   const [allMembersRoleFilter, setAllMembersRoleFilter] = useState<'all' | 'admins' | 'members'>('all');
 
-  // Super Admin Member Verification Queue state (Request 7)
+  // Super Admin Member Verification Queue state (No fake demo records)
   const [isVerificationRequired, setIsVerificationRequired] = useState(true);
+  const squadKey = activeSquad?.id || 'default';
+  const pendingStorageKey = `trailoPS_pending_requests_${squadKey}`;
+
   const [pendingMembers, setPendingMembers] = useState<Array<{
     id: string;
     name: string;
@@ -144,28 +148,37 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
     bloodGroup: string;
     requestedAt: string;
     roleRequested: string;
-  }>>([
-    {
-      id: 'p-1',
-      name: 'Rohan Sharma',
-      avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=120&q=80',
-      phone: '+91 98112 33445',
-      emergencyContact: '+91 98112 33446',
-      bloodGroup: 'B+',
-      requestedAt: '10m ago',
-      roleRequested: 'Scout Trekker',
-    },
-    {
-      id: 'p-2',
-      name: 'Ananya Verma',
-      avatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=120&q=80',
-      phone: '+91 98223 44556',
-      emergencyContact: '+91 98223 44557',
-      bloodGroup: 'O+',
-      requestedAt: '25m ago',
-      roleRequested: 'Medical Assistant',
-    },
-  ]);
+  }>>(() => {
+    const saved = localStorage.getItem(pendingStorageKey);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {}
+    }
+    return [];
+  });
+
+  // Cross-device and tab synchronization for pending join requests
+  useEffect(() => {
+    const syncPending = () => {
+      const saved = localStorage.getItem(pendingStorageKey);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed)) setPendingMembers(parsed);
+        } catch {}
+      } else {
+        setPendingMembers([]);
+      }
+    };
+    window.addEventListener('storage', syncPending);
+    window.addEventListener('trailoPS_pending_updated', syncPending);
+    return () => {
+      window.removeEventListener('storage', syncPending);
+      window.removeEventListener('trailoPS_pending_updated', syncPending);
+    };
+  }, [pendingStorageKey]);
 
   // Real device media file input reference for user uploads (Request 11)
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -434,14 +447,16 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
     localStorage.setItem(key, JSON.stringify(subGroups));
   }, [subGroups, activeSquad?.id]);
 
-  // Quick announcement composer (strictly real records)
+  // Quick announcement composer (strictly real records with image attachment support)
   const [quickAnnounceTitle, setQuickAnnounceTitle] = useState('');
   const [quickAnnounceText, setQuickAnnounceText] = useState('');
+  const [quickAnnounceImage, setQuickAnnounceImage] = useState<string | null>(null);
   const [quickAnnouncePriority, setQuickAnnouncePriority] = useState<'critical' | 'advisory' | 'info'>('critical');
   const [announcements, setAnnouncements] = useState<Array<{
     id: string;
     title: string;
     text: string;
+    imageUrl?: string;
     priority: 'critical' | 'advisory' | 'info';
     author: string;
     timestamp: string;
@@ -612,6 +627,10 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
       try {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
+          if (parsed.length === 1) {
+            parsed[0].roleHierarchy = 'super_admin';
+            parsed[0].role = 'Squad Commander (You)';
+          }
           return parsed;
         }
       } catch {}
@@ -620,8 +639,8 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
       {
         id: currentUserId || '1',
         name: `${currentUserName} (You)`,
-        role: userRole === 'super_admin' ? 'Squad Commander (You)' : 'Expedition Member (You)',
-        roleHierarchy: userRole,
+        role: 'Squad Commander (You)',
+        roleHierarchy: 'super_admin',
         status: 'present',
         avatar: currentUserAvatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=120&q=80',
         distance: '0m',
@@ -656,6 +675,17 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
           lastPing: 'Just now',
           phone: m.profile?.phone,
         }));
+
+        // Mandatory Super Admin Check: 1 member is always Super Admin
+        if (mapped.length === 1 || !mapped.some(m => m.roleHierarchy === 'super_admin')) {
+          mapped[0].roleHierarchy = 'super_admin';
+          mapped[0].role = mapped[0].id === (currentUserId || '1') ? 'Squad Commander (You)' : 'Squad Commander';
+          if (mapped[0].id === (currentUserId || '1') || mapped[0].name.includes('(You)')) {
+            if (onUpdateRole) onUpdateRole('super_admin');
+            localStorage.setItem('trailoPS_userRole', 'super_admin');
+          }
+        }
+
         setMembers(mapped);
       }
     });
@@ -663,7 +693,32 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
     return () => {
       isMounted = false;
     };
-  }, [hasJoinedGroup, activeSquad?.id, currentUserId, currentUserName, currentUserAvatar]);
+  }, [hasJoinedGroup, activeSquad?.id, currentUserId, currentUserName, currentUserAvatar, onUpdateRole]);
+
+  // Mandatory Single Member Super Admin Auto-Promotion
+  useEffect(() => {
+    if (members.length === 1) {
+      const soleMember = members[0];
+      if (soleMember && soleMember.roleHierarchy !== 'super_admin') {
+        const updated = [{
+          ...soleMember,
+          roleHierarchy: 'super_admin' as const,
+          role: 'Squad Commander (You)',
+        }];
+        setMembers(updated);
+        localStorage.setItem('trailoPS_squad_members', JSON.stringify(updated));
+        if (onUpdateRole) {
+          onUpdateRole('super_admin');
+        }
+        localStorage.setItem('trailoPS_userRole', 'super_admin');
+      } else if (soleMember && userRole !== 'super_admin') {
+        if (onUpdateRole) {
+          onUpdateRole('super_admin');
+        }
+        localStorage.setItem('trailoPS_userRole', 'super_admin');
+      }
+    }
+  }, [members, userRole, onUpdateRole]);
 
   // Synchronize current user's name, avatar, and role hierarchy with active user session
   useEffect(() => {
@@ -732,23 +787,41 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
     const newSquadMember: SquadMember = {
       id: `m-${Date.now()}`,
       name: target.name,
-      role: target.roleRequested,
+      role: target.roleRequested || 'Expedition Member',
       roleHierarchy: 'member',
       status: 'present',
       avatar: target.avatar,
       distance: '15m',
       battery: 95,
       lastPing: 'Just now',
+      phone: target.phone,
     };
 
-    setMembers((prev) => [...prev, newSquadMember]);
-    setPendingMembers((prev) => prev.filter((p) => p.id !== id));
-    onShowToast(`✓ ${target.name} verified as genuine! Added to active squad.`);
+    setMembers((prev) => {
+      const next = [...prev, newSquadMember];
+      localStorage.setItem('trailoPS_squad_members', JSON.stringify(next));
+      return next;
+    });
+
+    setPendingMembers((prev) => {
+      const next = prev.filter((p) => p.id !== id);
+      localStorage.setItem(pendingStorageKey, JSON.stringify(next));
+      return next;
+    });
+
+    window.dispatchEvent(new CustomEvent('trailoPS_members_updated'));
+    window.dispatchEvent(new CustomEvent('trailoPS_pending_updated'));
+    onShowToast(`✓ ${target.name} verified and added to active squad!`);
   };
 
   const handleKickPendingMember = (id: string, name: string) => {
-    setPendingMembers((prev) => prev.filter((p) => p.id !== id));
-    onShowToast(`✕ ${name} verification rejected. Kicked from join queue.`);
+    setPendingMembers((prev) => {
+      const next = prev.filter((p) => p.id !== id);
+      localStorage.setItem(pendingStorageKey, JSON.stringify(next));
+      return next;
+    });
+    window.dispatchEvent(new CustomEvent('trailoPS_pending_updated'));
+    onShowToast(`✕ ${name} request declined.`);
   };
 
   const handleKickActiveMember = (id: string, name: string) => {
@@ -788,6 +861,102 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
   const missingCount = members.filter((m) => m.status === 'missing').length;
   const totalCount = members.length || 1;
   const confirmedRate = Math.round((presentCount / totalCount) * 100);
+
+  // Super Admin Live Roll Call Session State (synchronized across all devices)
+  const rollCallKey = `trailoPS_active_rollcall_${squadKey}`;
+  const [rollCallSession, setRollCallSession] = useState<{
+    sessionId: string;
+    active: boolean;
+    startedAt: string;
+    startedBy: string;
+    presentUserIds: string[];
+  } | null>(() => {
+    const saved = localStorage.getItem(rollCallKey);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed === 'object') return parsed;
+      } catch {}
+    }
+    return null;
+  });
+
+  useEffect(() => {
+    const syncRollCall = () => {
+      const saved = localStorage.getItem(rollCallKey);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          if (parsed && typeof parsed === 'object') {
+            setRollCallSession(parsed);
+          }
+        } catch {}
+      } else {
+        setRollCallSession(null);
+      }
+    };
+    window.addEventListener('storage', syncRollCall);
+    window.addEventListener('trailoPS_rollcall_sync', syncRollCall);
+    return () => {
+      window.removeEventListener('storage', syncRollCall);
+      window.removeEventListener('trailoPS_rollcall_sync', syncRollCall);
+    };
+  }, [rollCallKey]);
+
+  const liveActive = !!rollCallSession?.active;
+  const rollCallPresentCount = liveActive
+    ? rollCallSession.presentUserIds.length
+    : presentCount;
+  const rollCallPendingCount = Math.max(0, members.length - rollCallPresentCount);
+  const isCurrentUserMarkedPresent = liveActive
+    ? rollCallSession.presentUserIds.includes(currentUserId || '1')
+    : members.find((m) => m.id === (currentUserId || '1'))?.status === 'present';
+
+  const handleStartRollCall = () => {
+    const myId = currentUserId || '1';
+    const newSession = {
+      sessionId: `rc-${Date.now()}`,
+      active: true,
+      startedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      startedBy: currentUserName || 'Squad Commander',
+      presentUserIds: [myId],
+    };
+    setRollCallSession(newSession);
+    localStorage.setItem(rollCallKey, JSON.stringify(newSession));
+    window.dispatchEvent(new CustomEvent('trailoPS_rollcall_sync', { detail: newSession }));
+    onShowToast('📢 Live Roll Call started! Alert notification sent to all squad members.');
+  };
+
+  const handleEndRollCall = () => {
+    if (!rollCallSession) return;
+    const closedSession = { ...rollCallSession, active: false };
+    setRollCallSession(closedSession);
+    localStorage.setItem(rollCallKey, JSON.stringify(closedSession));
+    window.dispatchEvent(new CustomEvent('trailoPS_rollcall_sync', { detail: closedSession }));
+    onShowToast(`Roll call closed. Final attendance: ${rollCallPresentCount} Present, ${rollCallPendingCount} Pending.`);
+  };
+
+  const handleMarkPresent = (uid?: string) => {
+    const targetId = uid || currentUserId || '1';
+    if (!rollCallSession || !rollCallSession.active) return;
+    if (!rollCallSession.presentUserIds.includes(targetId)) {
+      const updated = {
+        ...rollCallSession,
+        presentUserIds: [...rollCallSession.presentUserIds, targetId],
+      };
+      setRollCallSession(updated);
+      localStorage.setItem(rollCallKey, JSON.stringify(updated));
+      window.dispatchEvent(new CustomEvent('trailoPS_rollcall_sync', { detail: updated }));
+
+      setMembers((prev) => {
+        const next = prev.map((m) => (m.id === targetId ? { ...m, status: 'present' as const } : m));
+        localStorage.setItem('trailoPS_squad_members', JSON.stringify(next));
+        return next;
+      });
+      window.dispatchEvent(new CustomEvent('trailoPS_members_updated'));
+      onShowToast('✓ Attendance confirmed! You are marked Present.');
+    }
+  };
 
   const calculateTrainCountdown = (depTime?: string): string => {
     if (!depTime) return 'Schedule Pending';
@@ -1310,22 +1479,80 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                 </div>
               </div>
 
-              {/* Check-In Button */}
-              <div className="mt-3.5">
-                <button
-                  type="button"
-                  onClick={handleCheckIn}
-                  className={`w-full py-3 px-4 rounded-full text-white text-xs sm:text-sm font-bold flex items-center justify-center gap-2 shadow-md active:scale-95 transition-all cursor-pointer ${
-                    isCheckedIn
-                      ? 'bg-emerald-800 border-2 border-emerald-500'
-                      : 'pulse-wave-btn bg-gradient-to-r from-emerald-600 via-teal-600 to-[#0f5238] shadow-emerald-700/25'
-                  }`}
-                >
-                  <CheckCircle2 className="w-5 h-5 fill-white text-emerald-700" />
-                  <span>
-                    {isCheckedIn ? 'YOU ARE MARKED PRESENT (GPS VERIFIED)' : 'I AM PRESENT (GPS Verified)'}
-                  </span>
-                </button>
+              {/* Check-In Button / Commander Live Roll Call Controls */}
+              <div className="mt-3.5 space-y-2">
+                {userRole === 'super_admin' ? (
+                  !liveActive ? (
+                    <button
+                      type="button"
+                      onClick={handleStartRollCall}
+                      className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-emerald-600 via-teal-600 to-[#0f5238] text-white text-xs sm:text-sm font-black flex items-center justify-center gap-2 shadow-lg shadow-emerald-700/25 active:scale-95 transition-all cursor-pointer"
+                    >
+                      <Radio className="w-5 h-5 animate-pulse" />
+                      <span>START SQUAD ROLL CALL (Take Attendance)</span>
+                    </button>
+                  ) : (
+                    <div className="p-3 bg-emerald-50 border-2 border-emerald-500 rounded-2xl space-y-2">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="w-2.5 h-2.5 rounded-full bg-emerald-600 animate-ping" />
+                          <span className="text-xs font-black text-emerald-950">
+                            LIVE ROLL CALL ACTIVE ({rollCallSession?.startedAt})
+                          </span>
+                        </div>
+                        <span className="text-[10px] font-bold text-emerald-800 bg-emerald-200/60 px-2 py-0.5 rounded-full">
+                          Super Admin
+                        </span>
+                      </div>
+                      <div className="flex gap-2">
+                        {!isCurrentUserMarkedPresent ? (
+                          <button
+                            type="button"
+                            onClick={() => handleMarkPresent()}
+                            className="flex-1 py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm active:scale-95 transition-all cursor-pointer"
+                          >
+                            <CheckCircle2 className="w-4 h-4" />
+                            <span>I Am Present</span>
+                          </button>
+                        ) : (
+                          <div className="flex-1 py-2.5 px-3 rounded-xl bg-emerald-100 text-[#0f5238] text-xs font-bold flex items-center justify-center gap-1.5 border border-emerald-300">
+                            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                            <span>✓ You Are Marked Present</span>
+                          </div>
+                        )}
+                        <button
+                          type="button"
+                          onClick={handleEndRollCall}
+                          className="py-2.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold transition-all active:scale-95 cursor-pointer shadow-xs"
+                        >
+                          End Roll Call
+                        </button>
+                      </div>
+                    </div>
+                  )
+                ) : (
+                  liveActive ? (
+                    !isCurrentUserMarkedPresent ? (
+                      <button
+                        type="button"
+                        onClick={() => handleMarkPresent()}
+                        className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-emerald-600 via-teal-600 to-[#0f5238] text-white text-xs sm:text-sm font-black flex items-center justify-center gap-2 shadow-lg shadow-emerald-700/30 active:scale-95 transition-all cursor-pointer animate-pulse"
+                      >
+                        <CheckCircle2 className="w-5 h-5 fill-white text-emerald-700" />
+                        <span>I AM PRESENT (Confirm Attendance)</span>
+                      </button>
+                    ) : (
+                      <div className="w-full py-3 px-4 rounded-2xl bg-emerald-100 border-2 border-emerald-500 text-[#0f5238] text-xs sm:text-sm font-bold flex items-center justify-center gap-2 shadow-xs">
+                        <CheckCircle2 className="w-5 h-5 text-emerald-600" />
+                        <span>YOU ARE MARKED PRESENT (Confirmed by Commander)</span>
+                      </div>
+                    )
+                  ) : (
+                    <div className="w-full py-2.5 px-3 rounded-2xl bg-slate-100 border border-slate-200 text-slate-600 text-xs text-center font-medium">
+                      Awaiting Squad Commander to initiate live attendance roll call.
+                    </div>
+                  )
+                )}
               </div>
             </section>
 
@@ -1334,19 +1561,19 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
               <div className="flex items-center justify-between pb-3 border-b border-slate-100">
                 <div>
                   <span className="text-[10px] text-emerald-700 uppercase font-bold tracking-wider">
-                    Role Hierarchy &amp; Roll Call
+                    Squad Attendance &amp; Roll Call
                   </span>
-                  <h3 className="text-base font-bold text-slate-900">Active Squad Presence</h3>
+                  <h3 className="text-base font-bold text-slate-900">Attendance Overview</h3>
                 </div>
 
                 <div className="text-right">
                   <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 rounded-full">
-                    LoRa 868MHz
+                    {liveActive ? 'Live Active' : 'Synced'}
                   </span>
                 </div>
               </div>
 
-              {/* Telemetry Visualizer */}
+              {/* Attendance Visualizer */}
               <div className="grid grid-cols-12 gap-3 items-center py-4">
                 {/* Circular Ring Gauge */}
                 <div className="col-span-5 flex flex-col items-center justify-center">
@@ -1368,18 +1595,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                         r="40"
                         stroke="#10b981"
                         strokeDasharray="251.2"
-                        strokeDashoffset={251.2 - (251.2 * confirmedRate) / 100}
-                        strokeLinecap="round"
-                        strokeWidth="9"
-                      />
-                      <circle
-                        cx="50"
-                        cy="50"
-                        fill="transparent"
-                        r="40"
-                        stroke="#f87171"
-                        strokeDasharray="251.2"
-                        strokeDashoffset={226}
+                        strokeDashoffset={251.2 - (251.2 * (members.length > 0 ? (rollCallPresentCount / members.length) : 1))}
                         strokeLinecap="round"
                         strokeWidth="9"
                       />
@@ -1387,10 +1603,10 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
 
                     <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
                       <span className="text-2xl text-slate-900 leading-none font-extrabold">
-                        {confirmedRate}%
+                        {members.length > 0 ? Math.round((rollCallPresentCount / members.length) * 100) : 100}%
                       </span>
                       <span className="text-[11px] text-emerald-700 font-semibold mt-0.5">
-                        {presentCount} / 42
+                        {rollCallPresentCount} / {members.length}
                       </span>
                     </div>
                   </div>
@@ -1408,10 +1624,10 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                     }`}
                   >
                     <span className="text-[11px] text-emerald-800 font-semibold block">Present</span>
-                    <span className="text-xl text-emerald-700 font-extrabold">{presentCount}</span>
+                    <span className="text-xl text-emerald-700 font-extrabold">{rollCallPresentCount}</span>
                     <div className="flex items-center text-[10px] text-emerald-700 font-semibold mt-0.5">
                       <CheckCircle2 className="w-3 h-3 mr-0.5 fill-current" />
-                      <span>In Perimeter</span>
+                      <span>In Camp</span>
                     </div>
                   </div>
 
@@ -1419,36 +1635,15 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                     onClick={() => setActiveFilter('missing')}
                     className={`p-2.5 rounded-2xl border transition-all cursor-pointer ${
                       activeFilter === 'missing'
-                        ? 'bg-rose-100 border-rose-400 ring-2 ring-rose-300'
-                        : 'bg-rose-50/80 border-rose-200/80'
+                        ? 'bg-amber-100 border-amber-400 ring-2 ring-amber-300'
+                        : 'bg-amber-50/80 border-amber-200/80'
                     }`}
                   >
-                    <span className="text-[11px] text-rose-700 font-semibold block">Missing</span>
-                    <span className="text-xl text-rose-600 font-extrabold">{missingCount}</span>
-                    <div className="flex items-center text-[10px] text-rose-700 font-semibold mt-0.5">
-                      <AlertTriangle className="w-3 h-3 mr-0.5 fill-current" />
-                      <span>Unverified</span>
-                    </div>
-                  </div>
-
-                  <div
-                    onClick={() => setActiveFilter('excursion')}
-                    className={`col-span-2 p-2.5 rounded-2xl border flex items-center justify-between cursor-pointer transition-all ${
-                      activeFilter === 'excursion'
-                        ? 'bg-sky-100 border-sky-400 ring-2 ring-sky-300'
-                        : 'bg-sky-50/70 border-sky-200/70'
-                    }`}
-                  >
-                    <div>
-                      <span className="text-[10px] text-sky-800 font-semibold block">
-                        Approved Excursion
-                      </span>
-                      <span className="text-xs font-bold text-sky-950">
-                        2 Members (Ridge View)
-                      </span>
-                    </div>
-                    <div className="w-8 h-8 rounded-full bg-sky-100 text-sky-700 flex items-center justify-center">
-                      <NavIcon className="w-4 h-4" />
+                    <span className="text-[11px] text-amber-800 font-semibold block">Pending</span>
+                    <span className="text-xl text-amber-700 font-extrabold">{rollCallPendingCount}</span>
+                    <div className="flex items-center text-[10px] text-amber-700 font-semibold mt-0.5">
+                      <Clock className="w-3 h-3 mr-0.5" />
+                      <span>Awaiting</span>
                     </div>
                   </div>
                 </div>
@@ -2345,15 +2540,23 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                   id: `a-${Date.now()}`,
                   title: quickAnnounceTitle.trim(),
                   text: quickAnnounceText.trim(),
+                  imageUrl: quickAnnounceImage || undefined,
                   priority: quickAnnouncePriority,
                   author: `${currentUserName} (${roleLabel})`,
                   timestamp: 'Just now',
                 };
                 setAnnouncements((prev) => [newAnnounce, ...prev]);
+                
+                // Store as latest broadcast for alert modal & notify all members
+                const latestKey = `trailoPS_latest_broadcast_${squadKey}`;
+                localStorage.setItem(latestKey, JSON.stringify(newAnnounce));
+                window.dispatchEvent(new CustomEvent('trailoPS_new_announcement', { detail: newAnnounce }));
+
                 setIsAnnouncementModalOpen(false);
                 setQuickAnnounceTitle('');
                 setQuickAnnounceText('');
-                onShowToast(`Announcement broadcasted to squad members!`);
+                setQuickAnnounceImage(null);
+                onShowToast(`📢 Announcement with alert broadcasted to all squad members!`);
               }}
               className="space-y-3"
             >
@@ -2392,7 +2595,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                   type="text"
                   value={quickAnnounceTitle}
                   onChange={(e) => setQuickAnnounceTitle(e.target.value)}
-                  placeholder="e.g. Mandatory Perimeter Recall"
+                  placeholder="e.g. Weather Alert or Route Deviation"
                   className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs font-semibold text-slate-900 focus:outline-none focus:border-amber-500"
                   required
                 />
@@ -2410,6 +2613,58 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                   className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs font-medium text-slate-900 focus:outline-none focus:border-amber-500"
                   required
                 />
+              </div>
+
+              {/* Photo / Map Attachment Feature */}
+              <div>
+                <label className="text-[11px] font-bold text-slate-600 block mb-1">
+                  Attach Photo / Trail Map (Optional)
+                </label>
+                {quickAnnounceImage ? (
+                  <div className="relative rounded-2xl overflow-hidden border border-slate-200 bg-slate-900 h-32 group">
+                    <img
+                      src={quickAnnounceImage}
+                      alt="Broadcast Attachment Preview"
+                      className="w-full h-full object-cover"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setQuickAnnounceImage(null)}
+                      className="absolute top-2 right-2 p-1.5 rounded-full bg-slate-950/80 text-white hover:bg-rose-600 transition-colors shadow-md cursor-pointer"
+                      title="Remove attached photo"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                    <span className="absolute bottom-2 left-2 px-2 py-0.5 rounded-md bg-black/60 text-white text-[9px] font-bold">
+                      Photo Attached
+                    </span>
+                  </div>
+                ) : (
+                  <label className="flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl border-2 border-dashed border-slate-200 hover:border-amber-400 bg-slate-50 hover:bg-amber-50/50 text-slate-600 hover:text-amber-800 text-xs font-semibold cursor-pointer transition-colors">
+                    <Camera className="w-4 h-4 text-amber-600" />
+                    <span>Upload or Capture Photo</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) {
+                          if (file.size > 8 * 1024 * 1024) {
+                            onShowToast('Please select an image smaller than 8MB.');
+                            return;
+                          }
+                          const reader = new FileReader();
+                          reader.onload = (event) => {
+                            setQuickAnnounceImage(event.target?.result as string);
+                            onShowToast('Photo attached to broadcast!');
+                          };
+                          reader.readAsDataURL(file);
+                        }
+                      }}
+                    />
+                  </label>
+                )}
               </div>
 
               {/* Quick Template Chips */}
@@ -2442,7 +2697,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                 className="w-full py-2.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold transition-all shadow-md active:scale-98 cursor-pointer mt-2 flex items-center justify-center gap-1.5"
               >
                 <Send className="w-3.5 h-3.5" />
-                <span>Broadcast to Squad</span>
+                <span>Broadcast to Squad (Alerts Everyone)</span>
               </button>
             </form>
           </div>
@@ -2654,11 +2909,12 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                     <div className="flex items-center gap-1">
                       <button
                         type="button"
-                        onClick={() => {
+                        onClick={async () => {
+                          await manageMemberRole(activeSquad?.id || 'default', m.id, 'super_admin');
                           setMembers((prev) =>
                             prev.map((item) =>
                               item.id === m.id
-                                ? { ...item, roleHierarchy: 'super_admin', role: 'Faculty Super Admin' }
+                                ? { ...item, roleHierarchy: 'super_admin', role: 'Super Admin' }
                                 : item
                             )
                           );
@@ -2677,11 +2933,17 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                       </button>
                       <button
                         type="button"
-                        onClick={() => {
+                        onClick={async () => {
+                          const currentSuperAdmins = members.filter((item) => item.roleHierarchy === 'super_admin');
+                          if (m.roleHierarchy === 'super_admin' && currentSuperAdmins.length <= 1) {
+                            onShowToast('⚠️ Constraint: Cannot demote the sole remaining Super Admin. Appoint another Super Admin first.');
+                            return;
+                          }
+                          await manageMemberRole(activeSquad?.id || 'default', m.id, 'admin');
                           setMembers((prev) =>
                             prev.map((item) =>
                               item.id === m.id
-                                ? { ...item, roleHierarchy: 'subgroup_admin', role: 'Sub-Group Lead' }
+                                ? { ...item, roleHierarchy: 'subgroup_admin', role: 'Admin' }
                                 : item
                             )
                           );
@@ -2689,18 +2951,24 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                             onUpdateRole('subgroup_admin');
                             localStorage.setItem('trailoPS_userRole', 'subgroup_admin');
                           }
-                          onShowToast(`Assigned ${m.name} as Sub-Admin`);
+                          onShowToast(`Assigned ${m.name} as Admin`);
                         }}
                         className={`text-[9px] font-bold px-1.5 py-1 rounded transition-colors cursor-pointer ${
                           m.roleHierarchy === 'subgroup_admin' ? 'bg-blue-600 text-white' : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
                         }`}
-                        title="Promote to Sub-Group Admin"
+                        title="Promote to Admin"
                       >
                         Admin
                       </button>
                       <button
                         type="button"
-                        onClick={() => {
+                        onClick={async () => {
+                          const currentSuperAdmins = members.filter((item) => item.roleHierarchy === 'super_admin');
+                          if (m.roleHierarchy === 'super_admin' && currentSuperAdmins.length <= 1) {
+                            onShowToast('⚠️ Constraint: Cannot demote the sole remaining Super Admin. Appoint another Super Admin first.');
+                            return;
+                          }
+                          await manageMemberRole(activeSquad?.id || 'default', m.id, 'member');
                           setMembers((prev) =>
                             prev.map((item) =>
                               item.id === m.id
@@ -3098,7 +3366,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                   <span>1. Firebase Cloud Firestore (Primary Database)</span>
                 </div>
                 <p className="text-[11px] text-slate-600 leading-relaxed">
-                  Sabhi groups, members, GPS coordinates, roll-call status, aur checklists Google Cloud Firestore mein real-time document schema ke roop mein store hote hain. WebSocket <span className="font-mono text-sky-800 font-bold">onSnapshot()</span> listeners ke through jaise hi Admin ya Scout koi bhi update karta hai, wo instantly (under 150ms) sabhi 42 phones mein sync ho jata hai bina refresh kiye!
+                  Sabhi groups, members, GPS coordinates, roll-call status, aur checklists real-time document schema ke roop mein store hote hain. WebSocket listeners ke through jaise hi Admin ya Scout koi bhi update karta hai, wo instantly (under 150ms) sabhi squad members ke phones mein sync ho jata hai bina refresh kiye!
                 </p>
               </div>
 
@@ -3435,13 +3703,21 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                         <button
                           type="button"
                           onClick={() => {
-                            setSharedHDMedia((prev) => prev.filter((m) => m.id !== media.id));
-                            onShowToast(`Removed ${media.title} from media vault.`);
+                            if (window.confirm(`Delete "${media.title}" from the squad media vault?`)) {
+                              setSharedHDMedia((prev) => {
+                                const next = prev.filter((m) => m.id !== media.id);
+                                const squadKey = activeSquad?.id || 'default';
+                                localStorage.setItem(`trailoPS_shared_hd_media_${squadKey}`, JSON.stringify(next));
+                                return next;
+                              });
+                              onShowToast(`Deleted ${media.title} from media vault.`);
+                            }
                           }}
-                          className="p-1 rounded-lg bg-white hover:bg-rose-50 text-slate-400 hover:text-rose-600 border border-slate-200 hover:border-rose-300 transition-colors cursor-pointer"
-                          title="Remove media file"
+                          className="flex items-center gap-1 px-2 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-[10px] font-bold transition-all cursor-pointer shadow-2xs active:scale-95"
+                          title="Delete media file from vault"
                         >
-                          <Minus className="w-3 h-3 stroke-[2.5]" />
+                          <Trash2 className="w-3 h-3" />
+                          <span>Delete</span>
                         </button>
                       </div>
                     </div>

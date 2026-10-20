@@ -27,6 +27,8 @@ import {
   Sparkles,
   Edit3,
   ShieldCheck,
+  Code2,
+  GraduationCap,
 } from 'lucide-react';
 import { ScreenType, UserRole } from '../types';
 import { CreateTripModal } from './modals/CreateTripModal';
@@ -111,11 +113,26 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
   useEffect(() => {
     let isMounted = true;
     const loadStats = async () => {
+      // Check live roll call session first
+      const squadKey = effectiveSquadId || 'default';
+      const liveSession = localStorage.getItem(`trailoPS_active_rollcall_${squadKey}`);
+      let livePresentCount: number | null = null;
+      if (liveSession) {
+        try {
+          const parsed = JSON.parse(liveSession);
+          if (parsed?.active && Array.isArray(parsed?.presentUserIds)) {
+            livePresentCount = parsed.presentUserIds.length;
+          }
+        } catch {}
+      }
+
       if (effectiveSquadId) {
         try {
           const sbMembers = await fetchSquadMembers(effectiveSquadId);
           if (isMounted && sbMembers && sbMembers.length > 0) {
-            const present = sbMembers.filter((m) => m.status !== 'distress').length;
+            const present = livePresentCount !== null
+              ? livePresentCount
+              : sbMembers.filter((m) => m.status !== 'distress').length;
             setSquadMemberStats({ total: sbMembers.length, present });
             return;
           }
@@ -126,15 +143,28 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
         try {
           const parsed = JSON.parse(saved);
           if (Array.isArray(parsed) && parsed.length > 0) {
-            const present = parsed.filter((m: any) => m.status === 'present').length;
-            setSquadMemberStats({ total: parsed.length, present: present || parsed.length });
+            const present = livePresentCount !== null
+              ? livePresentCount
+              : parsed.filter((m: any) => m.status === 'present').length;
+            setSquadMemberStats({ total: parsed.length, present: present || 1 });
+            return;
           }
         } catch {}
       }
+      setSquadMemberStats({ total: 1, present: 1 });
     };
+
     loadStats();
+
+    window.addEventListener('storage', loadStats);
+    window.addEventListener('trailoPS_members_updated', loadStats);
+    window.addEventListener('trailoPS_rollcall_sync', loadStats);
+
     return () => {
       isMounted = false;
+      window.removeEventListener('storage', loadStats);
+      window.removeEventListener('trailoPS_members_updated', loadStats);
+      window.removeEventListener('trailoPS_rollcall_sync', loadStats);
     };
   }, [effectiveSquadId, hasJoinedGroup]);
 
@@ -687,7 +717,7 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
                 </div>
                 <div>
                   <h4 className="text-xs font-bold text-slate-900">Emergency Distress Beacon</h4>
-                  <p className="text-[11px] text-slate-500">Dual-band satellite &amp; LoRa relay</p>
+                  <p className="text-[11px] text-slate-500">One-tap emergency help &amp; contacts</p>
                 </div>
               </div>
 
@@ -886,6 +916,24 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
             <PersonalPackingNotes onShowToast={onShowToast} />
           </section>
         )}
+
+        {/* Developer Attribution Card */}
+        <footer className="pt-4 pb-2 text-center">
+          <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300/80 dark:border-emerald-800/60 shadow-2xs">
+            <Code2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+            <span className="text-[11px] font-semibold text-slate-700 dark:text-slate-300">
+              Developed &amp; Maintained by
+            </span>
+            <span className="text-[11px] font-black text-emerald-950 dark:text-emerald-300">
+              Pratap Paul
+            </span>
+          </div>
+          <div className="flex items-center justify-center gap-1.5 text-[11px] text-slate-600 dark:text-slate-400 font-medium mt-1.5">
+            <GraduationCap className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+            <span>CS Student,</span>
+            <span className="font-bold text-slate-800 dark:text-slate-200">Srikrishna College, Bagula</span>
+          </div>
+        </footer>
       </main>
 
       {/* Permission Consent Modal Sheet */}
@@ -950,6 +998,7 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
           }
           onShowToast(`Trip "${trip.name}" created! Invitation code: ${trip.passkey}`);
           setPasscode(trip.passkey.split(''));
+          localStorage.setItem('trailoPS_userRole', 'super_admin');
           onSetJoinedGroup(true);
         }}
       />

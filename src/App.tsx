@@ -14,6 +14,10 @@ import { SplitwiseModal } from './components/SplitwiseModal';
 import { AskAIOverlay } from './components/AskAIOverlay';
 import { SupabaseSetupModal } from './components/modals/SupabaseSetupModal';
 import { JoinSquadDeepLinkModal } from './components/modals/JoinSquadDeepLinkModal';
+import { AttendanceAlertModal } from './components/modals/AttendanceAlertModal';
+import { BroadcastAlertModal } from './components/modals/BroadcastAlertModal';
+import { EmergencySirenAlertModal } from './components/modals/EmergencySirenAlertModal';
+import { startEmergencySiren, stopEmergencySiren } from './lib/emergencyAudio';
 import {
   getSupabase,
   isSupabaseConfigured,
@@ -21,6 +25,8 @@ import {
   upsertProfile,
   fetchUserSquad,
   SquadGroupRecord,
+  SquadSOSAlarmData,
+  clearSquadSOSAlarm,
 } from './lib/supabase';
 import { CheckCircle2, Database, Shield } from 'lucide-react';
 
@@ -82,10 +88,259 @@ export default function App() {
   });
   const [isJoinDeepLinkOpen, setIsJoinDeepLinkOpen] = useState(false);
 
+  // Commander-Initiated Live Roll Call & Broadcast Alert State
+  const squadKey = activeSquad?.id || 'default';
+  const [activeRollCallSession, setActiveRollCallSession] = useState<{
+    sessionId: string;
+    active: boolean;
+    startedAt: string;
+    startedBy: string;
+    presentUserIds: string[];
+  } | null>(() => {
+    const saved = localStorage.getItem(`trailoPS_active_rollcall_${squadKey}`);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed === 'object') return parsed;
+      } catch {}
+    }
+    return null;
+  });
+
+  const [isAttendanceModalOpen, setIsAttendanceModalOpen] = useState(false);
+  const [latestBroadcast, setLatestBroadcast] = useState<{
+    id: string;
+    title: string;
+    text: string;
+    imageUrl?: string;
+    priority: 'critical' | 'advisory' | 'info';
+    author: string;
+    timestamp: string;
+  } | null>(null);
+  const [isBroadcastModalOpen, setIsBroadcastModalOpen] = useState(false);
+
+  // Group-Wide Continuous SOS Alarm State
+  const [activeSOSAlarm, setActiveSOSAlarm] = useState<SquadSOSAlarmData | null>(() => {
+    const saved = localStorage.getItem(`trailoPS_squad_sos_alarm_${squadKey}`);
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch {}
+    }
+    return null;
+  });
+
+  // Sync Roll Call, Broadcast alerts, and Group-Wide SOS Siren across tabs and screens
+  useEffect(() => {
+    const handleRollCallSync = () => {
+      const saved = localStorage.getItem(`trailoPS_active_rollcall_${squadKey}`);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          if (parsed && typeof parsed === 'object') {
+            setActiveRollCallSession(parsed);
+            const myId = currentUserId || '1';
+            // Show alert popup if roll call is active and user has not marked present yet
+            if (parsed.active && !parsed.presentUserIds.includes(myId)) {
+              setIsAttendanceModalOpen(true);
+            }
+          }
+        } catch {}
+      } else {
+        setActiveRollCallSession(null);
+      }
+    };
+
+    const handleNewAnnouncement = (e: any) => {
+      if (e?.detail) {
+        setLatestBroadcast(e.detail);
+        setIsBroadcastModalOpen(true);
+      } else {
+        const saved = localStorage.getItem(`trailoPS_latest_broadcast_${squadKey}`);
+        if (saved) {
+          try {
+            const parsed = JSON.parse(saved);
+            if (parsed) {
+              setLatestBroadcast(parsed);
+              setIsBroadcastModalOpen(true);
+            }
+          } catch {}
+        }
+      }
+    };
+
+    const handleSOSAlarm = (e: any) => {
+      if (e?.detail) {
+        setActiveSOSAlarm(e.detail);
+        startEmergencySiren();
+      }
+    };
+
+    const handleSOSAlarmCleared = () => {
+      setActiveSOSAlarm(null);
+      stopEmergencySiren();
+    };
+
+    const handleGroupDeleted = () => {
+      stopEmergencySiren();
+      setActiveSOSAlarm(null);
+      setHasJoinedGroup(false);
+      setActiveSquad(null);
+      localStorage.removeItem('trailoPS_joined_group');
+      localStorage.removeItem('trailoPS_active_squad');
+      setCurrentScreen('gateway');
+      showToast('The expedition squad has been closed by the Super Admin.');
+    };
+
+    const handleStorageChange = (e: StorageEvent) => {
+      handleRollCallSync();
+      if (!e.key) return;
+
+      if (e.key === `trailoPS_squad_sos_alarm_${squadKey}` || e.key.startsWith('trailoPS_squad_sos_alarm_')) {
+        if (e.newValue) {
+          try {
+            const parsed = JSON.parse(e.newValue);
+            setActiveSOSAlarm(parsed);
+            startEmergencySiren();
+          } catch {}
+        } else {
+          setActiveSOSAlarm(null);
+          stopEmergencySiren();
+        }
+      }
+
+      if (e.key === 'trailoPS_group_deleted') {
+        handleGroupDeleted();
+      }
+    };
+
+    handleRollCallSync();
+
+    // Check if alarm was already active
+    const existingAlarm = localStorage.getItem(`trailoPS_squad_sos_alarm_${squadKey}`);
+    if (existingAlarm) {
+      try {
+        const parsed = JSON.parse(existingAlarm);
+        if (parsed) {
+          setActiveSOSAlarm(parsed);
+          startEmergencySiren();
+        }
+      } catch {}
+    }
+
+    // Set up BroadcastChannel for zero-latency multi-tab/window synchronization
+    let squadBus: BroadcastChannel | null = null;
+    try {
+      if (typeof BroadcastChannel !== 'undefined') {
+        squadBus = new BroadcastChannel(`trailops_squad_bus_${squadKey}`);
+        squadBus.onmessage = (event) => {
+          if (event.data?.type === 'SOS_TRIGGERED') {
+            setActiveSOSAlarm(event.data.payload);
+            startEmergencySiren();
+          } else if (event.data?.type === 'SOS_CLEARED') {
+            setActiveSOSAlarm(null);
+            stopEmergencySiren();
+          } else if (event.data?.type === 'GROUP_DELETED') {
+            handleGroupDeleted();
+          }
+        };
+      }
+    } catch (e) {}
+
+    // Set up Supabase Realtime channel for cross-device SOS & group updates
+    const sb = getSupabase();
+    let realtimeChannel: any = null;
+    if (sb && isSupabaseConfigured()) {
+      try {
+        realtimeChannel = sb.channel(`squad_realtime_${squadKey}`)
+          .on('broadcast', { event: 'sos_trigger' }, ({ payload }: any) => {
+            if (payload) {
+              setActiveSOSAlarm(payload);
+              startEmergencySiren();
+            }
+          })
+          .on('broadcast', { event: 'sos_cleared' }, () => {
+            setActiveSOSAlarm(null);
+            stopEmergencySiren();
+          })
+          .on('broadcast', { event: 'group_deleted' }, () => {
+            handleGroupDeleted();
+          })
+          .subscribe();
+      } catch (err) {
+        console.warn('Realtime subscription error:', err);
+      }
+    }
+
+    window.addEventListener('storage', handleStorageChange);
+    window.addEventListener('trailoPS_rollcall_sync', handleRollCallSync);
+    window.addEventListener('trailoPS_new_announcement', handleNewAnnouncement);
+    window.addEventListener('trailoPS_squad_sos_alarm', handleSOSAlarm);
+    window.addEventListener('trailoPS_squad_sos_alarm_cleared', handleSOSAlarmCleared);
+    window.addEventListener('trailoPS_group_deleted', handleGroupDeleted);
+
+    return () => {
+      if (squadBus) {
+        try { squadBus.close(); } catch {}
+      }
+      if (realtimeChannel && sb) {
+        try { sb.removeChannel(realtimeChannel); } catch {}
+      }
+      window.removeEventListener('storage', handleStorageChange);
+      window.removeEventListener('trailoPS_rollcall_sync', handleRollCallSync);
+      window.removeEventListener('trailoPS_new_announcement', handleNewAnnouncement);
+      window.removeEventListener('trailoPS_squad_sos_alarm', handleSOSAlarm);
+      window.removeEventListener('trailoPS_squad_sos_alarm_cleared', handleSOSAlarmCleared);
+      window.removeEventListener('trailoPS_group_deleted', handleGroupDeleted);
+    };
+  }, [squadKey, currentUserId]);
+
+  const handleMarkPresentFromModal = () => {
+    const myId = currentUserId || '1';
+    if (!activeRollCallSession) return;
+    const updated = {
+      ...activeRollCallSession,
+      presentUserIds: Array.from(new Set([...activeRollCallSession.presentUserIds, myId])),
+    };
+    setActiveRollCallSession(updated);
+    localStorage.setItem(`trailoPS_active_rollcall_${squadKey}`, JSON.stringify(updated));
+    window.dispatchEvent(new CustomEvent('trailoPS_rollcall_sync', { detail: updated }));
+
+    const savedMembers = localStorage.getItem('trailoPS_squad_members');
+    if (savedMembers) {
+      try {
+        const parsed = JSON.parse(savedMembers);
+        if (Array.isArray(parsed)) {
+          const next = parsed.map((m: any) => (m.id === myId ? { ...m, status: 'present' } : m));
+          localStorage.setItem('trailoPS_squad_members', JSON.stringify(next));
+          window.dispatchEvent(new CustomEvent('trailoPS_members_updated'));
+        }
+      } catch {}
+    }
+    showToast('✓ Attendance confirmed! You are marked Present.');
+    setTimeout(() => {
+      setIsAttendanceModalOpen(false);
+    }, 600);
+  };
+
   // Group Hierarchy & Financials state
   const [userRole, setUserRole] = useState<UserRole>(() => {
     const saved = localStorage.getItem('trailoPS_userRole');
-    return (saved as UserRole) || 'member';
+    const savedMembers = localStorage.getItem('trailoPS_squad_members');
+    if (savedMembers) {
+      try {
+        const parsed = JSON.parse(savedMembers);
+        if (Array.isArray(parsed) && (parsed.length <= 1 || !parsed.some((m: any) => m.roleHierarchy === 'super_admin'))) {
+          localStorage.setItem('trailoPS_userRole', 'super_admin');
+          return 'super_admin';
+        }
+      } catch {}
+    }
+    if (saved === 'super_admin' || saved === 'admin' || saved === 'faculty' || saved === 'subgroup_admin') {
+      return saved as UserRole;
+    }
+    // If user is the creator or in a 1-member group, default to super_admin
+    return 'super_admin';
   });
 
   // App Theme: 'dark' | 'light' | 'system'
@@ -96,6 +351,29 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('trailoPS_userRole', userRole);
   }, [userRole]);
+
+  // Mandatory Single Member Super Admin Check: Ensure 1 member in group is always Super Admin
+  useEffect(() => {
+    if (hasJoinedGroup) {
+      const savedMembers = localStorage.getItem('trailoPS_squad_members');
+      if (savedMembers) {
+        try {
+          const parsed = JSON.parse(savedMembers);
+          if (Array.isArray(parsed) && (parsed.length <= 1 || !parsed.some((m: any) => m.roleHierarchy === 'super_admin'))) {
+            if (userRole !== 'super_admin') {
+              setUserRole('super_admin');
+              localStorage.setItem('trailoPS_userRole', 'super_admin');
+            }
+          }
+        } catch {}
+      } else {
+        if (userRole !== 'super_admin') {
+          setUserRole('super_admin');
+          localStorage.setItem('trailoPS_userRole', 'super_admin');
+        }
+      }
+    }
+  }, [hasJoinedGroup, userRole]);
 
   // Handle dark mode class application on <html>
   useEffect(() => {
@@ -555,6 +833,8 @@ export default function App() {
                 setAmountPaid(0);
                 setAmountPending(trip.budgetPerMember);
                 setHasJoinedGroup(true);
+                setUserRole('super_admin');
+                localStorage.setItem('trailoPS_userRole', 'super_admin');
                 if (currentUserId) {
                   localStorage.setItem(`trailoPS_hasJoinedGroup_${currentUserId}`, 'true');
                 }
@@ -596,6 +876,9 @@ export default function App() {
               onNavigate={(screen) => setCurrentScreen(screen)}
               onShowToast={showToast}
               activeSquadId={activeSquad?.id}
+              currentUserId={currentUserId}
+              currentUserName={profileData.fullName}
+              userRole={userRole}
             />
           )}
 
@@ -610,12 +893,29 @@ export default function App() {
               amountPaid={amountPaid}
               amountPending={amountPending}
               userRole={userRole}
-              onUpdateRole={(role) => setUserRole(role)}
+              onUpdateRole={(role) => {
+                setUserRole(role);
+                localStorage.setItem('trailoPS_userRole', role);
+              }}
               theme={theme}
               onUpdateTheme={(t) => setTheme(t)}
               onOpenSplitwise={() => setIsSplitwiseOpen(true)}
               subGroupName={subGroupName}
               subGroupColor={subGroupColor}
+              activeSquad={activeSquad}
+              currentUserId={currentUserId}
+              onLeaveSquad={() => {
+                setHasJoinedGroup(false);
+                setActiveSquad(null);
+                localStorage.removeItem('trailoPS_joined_group');
+                localStorage.removeItem('trailoPS_active_squad');
+              }}
+              onSquadDeleted={() => {
+                setHasJoinedGroup(false);
+                setActiveSquad(null);
+                localStorage.removeItem('trailoPS_joined_group');
+                localStorage.removeItem('trailoPS_active_squad');
+              }}
             />
           )}
         </div>
@@ -730,6 +1030,46 @@ export default function App() {
           onShowToast={showToast}
         />
       )}
+
+      {/* Global Commander-Initiated Live Roll Call Alert Modal */}
+      {activeRollCallSession && (
+        <AttendanceAlertModal
+          isOpen={isAttendanceModalOpen}
+          onClose={() => setIsAttendanceModalOpen(false)}
+          startedBy={activeRollCallSession.startedBy}
+          startedAt={activeRollCallSession.startedAt}
+          presentCount={activeRollCallSession.presentUserIds.length}
+          pendingCount={Math.max(0, 1 - activeRollCallSession.presentUserIds.length)}
+          isAlreadyPresent={activeRollCallSession.presentUserIds.includes(currentUserId || '1')}
+          onMarkPresent={handleMarkPresentFromModal}
+        />
+      )}
+
+      {/* Global Broadcast Announcement Alert Modal */}
+      <BroadcastAlertModal
+        isOpen={isBroadcastModalOpen}
+        onClose={() => setIsBroadcastModalOpen(false)}
+        broadcast={latestBroadcast}
+      />
+
+      {/* Global Group-Wide Continuous Emergency SOS Siren Alert Modal */}
+      <EmergencySirenAlertModal
+        isOpen={Boolean(activeSOSAlarm)}
+        alarmData={activeSOSAlarm}
+        onMuteAndClose={() => {
+          stopEmergencySiren();
+          setActiveSOSAlarm(null);
+        }}
+        onResolveAlarm={() => {
+          stopEmergencySiren();
+          if (activeSOSAlarm?.groupId) {
+            clearSquadSOSAlarm(activeSOSAlarm.groupId);
+          }
+          setActiveSOSAlarm(null);
+          showToast('Emergency distress alert resolved.');
+        }}
+        isSuperAdminOrAdmin={userRole === 'super_admin' || userRole === 'admin' || userRole === 'subgroup_admin'}
+      />
     </div>
   );
 }

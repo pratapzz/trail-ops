@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Compass,
   User,
@@ -25,8 +25,17 @@ import {
   Moon,
   Monitor,
   Lock,
+  GraduationCap,
+  Trash2,
+  KeyRound,
+  AlertOctagon,
+  ShieldCheck,
+  ArrowRight,
 } from 'lucide-react';
 import { ProfileFormData, ScreenType, UserRole } from '../types';
+import { TransferSuperAdminModal } from './modals/TransferSuperAdminModal';
+import { DeleteGroupModal } from './modals/DeleteGroupModal';
+import { recoverGroupSuperAdmin } from '../lib/supabase';
 
 interface SettingsScreenProps {
   onNavigate: (screen: ScreenType) => void;
@@ -44,6 +53,10 @@ interface SettingsScreenProps {
   onUpdateTheme?: (theme: 'light' | 'dark' | 'system') => void;
   subGroupName?: string;
   subGroupColor?: string;
+  activeSquad?: any;
+  currentUserId?: string;
+  onLeaveSquad?: () => void;
+  onSquadDeleted?: () => void;
 }
 
 export const SettingsScreen: React.FC<SettingsScreenProps> = ({
@@ -62,9 +75,86 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   onUpdateTheme,
   subGroupName = 'Scout Team Alpha',
   subGroupColor = '#ef4444',
+  activeSquad,
+  currentUserId = 'user_self',
+  onLeaveSquad,
+  onSquadDeleted,
 }) => {
   const [offlineMeshSync, setOfflineMeshSync] = useState(true);
   const [batteryOptimization, setBatteryOptimization] = useState(true);
+
+  // Super Admin & Group Management Modal States
+  const [isTransferModalOpen, setIsTransferModalOpen] = useState(false);
+  const [transferActionType, setTransferActionType] = useState<'leave' | 'demote_to_member'>('leave');
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const [isRecoveryOpen, setIsRecoveryOpen] = useState(false);
+  const [recoveryKey, setRecoveryKey] = useState('');
+  const [recoveryMemberId, setRecoveryMemberId] = useState('');
+  const [isRecovering, setIsRecovering] = useState(false);
+
+  // Load squad members for transfer
+  const [squadMembers, setSquadMembers] = useState<any[]>(() => {
+    try {
+      const saved = localStorage.getItem('trailoPS_squad_members');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    const handleSync = () => {
+      try {
+        const saved = localStorage.getItem('trailoPS_squad_members');
+        if (saved) setSquadMembers(JSON.parse(saved));
+      } catch {}
+    };
+    window.addEventListener('trailoPS_squad_members_updated', handleSync);
+    return () => window.removeEventListener('trailoPS_squad_members_updated', handleSync);
+  }, []);
+
+  const superAdminCount = squadMembers.filter(
+    (m) => m.roleHierarchy === 'super_admin' || m.role === 'Super Admin' || m.role === 'super_admin'
+  ).length || (userRole === 'super_admin' ? 1 : 0);
+
+  const handleLeaveSquadClick = () => {
+    if (userRole === 'super_admin' && superAdminCount <= 1) {
+      onShowToast('⚠️ Sole Super Admin: You must appoint an active successor before leaving.');
+      setTransferActionType('leave');
+      setIsTransferModalOpen(true);
+      return;
+    }
+    onLeaveSquad?.();
+    onShowToast('Left expedition squad.');
+    onNavigate('gateway');
+  };
+
+  const handleExecuteRecovery = async () => {
+    if (!recoveryKey.trim() || !recoveryMemberId.trim()) {
+      onShowToast('Please provide both the master key and the target member ID.');
+      return;
+    }
+    setIsRecovering(true);
+    try {
+      const res = await recoverGroupSuperAdmin(
+        activeSquad?.id || 'default',
+        recoveryMemberId.trim(),
+        recoveryKey.trim()
+      );
+      if (res.success) {
+        onShowToast('Platform Recovery: Super Admin restored successfully!');
+        setIsRecoveryOpen(false);
+        setRecoveryKey('');
+        setRecoveryMemberId('');
+      } else {
+        onShowToast(`Recovery failed: ${res.error || 'Invalid authorization key'}`);
+      }
+    } catch (err: any) {
+      onShowToast(`Recovery error: ${err.message}`);
+    } finally {
+      setIsRecovering(false);
+    }
+  };
 
   const heightM = (profileData.heightCm || 175) / 100;
   const bmi = ((profileData.weightKg || 70) / (heightM * heightM)).toFixed(1);
@@ -76,6 +166,15 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
       onShowToast('🔒 Self-promotion denied: Elevation to Admin requires assignment by the expedition commander.');
       return;
     }
+
+    // Mandatory Super Admin Check: Prevent sole Super Admin from demoting themselves without transferring
+    if (userRole === 'super_admin' && targetRole !== 'super_admin' && superAdminCount <= 1) {
+      onShowToast('⚠️ Constraint: You are the sole Super Admin. Please transfer leadership first.');
+      setTransferActionType('demote_to_member');
+      setIsTransferModalOpen(true);
+      return;
+    }
+
     onUpdateRole?.(targetRole);
     onShowToast(`Role updated to ${targetRole.replace('_', ' ').toUpperCase()}`);
   };
@@ -484,6 +583,156 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           </div>
         </section>
 
+        {/* EXPEDITION SQUAD MANAGEMENT & DANGER ZONE */}
+        {hasJoinedGroup && (
+          <section className="bg-white dark:bg-slate-900 rounded-3xl p-5 border border-slate-200 dark:border-slate-800 shadow-xs space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <div className="w-10 h-10 rounded-2xl bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 flex items-center justify-center">
+                  <ShieldCheck className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-extrabold text-slate-900 dark:text-white">
+                    {activeSquad?.name || 'Active Expedition Squad'}
+                  </h3>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Role: <span className="font-bold uppercase text-emerald-700 dark:text-emerald-400">{userRole.replace('_', ' ')}</span> · {superAdminCount} Super Admin(s)
+                  </p>
+                </div>
+              </div>
+
+              {userRole === 'super_admin' && (
+                <span className="px-2.5 py-1 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-700 dark:text-amber-300 text-[10px] font-black uppercase flex items-center gap-1">
+                  <Crown className="w-3 h-3 text-amber-600" />
+                  Commander
+                </span>
+              )}
+            </div>
+
+            {/* Leadership Actions */}
+            <div className="space-y-2">
+              {userRole === 'super_admin' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTransferActionType('demote_to_member');
+                    setIsTransferModalOpen(true);
+                  }}
+                  className="w-full py-2.5 px-3.5 rounded-2xl bg-amber-50 dark:bg-amber-950/40 hover:bg-amber-100 text-amber-800 dark:text-amber-200 border border-amber-200 dark:border-amber-800/60 font-bold text-xs flex items-center justify-between transition-all cursor-pointer"
+                >
+                  <span className="flex items-center gap-2">
+                    <Crown className="w-4 h-4 text-amber-600" />
+                    <span>Transfer Squad Leadership to Another Member</span>
+                  </span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={handleLeaveSquadClick}
+                className="w-full py-2.5 px-3.5 rounded-2xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-700 dark:text-slate-300 font-bold text-xs flex items-center justify-between transition-all cursor-pointer"
+              >
+                <span>Leave Expedition Squad</span>
+                <span className="text-[10px] text-slate-400 font-normal">
+                  {userRole === 'super_admin' && superAdminCount <= 1 ? '(Requires successor transfer)' : ''}
+                </span>
+              </button>
+            </div>
+
+            {/* SUPER ADMIN DANGER ZONE: DELETE GROUP */}
+            {userRole === 'super_admin' && (
+              <div className="p-4 bg-rose-50/70 dark:bg-rose-950/30 rounded-2xl border border-rose-200 dark:border-rose-900/60 space-y-2.5 mt-2">
+                <div className="flex items-center gap-2 text-rose-700 dark:text-rose-300">
+                  <AlertOctagon className="w-4 h-4 shrink-0" />
+                  <span className="text-xs font-black uppercase tracking-wider">Super Admin Danger Zone</span>
+                </div>
+                <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                  Permanently deletes this squad group, including railway journeys, seat assignments, and media vault records for all members.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setIsDeleteModalOpen(true)}
+                  className="w-full py-2.5 px-3 rounded-xl bg-rose-600 hover:bg-rose-700 active:scale-[0.98] text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-sm transition-all cursor-pointer"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Delete Expedition Group Permanently</span>
+                </button>
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* PLATFORM EMERGENCY RECOVERY CONSOLE */}
+        <section className="bg-white dark:bg-slate-900 rounded-3xl p-4 border border-slate-200 dark:border-slate-800 shadow-xs space-y-3">
+          <button
+            type="button"
+            onClick={() => setIsRecoveryOpen(!isRecoveryOpen)}
+            className="w-full flex items-center justify-between text-left cursor-pointer"
+          >
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 flex items-center justify-center">
+                <KeyRound className="w-4 h-4 text-emerald-600" />
+              </div>
+              <div>
+                <h3 className="text-xs font-extrabold text-slate-900 dark:text-white">
+                  Platform Emergency Recovery Console
+                </h3>
+                <p className="text-[10px] text-slate-500">
+                  Restore Super Admin authority for orphaned squads
+                </p>
+              </div>
+            </div>
+            <span className="text-[10px] font-bold text-slate-400">
+              {isRecoveryOpen ? 'Hide' : 'Open'}
+            </span>
+          </button>
+
+          {isRecoveryOpen && (
+            <div className="pt-2 border-t border-slate-100 dark:border-slate-800 space-y-2.5 text-xs">
+              <p className="text-[11px] text-slate-600 dark:text-slate-400">
+                In the event that legacy data or an administrative error leaves a squad with zero Super Admins, an authorized platform administrator can assign a Super Admin using the master recovery key.
+              </p>
+
+              <div className="space-y-1 text-left">
+                <label className="font-bold text-slate-700 dark:text-slate-300">
+                  Platform Master Key
+                </label>
+                <input
+                  type="password"
+                  placeholder="Enter Platform Master Key"
+                  value={recoveryKey}
+                  onChange={(e) => setRecoveryKey(e.target.value)}
+                  className="w-full h-10 px-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs text-slate-900 dark:text-white"
+                />
+              </div>
+
+              <div className="space-y-1 text-left">
+                <label className="font-bold text-slate-700 dark:text-slate-300">
+                  Target Member ID to Promote
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Member ID or user UUID"
+                  value={recoveryMemberId}
+                  onChange={(e) => setRecoveryMemberId(e.target.value)}
+                  className="w-full h-10 px-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs text-slate-900 dark:text-white"
+                />
+              </div>
+
+              <button
+                type="button"
+                disabled={isRecovering}
+                onClick={handleExecuteRecovery}
+                className="w-full py-2.5 rounded-xl bg-slate-900 dark:bg-emerald-600 hover:bg-slate-800 text-white font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+              >
+                <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                <span>{isRecovering ? 'Restoring Authority...' : 'Verify Key & Restore Super Admin'}</span>
+              </button>
+            </div>
+          )}
+        </section>
+
         {/* DEVELOPER ATTRIBUTION CARD */}
         <section className="rounded-3xl p-4 bg-gradient-to-br from-slate-900 via-emerald-950 to-slate-950 text-white shadow-lg border border-emerald-500/30 relative overflow-hidden">
           <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-500/10 rounded-full blur-2xl pointer-events-none" />
@@ -504,8 +753,14 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
               </div>
               <h3 className="text-base font-black text-white tracking-tight">TRAIL OPS</h3>
               <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-500/20 border border-emerald-400/30 text-emerald-300 text-xs font-bold">
-                <span>Architect &amp; Developer:</span>
+                <Code2 className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Developed &amp; Maintained by:</span>
                 <span className="text-white font-extrabold">Pratap Paul</span>
+              </div>
+              <div className="flex items-center gap-1.5 text-xs text-emerald-200/90 font-semibold pt-0.5">
+                <GraduationCap className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                <span>CS Student,</span>
+                <span className="text-white font-bold">Srikrishna College, Bagula</span>
               </div>
               <p className="text-xs text-slate-300 leading-relaxed mt-1">
                 Expedition management platform with secure group authentication, live attendance roll call, private 4K media vault, and real-time offline sync.
@@ -524,6 +779,38 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           <span>Sign Out of TRAIL OPS</span>
         </button>
       </main>
+
+      {/* Transfer Super Admin Modal */}
+      <TransferSuperAdminModal
+        isOpen={isTransferModalOpen}
+        onClose={() => setIsTransferModalOpen(false)}
+        groupId={activeSquad?.id || 'default'}
+        currentUserId={currentUserId}
+        members={squadMembers}
+        actionType={transferActionType}
+        onTransferSuccess={() => {
+          if (transferActionType === 'leave') {
+            onLeaveSquad?.();
+            onNavigate('gateway');
+          } else {
+            onUpdateRole?.('member');
+          }
+        }}
+        onShowToast={onShowToast}
+      />
+
+      {/* Delete Group Modal */}
+      <DeleteGroupModal
+        isOpen={isDeleteModalOpen}
+        onClose={() => setIsDeleteModalOpen(false)}
+        groupId={activeSquad?.id || 'default'}
+        groupName={activeSquad?.name || 'Alpine Expedition Squad'}
+        onDeleted={() => {
+          onSquadDeleted?.();
+          onNavigate('gateway');
+        }}
+        onShowToast={onShowToast}
+      />
     </div>
   );
 };

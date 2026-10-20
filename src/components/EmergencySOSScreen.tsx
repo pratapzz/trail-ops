@@ -17,22 +17,41 @@ import {
   Trash2,
   Minus,
   X,
+  Crown,
+  Award,
+  PhoneCall,
+  UserPlus,
 } from 'lucide-react';
-import { ContactLead, HelplineItem, ScreenType } from '../types';
+import { ContactLead, HelplineItem, ScreenType, UserRole } from '../types';
 import { CallModal } from './modals/CallModal';
 import { ChatModal } from './modals/ChatModal';
 import { DistressAlertModal } from './modals/DistressAlertModal';
+import { AddEmergencyContactModal } from './modals/AddEmergencyContactModal';
+import {
+  EmergencyContactRecord,
+  fetchEmergencyContacts,
+  addEmergencyContact,
+  deleteEmergencyContact,
+  triggerSquadSOSAlarm,
+} from '../lib/supabase';
+import { startEmergencySiren, stopEmergencySiren } from '../lib/emergencyAudio';
 
 interface EmergencySOSScreenProps {
   onNavigate: (screen: ScreenType) => void;
   onShowToast: (message: string) => void;
   activeSquadId?: string;
+  currentUserId?: string;
+  currentUserName?: string;
+  userRole?: UserRole;
 }
 
 export const EmergencySOSScreen: React.FC<EmergencySOSScreenProps> = ({
   onNavigate,
   onShowToast,
   activeSquadId,
+  currentUserId = 'user_self',
+  currentUserName = 'Pratap Paul',
+  userRole = 'super_admin',
 }) => {
   const coordinates = '27.3184° N, 88.2412° E';
   const [copied, setCopied] = useState(false);
@@ -55,6 +74,128 @@ export const EmergencySOSScreen: React.FC<EmergencySOSScreenProps> = ({
     title: string;
     avatar?: string;
   } | null>(null);
+
+  // Dedicated Emergency Contacts for active squad (stored locally for that squad)
+  const squadKey = activeSquadId || 'default';
+  const emergencyContactsStorageKey = `trailoPS_emergency_contacts_${squadKey}`;
+
+  const [emergencyContacts, setEmergencyContacts] = useState<Array<{ id: string; name: string; phone: string; role?: string }>>(() => {
+    const saved = localStorage.getItem(emergencyContactsStorageKey);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      } catch {}
+    }
+    return [
+      {
+        id: 'ec-default-1',
+        name: 'SDRF Mountain Rescue Lead',
+        phone: '+91 3592 202022',
+        role: 'Rescue',
+      },
+      {
+        id: 'ec-default-2',
+        name: 'Pelling Base Emergency Hospital',
+        phone: '+91 3595 250102',
+        role: 'Medical',
+      },
+    ];
+  });
+
+  const [isAddContactModalOpen, setIsAddContactModalOpen] = useState(false);
+  const [newContactName, setNewContactName] = useState('');
+  const [newContactPhone, setNewContactPhone] = useState('');
+
+  // Direct phone dialer redirect using tel: protocol
+  const handleDirectDial = (phone: string, name?: string) => {
+    if (!phone) {
+      onShowToast('Phone number is not available.');
+      return;
+    }
+    const clean = phone.replace(/[^\d+]/g, '');
+    onShowToast(`Redirecting to phone dialer for ${name || 'contact'}...`);
+    window.location.href = `tel:${clean}`;
+  };
+
+  useEffect(() => {
+    const loadEmergencyContacts = () => {
+      const saved = localStorage.getItem(emergencyContactsStorageKey);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed)) setEmergencyContacts(parsed);
+        } catch {}
+      }
+      fetchEmergencyContacts(squadKey).then((dbContacts) => {
+        if (dbContacts && dbContacts.length > 0) {
+          setEmergencyContacts((prev) => {
+            const existingIds = new Set(prev.map((c) => c.id));
+            const newFromDb = dbContacts
+              .filter((c) => !existingIds.has(c.id))
+              .map((c) => ({ id: c.id, name: c.name, phone: c.phone, role: c.designation || c.role }));
+            return [...prev, ...newFromDb];
+          });
+        }
+      });
+    };
+    loadEmergencyContacts();
+    window.addEventListener('storage', loadEmergencyContacts);
+    window.addEventListener('trailoPS_emergency_contacts_updated', loadEmergencyContacts);
+    return () => {
+      window.removeEventListener('storage', loadEmergencyContacts);
+      window.removeEventListener('trailoPS_emergency_contacts_updated', loadEmergencyContacts);
+    };
+  }, [emergencyContactsStorageKey, squadKey]);
+
+  const handleAddEmergencyContact = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newContactName.trim()) {
+      onShowToast('Please enter contact name.');
+      return;
+    }
+    const cleanDigits = newContactPhone.replace(/[^\d+]/g, '');
+    if (!cleanDigits || cleanDigits.length < 5) {
+      onShowToast('Please enter a valid phone number.');
+      return;
+    }
+
+    const newContact = {
+      id: `ec-${Date.now()}`,
+      name: newContactName.trim(),
+      phone: newContactPhone.trim(),
+      role: 'Emergency Contact',
+    };
+
+    const updated = [newContact, ...emergencyContacts];
+    setEmergencyContacts(updated);
+    localStorage.setItem(emergencyContactsStorageKey, JSON.stringify(updated));
+    window.dispatchEvent(new CustomEvent('trailoPS_emergency_contacts_updated'));
+
+    // Also persist to Supabase if configured
+    addEmergencyContact({
+      group_id: squadKey,
+      name: newContact.name,
+      phone: newContact.phone,
+      role: 'admin',
+      designation: 'Emergency Contact',
+      added_by: currentUserId,
+    }).catch(() => {});
+
+    setNewContactName('');
+    setNewContactPhone('');
+    setIsAddContactModalOpen(false);
+    onShowToast(`Emergency contact "${newContact.name}" saved for squad!`);
+  };
+
+  const handleDeleteEmergencyContact = (id: string, name: string) => {
+    const updated = emergencyContacts.filter((c) => c.id !== id);
+    setEmergencyContacts(updated);
+    localStorage.setItem(emergencyContactsStorageKey, JSON.stringify(updated));
+    window.dispatchEvent(new CustomEvent('trailoPS_emergency_contacts_updated'));
+    deleteEmergencyContact(id, squadKey).catch(() => {});
+    onShowToast(`Removed emergency contact "${name}".`);
+  };
 
   // Real Squad Leads with actual phone numbers (zero demo records)
   const [leads, setLeads] = useState<ContactLead[]>(() => {
@@ -81,7 +222,6 @@ export const EmergencySOSScreen: React.FC<EmergencySOSScreenProps> = ({
   });
 
   // Shared squad helplines synchronized across devices
-  const squadKey = activeSquadId || 'default';
   const helplinesStorageKey = `trailoPS_shared_helplines_${squadKey}`;
 
   const [helplines, setHelplines] = useState<HelplineItem[]>(() => {
@@ -109,11 +249,40 @@ export const EmergencySOSScreen: React.FC<EmergencySOSScreenProps> = ({
       }
     };
 
+    const syncLeads = () => {
+      const saved = localStorage.getItem('trailoPS_squad_members');
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed)) {
+            setLeads(
+              parsed
+                .filter((m: any) => m.phone && m.phone.trim() !== '' && !m.phone.includes('•'))
+                .map((m: any) => ({
+                  id: m.id,
+                  name: m.name,
+                  title: m.role || 'Squad Member',
+                  phone: m.phone,
+                  avatar: m.avatar,
+                  online: m.status === 'present',
+                  type: m.roleHierarchy === 'super_admin' ? 'faculty' : m.roleHierarchy === 'subgroup_admin' ? 'guide' : 'medical',
+                }))
+            );
+          }
+        } catch {}
+      }
+    };
+
     window.addEventListener('storage', syncHelplines);
     window.addEventListener('trailoPS_helpline_updated', syncHelplines);
+    window.addEventListener('storage', syncLeads);
+    window.addEventListener('trailoPS_members_updated', syncLeads);
+
     return () => {
       window.removeEventListener('storage', syncHelplines);
       window.removeEventListener('trailoPS_helpline_updated', syncHelplines);
+      window.removeEventListener('storage', syncLeads);
+      window.removeEventListener('trailoPS_members_updated', syncLeads);
     };
   }, [helplinesStorageKey]);
 
@@ -179,7 +348,17 @@ export const EmergencySOSScreen: React.FC<EmergencySOSScreenProps> = ({
         clearInterval(holdIntervalRef.current!);
         setIsHolding(false);
         setIsDistressModalOpen(true);
-        onShowToast('🚨 SOS DISTRESS BEACON ACTIVE!');
+        startEmergencySiren();
+        triggerSquadSOSAlarm({
+          groupId: activeSquadId || 'default',
+          distressedUserId: currentUserId,
+          distressedUserName: currentUserName,
+          distressedUserRole: userRole === 'super_admin' ? 'Super Admin' : userRole === 'admin' ? 'Admin' : userRole === 'faculty' ? 'Faculty Lead' : 'Squad Member',
+          phone: leads[0]?.phone || '',
+          coordinates: { lat: 27.3184, lng: 88.2412 },
+          batteryLevel: 92,
+        });
+        onShowToast('🚨 SOS DISTRESS BEACON ACTIVE! Continuous siren sounding across squad.');
       }
     }, 50);
   };
@@ -463,74 +642,93 @@ export const EmergencySOSScreen: React.FC<EmergencySOSScreenProps> = ({
           </div>
         </div>
 
-        {/* Quick Dial Admin & Incident Leads Shortcuts */}
-        <div>
-          <div className="flex items-center justify-between mb-2 px-0.5">
-            <h3 className="text-sm font-bold text-slate-900">Expedition Leads Direct Dial</h3>
-            <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
-              Priority Ring
-            </span>
+        {/* DEDICATED EMERGENCY CONTACTS SECTION */}
+        <div className="bg-white rounded-3xl p-4 border border-slate-200 shadow-xs space-y-3">
+          <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-xl bg-rose-100 text-rose-700 flex items-center justify-center">
+                <Phone className="w-4 h-4" />
+              </div>
+              <div>
+                <h3 className="text-sm font-extrabold text-slate-900">Emergency Contacts</h3>
+                <p className="text-[11px] text-slate-500">Stored locally for this squad • 1-tap native dialer</p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setIsAddContactModalOpen(true)}
+              className="px-3 py-1.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold flex items-center gap-1.5 transition-all active:scale-95 shadow-xs cursor-pointer"
+              title="Add a new emergency contact for this squad"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Add Contact</span>
+            </button>
           </div>
 
-          <div className="flex space-x-3 overflow-x-auto no-scrollbar pb-1">
-            {leads.length === 0 ? (
-              <div className="p-4 rounded-2xl bg-slate-50 border border-dashed border-slate-200 text-center space-y-1 w-full">
-                <p className="text-xs font-bold text-slate-700">No Direct Contact Numbers Yet</p>
-                <p className="text-[11px] text-slate-500">
-                  Squad members who enter a phone number in their profile will appear here for one-tap calling.
+          {/* Emergency Contacts List */}
+          <div className="space-y-2">
+            {emergencyContacts.length === 0 ? (
+              <div className="p-4 rounded-2xl bg-slate-50 border border-dashed border-slate-200 text-center space-y-2">
+                <Phone className="w-6 h-6 text-slate-400 mx-auto" />
+                <p className="text-xs font-bold text-slate-700">No Emergency Contacts Added</p>
+                <p className="text-[11px] text-slate-500 max-w-xs mx-auto">
+                  Add local doctors, police, guides, or leaders. Tapping Call opens your phone dialer app directly.
                 </p>
+                <button
+                  type="button"
+                  onClick={() => setIsAddContactModalOpen(true)}
+                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl bg-emerald-700 text-white text-xs font-bold hover:bg-emerald-800 cursor-pointer shadow-xs"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Add First Contact</span>
+                </button>
               </div>
             ) : (
-              leads.map((lead) => (
+              emergencyContacts.map((contact) => (
                 <div
-                  key={lead.id}
-                  className="min-w-[230px] bg-white rounded-2xl p-3 border border-slate-200 shadow-xs flex-shrink-0 hover:shadow-md transition-shadow"
+                  key={contact.id}
+                  className="flex items-center justify-between p-3 rounded-2xl bg-slate-50/80 hover:bg-slate-100/80 border border-slate-200 transition-colors"
                 >
-                  <div className="flex items-center gap-2.5 mb-2.5">
-                    <div className="w-10 h-10 rounded-full overflow-hidden border-2 border-emerald-500/30 flex-shrink-0">
-                      <img
-                        src={lead.avatar}
-                        alt={lead.name}
-                        className="w-full h-full object-cover"
-                      />
+                  <div className="min-w-0 pr-2">
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-extrabold text-xs text-slate-900 truncate">
+                        {contact.name}
+                      </span>
+                      {contact.role && (
+                        <span className="px-1.5 py-0.2 rounded-md bg-rose-100 text-rose-700 text-[9px] font-bold uppercase tracking-wider">
+                          {contact.role}
+                        </span>
+                      )}
                     </div>
-                    <div className="overflow-hidden">
-                      <h4 className="text-xs font-bold text-slate-900 truncate">{lead.name}</h4>
-                      <p className="text-[10px] text-emerald-700 font-semibold flex items-center gap-1">
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
-                        {lead.title}
-                      </p>
+                    <div
+                      onClick={() => handleDirectDial(contact.phone, contact.name)}
+                      className="text-[11px] font-mono text-emerald-700 font-semibold flex items-center gap-1 mt-0.5 hover:underline cursor-pointer"
+                      title="Tap to trigger native dialer"
+                    >
+                      <Phone className="w-3 h-3 text-emerald-600" />
+                      <span>{contact.phone}</span>
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-1.5">
+                  <div className="flex items-center gap-1.5 shrink-0">
                     <button
                       type="button"
-                      onClick={() =>
-                        setSelectedCallContact({
-                          name: lead.name,
-                          title: lead.title,
-                          phone: lead.phone,
-                          avatar: lead.avatar,
-                        })
-                      }
-                      className="flex items-center justify-center gap-1 py-1.5 px-2 bg-[#0f5238] hover:bg-[#2d6a4f] text-white rounded-xl text-xs font-bold active:scale-95 transition-all shadow-2xs cursor-pointer"
+                      onClick={() => handleDirectDial(contact.phone, contact.name)}
+                      className="px-3 py-2 rounded-xl bg-gradient-to-r from-emerald-700 to-teal-700 hover:brightness-110 active:scale-95 text-white text-xs font-bold flex items-center gap-1.5 shadow-xs transition-all cursor-pointer"
+                      title="Trigger native phone dialer"
                     >
-                      <Phone className="w-3.5 h-3.5" /> Call
+                      <PhoneCall className="w-3.5 h-3.5" />
+                      <span>Call</span>
                     </button>
 
                     <button
                       type="button"
-                      onClick={() =>
-                        setSelectedChatContact({
-                          name: lead.name,
-                          title: lead.title,
-                          avatar: lead.avatar,
-                        })
-                      }
-                      className="flex items-center justify-center gap-1 py-1.5 px-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold active:scale-95 transition-all border border-slate-200 cursor-pointer"
+                      onClick={() => handleDeleteEmergencyContact(contact.id, contact.name)}
+                      className="p-2 text-slate-400 hover:text-rose-600 rounded-xl hover:bg-rose-50 transition-colors cursor-pointer"
+                      title="Delete contact"
                     >
-                      <MessageSquare className="w-3.5 h-3.5" /> Chat
+                      <Trash2 className="w-3.5 h-3.5" />
                     </button>
                   </div>
                 </div>
@@ -538,6 +736,41 @@ export const EmergencySOSScreen: React.FC<EmergencySOSScreenProps> = ({
             )}
           </div>
         </div>
+
+        {/* Squad Members Quick Contact */}
+        {leads.length > 0 && (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between px-0.5">
+              <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider">Squad Teammates</h3>
+              <span className="text-[10px] text-slate-400">{leads.length} active units</span>
+            </div>
+            <div className="flex space-x-2.5 overflow-x-auto no-scrollbar pb-1">
+              {leads.map((lead) => (
+                <div
+                  key={lead.id}
+                  className="min-w-[210px] bg-white rounded-2xl p-2.5 border border-slate-200 shadow-2xs flex-shrink-0 flex flex-col justify-between"
+                >
+                  <div className="flex items-center gap-2 mb-2">
+                    <div className="w-8 h-8 rounded-full overflow-hidden border border-emerald-500/30 shrink-0">
+                      <img src={lead.avatar} alt={lead.name} className="w-full h-full object-cover" />
+                    </div>
+                    <div className="min-w-0">
+                      <h4 className="text-xs font-bold text-slate-900 truncate">{lead.name}</h4>
+                      <p className="text-[10px] text-emerald-700 font-medium truncate">{lead.phone}</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleDirectDial(lead.phone, lead.name)}
+                    className="w-full py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1 shadow-2xs active:scale-95 transition-all cursor-pointer"
+                  >
+                    <PhoneCall className="w-3 h-3" /> Call
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Dynamic Route Helplines with Custom User Number Addition */}
         <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-xs space-y-3">
@@ -594,8 +827,12 @@ export const EmergencySOSScreen: React.FC<EmergencySOSScreenProps> = ({
                     >
                       <Phone className="w-4 h-4" />
                     </div>
-                    <div className="min-w-0">
-                      <p className="text-xs font-bold text-slate-900 truncate">{item.name}</p>
+                    <div
+                      className="min-w-0 cursor-pointer"
+                      onClick={() => handleDirectDial(item.phone, item.name)}
+                      title="Tap to redirect to dialer"
+                    >
+                      <p className="text-xs font-bold text-slate-900 truncate hover:text-emerald-700">{item.name}</p>
                       <p className="text-[11px] text-slate-500 truncate">{item.subtext}</p>
                       <p className="text-[10px] font-mono text-emerald-700 font-semibold">{item.phone}</p>
                     </div>
@@ -604,14 +841,9 @@ export const EmergencySOSScreen: React.FC<EmergencySOSScreenProps> = ({
                   <div className="flex items-center gap-1.5 shrink-0">
                     <button
                       type="button"
-                      onClick={() =>
-                        setSelectedCallContact({
-                          name: item.name,
-                          title: item.subtext,
-                          phone: item.phone,
-                        })
-                      }
+                      onClick={() => handleDirectDial(item.phone, item.name)}
                       className="h-8 px-3 rounded-xl bg-[#0f5238] hover:bg-[#2d6a4f] text-white flex items-center gap-1 text-xs font-bold shadow-2xs active:scale-95 transition-all cursor-pointer"
+                      title="Direct phone dialer"
                     >
                       <Phone className="w-3.5 h-3.5" /> Call
                     </button>
@@ -781,6 +1013,28 @@ export const EmergencySOSScreen: React.FC<EmergencySOSScreenProps> = ({
           avatar={selectedChatContact.avatar}
         />
       )}
+
+      {/* Add Emergency Contact Line Modal */}
+      <AddEmergencyContactModal
+        isOpen={isAddContactModalOpen}
+        onClose={() => setIsAddContactModalOpen(false)}
+        groupId={activeSquadId || 'default'}
+        currentUserId={currentUserId}
+        onContactAdded={async (contactData) => {
+          const newContact = {
+            id: `ec-${Date.now()}`,
+            name: contactData.name,
+            phone: contactData.phone,
+            role: 'Emergency Contact',
+          };
+          const updated = [newContact, ...emergencyContacts];
+          setEmergencyContacts(updated);
+          localStorage.setItem(emergencyContactsStorageKey, JSON.stringify(updated));
+          window.dispatchEvent(new CustomEvent('trailoPS_emergency_contacts_updated'));
+          addEmergencyContact(contactData).catch(() => {});
+        }}
+        onShowToast={onShowToast}
+      />
     </div>
   );
 };
