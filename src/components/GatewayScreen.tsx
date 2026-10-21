@@ -693,7 +693,10 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
             >
               <img
                 className="w-full h-full object-cover"
-                src={avatarUrl}
+                src={
+                  avatarUrl ||
+                  'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=200&q=80'
+                }
                 alt="Profile"
               />
             </div>

@@ -120,6 +120,53 @@ interface BriefingRow {
   created_at: string;
 }
 
+interface FacultyDriveRow {
+  id: string;
+  group_id: string;
+  name: string;
+  category: 'ticket' | 'bill' | 'permit' | 'medical' | 'sop';
+  uploaded_by: string;
+  uploader_id: string;
+  uploader_role: string;
+  date: string;
+  size: string;
+  status: 'approved' | 'pending';
+  file_type: 'pdf' | 'img';
+  mime_type: string;
+  file_name: string;
+  disk_file_name?: string;
+  external_url?: string;
+  notes?: string;
+  created_at: string;
+}
+
+interface RollCallSessionRow {
+  sessionId: string;
+  groupId: string;
+  active: boolean;
+  startedAt: string;
+  startedAtIso: string;
+  startedBy: string;
+  startedByUserId: string;
+  presentUserIds: string[];
+  deniedUserIds: string[];
+  endedAt?: string;
+}
+
+interface SOSAlarmRow {
+  id: string;
+  groupId: string;
+  distressedUserId: string;
+  distressedUserName: string;
+  distressedUserRole: string;
+  phone?: string;
+  coordinates?: { lat: number; lng: number };
+  locationLabel?: string;
+  batteryLevel?: number;
+  timestamp: string;
+  active: boolean;
+}
+
 interface PersistentDatabase {
   profiles: Record<string, ProfileRow>;
   squad_groups: Record<string, GroupRow>;
@@ -128,8 +175,11 @@ interface PersistentDatabase {
   user_notifications: NotificationRow[];
   squad_notices: NoticeRow[];
   squad_media_vault: MediaVaultRow[];
+  squad_faculty_drive: FacultyDriveRow[];
   squad_briefings: Record<string, BriefingRow>;
   squad_checklists: Record<string, any[]>;
+  squad_rollcalls: Record<string, RollCallSessionRow>;
+  squad_sos_alarms: Record<string, SOSAlarmRow>;
 }
 
 function sanitizeDb(raw: any): PersistentDatabase {
@@ -174,8 +224,13 @@ function sanitizeDb(raw: any): PersistentDatabase {
     squad_media_vault: Array.isArray(raw?.squad_media_vault)
       ? raw.squad_media_vault.filter((m: any): m is MediaVaultRow => Boolean(m && typeof m === 'object' && m.id && m.group_id))
       : [],
+    squad_faculty_drive: Array.isArray(raw?.squad_faculty_drive)
+      ? raw.squad_faculty_drive.filter((d: any): d is FacultyDriveRow => Boolean(d && typeof d === 'object' && d.id && d.group_id))
+      : [],
     squad_briefings: raw?.squad_briefings && typeof raw.squad_briefings === 'object' ? raw.squad_briefings : {},
     squad_checklists: raw?.squad_checklists && typeof raw.squad_checklists === 'object' ? raw.squad_checklists : {},
+    squad_rollcalls: raw?.squad_rollcalls && typeof raw.squad_rollcalls === 'object' ? raw.squad_rollcalls : {},
+    squad_sos_alarms: raw?.squad_sos_alarms && typeof raw.squad_sos_alarms === 'object' ? raw.squad_sos_alarms : {},
   };
 }
 
@@ -212,8 +267,11 @@ function loadDb(): PersistentDatabase {
     user_notifications: [],
     squad_notices: [],
     squad_media_vault: [],
+    squad_faculty_drive: [],
     squad_briefings: {},
     squad_checklists: {},
+    squad_rollcalls: {},
+    squad_sos_alarms: {},
   };
 }
 
@@ -229,6 +287,7 @@ function saveDb(db: PersistentDatabase): void {
     db.squad_join_requests = (db.squad_join_requests || []).filter((r): r is JoinRequestRow => Boolean(r && r.user_id && r.group_id));
     db.squad_notices = (db.squad_notices || []).filter((n): n is NoticeRow => Boolean(n && n.id && n.group_id));
     db.squad_media_vault = (db.squad_media_vault || []).filter((m): m is MediaVaultRow => Boolean(m && m.id && m.group_id));
+    db.squad_faculty_drive = (db.squad_faculty_drive || []).filter((d): d is FacultyDriveRow => Boolean(d && d.id && d.group_id));
     db.user_notifications = (db.user_notifications || []).filter((n): n is NotificationRow => Boolean(n && n.user_id));
     fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), 'utf-8');
   } catch (err) {
@@ -2098,6 +2157,35 @@ async function startServer() {
   // ============================================================================
   // 10D. CROSS-DEVICE MEDIA HD VAULT (Upload, List, Stream & Mobile Download)
   // ============================================================================
+  async function resolveCanonicalGroupId(rawGroupId: string, req?: any): Promise<{ groupId: string; group: GroupRow | null }> {
+    const group = await findGroupByIdOrCode(rawGroupId, req);
+    if (group) {
+      return { groupId: group.id, group };
+    }
+    // Check if caller has an active group membership
+    const userId = String(req?.query?.userId || req?.body?.userId || req?.body?.uploaderId || '').trim();
+    if (userId && userId !== 'user_self') {
+      const mem = db.squad_members.find((m) => m && m.user_id === userId);
+      if (mem && db.squad_groups[mem.group_id]) {
+        return { groupId: mem.group_id, group: db.squad_groups[mem.group_id] };
+      }
+    }
+    const allGroups = Object.values(db.squad_groups).filter(Boolean);
+    if (allGroups.length === 1) {
+      return { groupId: allGroups[0].id, group: allGroups[0] };
+    }
+    return { groupId: rawGroupId || 'default', group: null };
+  }
+
+  const matchesGroup = (recordGroupId: string, resolvedGroupId: string, rawGroupId: string, group: GroupRow | null) => {
+    if (!recordGroupId) return false;
+    return (
+      recordGroupId === resolvedGroupId ||
+      recordGroupId === rawGroupId ||
+      (group?.code && recordGroupId === group.code)
+    );
+  };
+
   const toMediaResponse = (m: MediaVaultRow) => ({
     id: m.id,
     group_id: m.group_id,
@@ -2109,27 +2197,30 @@ async function startServer() {
     resolution: m.resolution || '4K Original',
     altitude: m.altitude || 'Mountain Trail',
     created_at: m.created_at,
+    url: `/api/groups/${encodeURIComponent(m.group_id)}/media/${encodeURIComponent(m.id)}/file`,
     signed_url: `/api/groups/${encodeURIComponent(m.group_id)}/media/${encodeURIComponent(m.id)}/file`,
     download_url: `/api/groups/${encodeURIComponent(m.group_id)}/media/${encodeURIComponent(m.id)}/download`,
   });
 
-  app.get('/api/groups/:groupId/media', (req, res) => {
+  app.get('/api/groups/:groupId/media', async (req, res) => {
     const { groupId } = req.params;
+    const { groupId: resolvedGroupId, group } = await resolveCanonicalGroupId(groupId, req);
     const items = (db.squad_media_vault || [])
-      .filter((m) => m && m.group_id === groupId)
+      .filter((m) => m && matchesGroup(m.group_id, resolvedGroupId, groupId, group))
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
       .map(toMediaResponse);
 
-    res.json({ media: items });
+    res.json({ success: true, items, media: items });
   });
 
   app.post('/api/groups/:groupId/media', async (req, res) => {
     const { groupId } = req.params;
     const body = req.body || {};
     const authUser = await resolveAuthenticatedUser(req);
+    const { groupId: resolvedGroupId } = await resolveCanonicalGroupId(groupId, req);
 
-    const uploaderId = authUser?.id || String(body.uploaderId || 'user_self');
-    const uploaderName = String(body.uploaderName || authUser?.fullName || 'Squad Member');
+    const uploaderId = authUser?.id || String(body.uploaderId || body.userId || 'user_self');
+    const uploaderName = String(body.uploaderName || authUser?.fullName || db.profiles[uploaderId]?.full_name || 'Squad Member');
     const fileName = String(body.fileName || `media_${Date.now()}.jpg`);
     const mimeType = String(body.mimeType || 'image/jpeg');
     const resolution = String(body.resolution || '4K UHD Original');
@@ -2160,7 +2251,7 @@ async function startServer() {
 
       const newRow: MediaVaultRow = {
         id: mediaId,
-        group_id: groupId,
+        group_id: resolvedGroupId,
         uploader_id: uploaderId,
         uploader_name: uploaderName,
         file_name: fileName,
@@ -2175,9 +2266,28 @@ async function startServer() {
       db.squad_media_vault.unshift(newRow);
       saveDb(db);
 
+      const responseItem = toMediaResponse(newRow);
+
+      // Broadcast over Supabase Realtime if configured
+      const sb = getSupabaseServerClient(req);
+      if (sb) {
+        try {
+          const channel = sb.channel(`squad_realtime_${resolvedGroupId}`);
+          channel.subscribe((status) => {
+            if (status === 'SUBSCRIBED') {
+              channel.send({
+                type: 'broadcast',
+                event: 'media_vault_updated',
+                payload: { groupId: resolvedGroupId, item: responseItem },
+              });
+            }
+          });
+        } catch {}
+      }
+
       res.json({
         success: true,
-        item: toMediaResponse(newRow),
+        item: responseItem,
       });
     } catch (err: any) {
       console.error('Error saving media to vault:', err);
@@ -2186,10 +2296,8 @@ async function startServer() {
   });
 
   app.get('/api/groups/:groupId/media/:mediaId/file', (req, res) => {
-    const { groupId, mediaId } = req.params;
-    const item = (db.squad_media_vault || []).find(
-      (m) => m && m.id === mediaId && (m.group_id === groupId || groupId === 'any')
-    );
+    const { mediaId } = req.params;
+    const item = (db.squad_media_vault || []).find((m) => m && m.id === mediaId);
     if (!item) {
       res.status(404).send('Media not found.');
       return;
@@ -2201,16 +2309,20 @@ async function startServer() {
       return;
     }
 
+    const safeDownloadName = item.file_name.replace(/["\r\n]/g, '_');
     res.setHeader('Content-Type', item.mime_type || 'application/octet-stream');
+    if (req.query.download === '1') {
+      res.setHeader('Content-Disposition', `attachment; filename="${safeDownloadName}"`);
+      res.download(filePath, safeDownloadName);
+      return;
+    }
     res.setHeader('Cache-Control', 'public, max-age=31536000');
     res.sendFile(filePath);
   });
 
   app.get('/api/groups/:groupId/media/:mediaId/download', (req, res) => {
-    const { groupId, mediaId } = req.params;
-    const item = (db.squad_media_vault || []).find(
-      (m) => m && m.id === mediaId && (m.group_id === groupId || groupId === 'any')
-    );
+    const { mediaId } = req.params;
+    const item = (db.squad_media_vault || []).find((m) => m && m.id === mediaId);
     if (!item) {
       res.status(404).send('Media not found.');
       return;
@@ -2229,10 +2341,8 @@ async function startServer() {
   });
 
   app.delete('/api/groups/:groupId/media/:mediaId', (req, res) => {
-    const { groupId, mediaId } = req.params;
-    const idx = (db.squad_media_vault || []).findIndex(
-      (m) => m && m.id === mediaId && m.group_id === groupId
-    );
+    const { mediaId } = req.params;
+    const idx = (db.squad_media_vault || []).findIndex((m) => m && m.id === mediaId);
     if (idx === -1) {
       res.status(404).json({ error: 'Media item not found.' });
       return;
@@ -2249,6 +2359,612 @@ async function startServer() {
     db.squad_media_vault.splice(idx, 1);
     saveDb(db);
     res.json({ success: true });
+  });
+
+  // ============================================================================
+  // 10E. CROSS-DEVICE FACULTY DRIVE (Upload, List, Approve, Delete & Mobile Download)
+  // ============================================================================
+  const toFacultyDriveResponse = (d: FacultyDriveRow) => ({
+    id: d.id,
+    groupId: d.group_id,
+    name: d.name,
+    category: d.category,
+    uploadedBy: d.uploaded_by,
+    uploaderId: d.uploader_id,
+    uploaderRole: d.uploader_role,
+    date: d.date,
+    size: d.size,
+    status: d.status,
+    fileType: d.file_type,
+    mimeType: d.mime_type,
+    fileName: d.file_name,
+    notes: d.notes,
+    createdAt: d.created_at,
+    url:
+      d.external_url ||
+      `/api/groups/${encodeURIComponent(d.group_id)}/faculty-drive/${encodeURIComponent(d.id)}/file`,
+    downloadUrl: `/api/groups/${encodeURIComponent(d.group_id)}/faculty-drive/${encodeURIComponent(d.id)}/download`,
+  });
+
+  app.get('/api/groups/:groupId/faculty-drive', async (req, res) => {
+    const { groupId } = req.params;
+    const { groupId: resolvedGroupId, group } = await resolveCanonicalGroupId(groupId, req);
+    if (!db.squad_faculty_drive) db.squad_faculty_drive = [];
+
+    const docs = db.squad_faculty_drive
+      .filter((d) => d && matchesGroup(d.group_id, resolvedGroupId, groupId, group))
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      .map(toFacultyDriveResponse);
+
+    res.json({ success: true, documents: docs });
+  });
+
+  app.post('/api/groups/:groupId/faculty-drive', async (req, res) => {
+    const { groupId } = req.params;
+    const body = req.body || {};
+    const authUser = await resolveAuthenticatedUser(req);
+    const { groupId: resolvedGroupId } = await resolveCanonicalGroupId(groupId, req);
+
+    const docName = String(body.name || 'Official Expedition Document').trim();
+    if (!docName) {
+      res.status(400).json({ error: 'Document title is required.' });
+      return;
+    }
+
+    const uploaderId = authUser?.id || String(body.uploaderId || body.userId || 'user_self');
+    const uploadedBy = String(
+      body.uploadedBy ||
+      authUser?.fullName ||
+      db.profiles[uploaderId]?.full_name ||
+      'Squad Member'
+    );
+    const uploaderRole = String(body.uploaderRole || 'member');
+    const category = (['ticket', 'bill', 'permit', 'medical', 'sop'].includes(body.category)
+      ? body.category
+      : 'permit') as FacultyDriveRow['category'];
+    const status = body.status === 'pending' ? 'pending' : 'approved';
+    const fileType = body.fileType === 'img' ? 'img' : 'pdf';
+    const mimeType = String(body.mimeType || (fileType === 'img' ? 'image/jpeg' : 'application/pdf'));
+    const rawFileName = String(body.fileName || `${docName.replace(/[^a-zA-Z0-9_-]/g, '_')}.${fileType === 'img' ? 'jpg' : 'txt'}`);
+    const base64Data = String(body.base64Data || '');
+
+    try {
+      if (!fs.existsSync(MEDIA_DIR)) {
+        fs.mkdirSync(MEDIA_DIR, { recursive: true });
+      }
+
+      const docId = body.id ? String(body.id) : `fdoc_${crypto.randomUUID()}`;
+      const safeName = rawFileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const diskFileName = `${docId}_${safeName}`;
+      const filePath = path.join(MEDIA_DIR, diskFileName);
+
+      let byteLength = 0;
+      if (base64Data) {
+        const cleanBase64 = base64Data.includes(',')
+          ? base64Data.split(',')[1]
+          : base64Data;
+        const buffer = Buffer.from(cleanBase64, 'base64');
+        fs.writeFileSync(filePath, buffer);
+        byteLength = buffer.length;
+      } else {
+        // Generate downloadable summary file when no binary file was attached
+        const textContent = [
+          `TRAIL OPS — FACULTY DRIVE OFFICIAL RECORD`,
+          `==========================================`,
+          `Title: ${docName}`,
+          `Category: ${category.toUpperCase()}`,
+          `Uploaded By: ${uploadedBy}`,
+          `Date: ${new Date().toLocaleString()}`,
+          `Status: ${status.toUpperCase()}`,
+          body.notes ? `Notes: ${body.notes}` : '',
+        ]
+          .filter(Boolean)
+          .join('\n');
+        const buffer = Buffer.from(textContent, 'utf-8');
+        fs.writeFileSync(filePath, buffer);
+        byteLength = buffer.length;
+      }
+
+      const sizeStr =
+        body.size ||
+        (byteLength > 1048576
+          ? `${(byteLength / 1048576).toFixed(1)} MB`
+          : `${Math.max(1, Math.round(byteLength / 1024))} KB`);
+
+      const newRow: FacultyDriveRow = {
+        id: docId,
+        group_id: resolvedGroupId,
+        name: docName,
+        category,
+        uploaded_by: uploadedBy,
+        uploader_id: uploaderId,
+        uploader_role: uploaderRole,
+        date: body.date || new Date().toLocaleDateString(),
+        size: sizeStr,
+        status,
+        file_type: fileType,
+        mime_type: base64Data ? mimeType : 'text/plain; charset=utf-8',
+        file_name: rawFileName,
+        disk_file_name: diskFileName,
+        external_url: body.externalUrl || undefined,
+        notes: body.notes ? String(body.notes) : undefined,
+        created_at: new Date().toISOString(),
+      };
+
+      if (!db.squad_faculty_drive) db.squad_faculty_drive = [];
+      const existingIdx = db.squad_faculty_drive.findIndex((d) => d && d.id === docId);
+      if (existingIdx >= 0) {
+        db.squad_faculty_drive[existingIdx] = newRow;
+      } else {
+        db.squad_faculty_drive.unshift(newRow);
+      }
+      saveDb(db);
+
+      res.json({
+        success: true,
+        document: toFacultyDriveResponse(newRow),
+      });
+    } catch (err: any) {
+      console.error('Error saving Faculty Drive document:', err);
+      res.status(500).json({ error: err?.message || 'Failed to upload document to Faculty Drive.' });
+    }
+  });
+
+  app.patch('/api/groups/:groupId/faculty-drive/:docId', (req, res) => {
+    const { docId } = req.params;
+    const { status } = req.body || {};
+    if (!db.squad_faculty_drive) db.squad_faculty_drive = [];
+
+    const doc = db.squad_faculty_drive.find((d) => d && d.id === docId);
+    if (!doc) {
+      res.status(404).json({ error: 'Document not found.' });
+      return;
+    }
+
+    if (status === 'approved' || status === 'pending') {
+      doc.status = status;
+    }
+    saveDb(db);
+    res.json({ success: true, document: toFacultyDriveResponse(doc) });
+  });
+
+  app.delete('/api/groups/:groupId/faculty-drive/:docId', (req, res) => {
+    const { docId } = req.params;
+    if (!db.squad_faculty_drive) db.squad_faculty_drive = [];
+
+    const idx = db.squad_faculty_drive.findIndex((d) => d && d.id === docId);
+    if (idx === -1) {
+      res.status(404).json({ error: 'Document not found.' });
+      return;
+    }
+
+    const doc = db.squad_faculty_drive[idx];
+    if (doc.disk_file_name) {
+      const filePath = path.join(MEDIA_DIR, doc.disk_file_name);
+      try {
+        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      } catch {}
+    }
+
+    db.squad_faculty_drive.splice(idx, 1);
+    saveDb(db);
+    res.json({ success: true });
+  });
+
+  app.get('/api/groups/:groupId/faculty-drive/:docId/file', (req, res) => {
+    const { docId } = req.params;
+    const doc = (db.squad_faculty_drive || []).find((d) => d && d.id === docId);
+    if (!doc || !doc.disk_file_name) {
+      res.status(404).send('Document file not found.');
+      return;
+    }
+    const filePath = path.join(MEDIA_DIR, doc.disk_file_name);
+    if (!fs.existsSync(filePath)) {
+      res.status(404).send('Document file missing on disk.');
+      return;
+    }
+    const safeDownloadName = (doc.file_name || doc.name).replace(/["\r\n]/g, '_');
+    res.setHeader('Content-Type', doc.mime_type || 'application/octet-stream');
+    if (req.query.download === '1') {
+      res.setHeader('Content-Disposition', `attachment; filename="${safeDownloadName}"`);
+      res.download(filePath, safeDownloadName);
+      return;
+    }
+    res.sendFile(filePath);
+  });
+
+  app.get('/api/groups/:groupId/faculty-drive/:docId/download', (req, res) => {
+    const { docId } = req.params;
+    const doc = (db.squad_faculty_drive || []).find((d) => d && d.id === docId);
+    if (!doc || !doc.disk_file_name) {
+      res.status(404).send('Document file not found.');
+      return;
+    }
+    const filePath = path.join(MEDIA_DIR, doc.disk_file_name);
+    if (!fs.existsSync(filePath)) {
+      res.status(404).send('Document file missing on disk.');
+      return;
+    }
+    const safeDownloadName = (doc.file_name || doc.name).replace(/["\r\n]/g, '_');
+    res.setHeader('Content-Type', doc.mime_type || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeDownloadName}"`);
+    res.download(filePath, safeDownloadName);
+  });
+
+  // ============================================================================
+  // 10F. CROSS-DEVICE LIVE ATTENDANCE ROLL CALL (Start, Present/Deny, End & Sync)
+  // ============================================================================
+  app.get('/api/groups/:groupId/rollcall', async (req, res) => {
+    const { groupId } = req.params;
+    const { groupId: resolvedGroupId, group } = await resolveCanonicalGroupId(groupId, req);
+    if (!db.squad_rollcalls) db.squad_rollcalls = {};
+
+    const session = db.squad_rollcalls[resolvedGroupId] || db.squad_rollcalls[groupId] || null;
+    const groupMembers = db.squad_members.filter(
+      (m) => m && matchesGroup(m.group_id, resolvedGroupId, groupId, group) && m.user_id !== 'user_self'
+    );
+    const totalMembers = Math.max(1, groupMembers.length);
+
+    res.json({
+      success: true,
+      session,
+      totalMembers,
+    });
+  });
+
+  app.post('/api/groups/:groupId/rollcall/start', async (req, res) => {
+    const { groupId } = req.params;
+    const body = req.body || {};
+    const authUser = await resolveAuthenticatedUser(req);
+    const { groupId: resolvedGroupId, group } = await resolveCanonicalGroupId(groupId, req);
+
+    const callerId = authUser?.id || String(body.userId || body.startedByUserId || '1');
+    const startedBy = String(
+      body.startedBy ||
+      authUser?.fullName ||
+      db.profiles[callerId]?.full_name ||
+      'Squad Commander'
+    );
+
+    const nowIso = new Date().toISOString();
+    const startedAt =
+      body.startedAt ||
+      new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+    const newSession: RollCallSessionRow = {
+      sessionId: body.sessionId || `rc_${Date.now()}`,
+      groupId: resolvedGroupId,
+      active: true,
+      startedAt,
+      startedAtIso: nowIso,
+      startedBy,
+      startedByUserId: callerId,
+      presentUserIds: [callerId],
+      deniedUserIds: [],
+    };
+
+    if (!db.squad_rollcalls) db.squad_rollcalls = {};
+    db.squad_rollcalls[resolvedGroupId] = newSession;
+
+    // Mark starter as active (present) and other members as standby (awaiting response)
+    const groupMembers = db.squad_members.filter(
+      (m) => m && matchesGroup(m.group_id, resolvedGroupId, groupId, group)
+    );
+    for (const m of groupMembers) {
+      if (m.user_id === callerId) {
+        m.status = 'active';
+      } else {
+        m.status = 'standby';
+        // Push notification for every other member
+        db.user_notifications.push({
+          id: crypto.randomUUID(),
+          user_id: m.user_id,
+          group_id: resolvedGroupId,
+          type: 'info',
+          title: `📢 Live Roll Call Started (${group?.name || 'Squad'})`,
+          message: `${startedBy} started a live attendance check-in at ${startedAt}. Tap Present or Deny to confirm your status.`,
+          priority: 'critical',
+          author_name: startedBy,
+          is_read: false,
+          created_at: nowIso,
+        });
+      }
+    }
+
+    saveDb(db);
+
+    const sb = getSupabaseServerClient(req);
+    if (sb) {
+      try {
+        const channel = sb.channel(`squad_realtime_${resolvedGroupId}`);
+        channel.subscribe((status) => {
+          if (status === 'SUBSCRIBED') {
+            channel.send({
+              type: 'broadcast',
+              event: 'rollcall_updated',
+              payload: { groupId: resolvedGroupId, session: newSession },
+            });
+          }
+        });
+      } catch {}
+    }
+
+    res.json({
+      success: true,
+      session: newSession,
+      totalMembers: Math.max(1, groupMembers.filter((m) => m.user_id !== 'user_self').length),
+    });
+  });
+
+  app.post('/api/groups/:groupId/rollcall/respond', async (req, res) => {
+    const { groupId } = req.params;
+    const body = req.body || {};
+    const authUser = await resolveAuthenticatedUser(req);
+    const { groupId: resolvedGroupId, group } = await resolveCanonicalGroupId(groupId, req);
+
+    const userId = authUser?.id || String(body.userId || '1');
+    const responseType = body.response === 'deny' ? 'deny' : 'present';
+
+    if (!db.squad_rollcalls) db.squad_rollcalls = {};
+    let session = db.squad_rollcalls[resolvedGroupId] || db.squad_rollcalls[groupId];
+
+    if (!session) {
+      res.status(404).json({ error: 'No active roll call session found.' });
+      return;
+    }
+
+    if (!Array.isArray(session.presentUserIds)) session.presentUserIds = [];
+    if (!Array.isArray(session.deniedUserIds)) session.deniedUserIds = [];
+
+    if (responseType === 'present') {
+      if (!session.presentUserIds.includes(userId)) {
+        session.presentUserIds.push(userId);
+      }
+      session.deniedUserIds = session.deniedUserIds.filter((id) => id !== userId);
+    } else {
+      if (!session.deniedUserIds.includes(userId)) {
+        session.deniedUserIds.push(userId);
+      }
+      session.presentUserIds = session.presentUserIds.filter((id) => id !== userId);
+    }
+
+    // Update member status in db.squad_members
+    const groupMembers = db.squad_members.filter(
+      (m) => m && matchesGroup(m.group_id, resolvedGroupId, groupId, group)
+    );
+    for (const m of groupMembers) {
+      if (m.user_id === userId) {
+        m.status = responseType === 'present' ? 'active' : 'standby';
+      }
+    }
+
+    db.squad_rollcalls[resolvedGroupId] = session;
+    saveDb(db);
+
+    const sb = getSupabaseServerClient(req);
+    if (sb) {
+      try {
+        const channel = sb.channel(`squad_realtime_${resolvedGroupId}`);
+        channel.subscribe((status) => {
+          if (status === 'SUBSCRIBED') {
+            channel.send({
+              type: 'broadcast',
+              event: 'rollcall_updated',
+              payload: { groupId: resolvedGroupId, session },
+            });
+          }
+        });
+      } catch {}
+    }
+
+    res.json({
+      success: true,
+      session,
+      totalMembers: Math.max(1, groupMembers.filter((m) => m.user_id !== 'user_self').length),
+    });
+  });
+
+  app.post('/api/groups/:groupId/rollcall/end', async (req, res) => {
+    const { groupId } = req.params;
+    const { groupId: resolvedGroupId, group } = await resolveCanonicalGroupId(groupId, req);
+
+    if (!db.squad_rollcalls) db.squad_rollcalls = {};
+    const session = db.squad_rollcalls[resolvedGroupId] || db.squad_rollcalls[groupId];
+    if (!session) {
+      res.json({ success: true, session: null });
+      return;
+    }
+
+    session.active = false;
+    session.endedAt = new Date().toISOString();
+    if (!Array.isArray(session.presentUserIds)) session.presentUserIds = [];
+    if (!Array.isArray(session.deniedUserIds)) session.deniedUserIds = [];
+
+    // Finalize member statuses in db.squad_members based on roll call attendance
+    const groupMembers = db.squad_members.filter(
+      (m) => m && matchesGroup(m.group_id, resolvedGroupId, groupId, group)
+    );
+    for (const m of groupMembers) {
+      if (session.presentUserIds.includes(m.user_id)) {
+        m.status = 'active';
+      } else {
+        m.status = 'standby';
+      }
+    }
+
+    db.squad_rollcalls[resolvedGroupId] = session;
+    saveDb(db);
+
+    const sb = getSupabaseServerClient(req);
+    if (sb) {
+      try {
+        const channel = sb.channel(`squad_realtime_${resolvedGroupId}`);
+        channel.subscribe((status) => {
+          if (status === 'SUBSCRIBED') {
+            channel.send({
+              type: 'broadcast',
+              event: 'rollcall_updated',
+              payload: { groupId: resolvedGroupId, session },
+            });
+          }
+        });
+      } catch {}
+    }
+
+    res.json({
+      success: true,
+      session,
+      totalMembers: Math.max(1, groupMembers.filter((m) => m.user_id !== 'user_self').length),
+    });
+  });
+
+  // ============================================================================
+  // 10G. CROSS-DEVICE GROUP SOS DISTRESS ALARM & REAL-TIME LIVE STATE
+  // ============================================================================
+  app.get('/api/groups/:groupId/sos', async (req, res) => {
+    const { groupId } = req.params;
+    const { groupId: resolvedGroupId } = await resolveCanonicalGroupId(groupId, req);
+    if (!db.squad_sos_alarms) db.squad_sos_alarms = {};
+    const alarm = db.squad_sos_alarms[resolvedGroupId] || db.squad_sos_alarms[groupId] || null;
+    res.json({ success: true, alarm: alarm?.active ? alarm : null });
+  });
+
+  app.post('/api/groups/:groupId/sos', async (req, res) => {
+    const { groupId } = req.params;
+    const body = req.body || {};
+    const authUser = await resolveAuthenticatedUser(req);
+    const { groupId: resolvedGroupId, group } = await resolveCanonicalGroupId(groupId, req);
+
+    const distressedUserId = authUser?.id || String(body.distressedUserId || body.userId || 'user_self');
+    const distressedUserName = String(
+      body.distressedUserName ||
+      authUser?.fullName ||
+      db.profiles[distressedUserId]?.full_name ||
+      'Squad Member'
+    );
+    const distressedUserRole = String(body.distressedUserRole || 'Squad Member');
+    const nowIso = new Date().toISOString();
+
+    const alarm: SOSAlarmRow = {
+      id: body.id || `sos_${Date.now()}`,
+      groupId: resolvedGroupId,
+      distressedUserId,
+      distressedUserName,
+      distressedUserRole,
+      phone: body.phone || db.profiles[distressedUserId]?.phone || '',
+      coordinates: body.coordinates || { lat: 0, lng: 0 },
+      locationLabel: body.locationLabel || undefined,
+      batteryLevel: Number(body.batteryLevel) || 92,
+      timestamp: body.timestamp || nowIso,
+      active: true,
+    };
+
+    if (!db.squad_sos_alarms) db.squad_sos_alarms = {};
+    db.squad_sos_alarms[resolvedGroupId] = alarm;
+
+    // Update distressed user's status in db.squad_members
+    const groupMembers = db.squad_members.filter(
+      (m) => m && matchesGroup(m.group_id, resolvedGroupId, groupId, group)
+    );
+    for (const m of groupMembers) {
+      if (m.user_id === distressedUserId) {
+        m.status = 'distress';
+      } else if (m.user_id !== 'user_self') {
+        db.user_notifications.push({
+          id: crypto.randomUUID(),
+          user_id: m.user_id,
+          group_id: resolvedGroupId,
+          type: 'info',
+          title: `🚨 EMERGENCY SOS: ${distressedUserName}`,
+          message: `${distressedUserName} (${distressedUserRole}) triggered an Emergency SOS Distress Beacon!`,
+          priority: 'critical',
+          author_name: distressedUserName,
+          is_read: false,
+          created_at: nowIso,
+        });
+      }
+    }
+
+    saveDb(db);
+
+    const sb = getSupabaseServerClient(req);
+    if (sb) {
+      try {
+        const channel = sb.channel(`squad_realtime_${resolvedGroupId}`);
+        channel.subscribe((status) => {
+          if (status === 'SUBSCRIBED') {
+            channel.send({
+              type: 'broadcast',
+              event: 'sos_trigger',
+              payload: alarm,
+            });
+          }
+        });
+      } catch {}
+    }
+
+    res.json({ success: true, alarm });
+  });
+
+  app.delete('/api/groups/:groupId/sos', async (req, res) => {
+    const { groupId } = req.params;
+    const { groupId: resolvedGroupId, group } = await resolveCanonicalGroupId(groupId, req);
+
+    if (db.squad_sos_alarms) {
+      delete db.squad_sos_alarms[resolvedGroupId];
+      delete db.squad_sos_alarms[groupId];
+    }
+
+    // Restore member statuses from distress to active
+    const groupMembers = db.squad_members.filter(
+      (m) => m && matchesGroup(m.group_id, resolvedGroupId, groupId, group)
+    );
+    for (const m of groupMembers) {
+      if (m.status === 'distress') {
+        m.status = 'active';
+      }
+    }
+
+    saveDb(db);
+
+    const sb = getSupabaseServerClient(req);
+    if (sb) {
+      try {
+        const channel = sb.channel(`squad_realtime_${resolvedGroupId}`);
+        channel.subscribe((status) => {
+          if (status === 'SUBSCRIBED') {
+            channel.send({
+              type: 'broadcast',
+              event: 'sos_cleared',
+              payload: { groupId: resolvedGroupId },
+            });
+          }
+        });
+      } catch {}
+    }
+
+    res.json({ success: true });
+  });
+
+  app.get('/api/groups/:groupId/live-state', async (req, res) => {
+    const { groupId } = req.params;
+    const { groupId: resolvedGroupId, group } = await resolveCanonicalGroupId(groupId, req);
+
+    const activeSos =
+      (db.squad_sos_alarms && (db.squad_sos_alarms[resolvedGroupId] || db.squad_sos_alarms[groupId])) || null;
+    const activeRollCall =
+      (db.squad_rollcalls && (db.squad_rollcalls[resolvedGroupId] || db.squad_rollcalls[groupId])) || null;
+    const groupMembers = db.squad_members.filter(
+      (m) => m && matchesGroup(m.group_id, resolvedGroupId, groupId, group) && m.user_id !== 'user_self'
+    );
+
+    res.json({
+      success: true,
+      groupId: resolvedGroupId,
+      activeSos: activeSos?.active ? activeSos : null,
+      activeRollCall,
+      totalMembers: Math.max(1, groupMembers.length),
+    });
   });
 
   // ============================================================================

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Radio, CheckCircle2, X, Users, AlertTriangle } from 'lucide-react';
+import { Radio, CheckCircle2, XCircle, X } from 'lucide-react';
 
 interface AttendanceAlertModalProps {
   isOpen: boolean;
@@ -7,9 +7,12 @@ interface AttendanceAlertModalProps {
   startedBy: string;
   startedAt: string;
   presentCount: number;
+  deniedCount?: number;
   pendingCount: number;
   isAlreadyPresent: boolean;
+  isAlreadyDenied?: boolean;
   onMarkPresent: () => void;
+  onDenyAttendance?: () => void;
 }
 
 export const AttendanceAlertModal: React.FC<AttendanceAlertModalProps> = ({
@@ -18,9 +21,12 @@ export const AttendanceAlertModal: React.FC<AttendanceAlertModalProps> = ({
   startedBy,
   startedAt,
   presentCount,
+  deniedCount = 0,
   pendingCount,
   isAlreadyPresent,
+  isAlreadyDenied = false,
   onMarkPresent,
+  onDenyAttendance,
 }) => {
   if (!isOpen) return null;
 
@@ -62,47 +68,93 @@ export const AttendanceAlertModal: React.FC<AttendanceAlertModalProps> = ({
           Confirm Your Attendance
         </h3>
         <p className="text-xs text-slate-600 leading-relaxed mb-4 max-w-xs">
-          Squad Commander <strong className="text-slate-900 font-bold">{startedBy || 'Super Admin'}</strong> has called a live attendance roll call at <strong className="text-slate-900 font-mono">{startedAt || 'just now'}</strong>. Tap below to confirm you are safe and present.
+          Squad Commander <strong className="text-slate-900 font-bold">{startedBy || 'Super Admin'}</strong> has started a live attendance check-in at <strong className="text-slate-900 font-mono">{startedAt || 'just now'}</strong>. Select <strong className="text-emerald-700">Present</strong> or <strong className="text-rose-700">Deny</strong> below.
         </p>
 
         {/* Real-time Tally Card */}
-        <div className="w-full grid grid-cols-2 gap-2 bg-slate-50 border border-slate-200/80 rounded-2xl p-3 mb-4">
+        <div className="w-full grid grid-cols-3 gap-2 bg-slate-50 border border-slate-200/80 rounded-2xl p-2.5 mb-4">
           <div className="text-center p-2 rounded-xl bg-emerald-50 border border-emerald-200">
             <span className="text-[10px] text-emerald-800 font-bold uppercase tracking-wider block">Present</span>
-            <span className="text-2xl font-black text-emerald-700 leading-tight">{presentCount}</span>
-            <span className="text-[10px] text-emerald-600 font-semibold block mt-0.5">Checked In</span>
+            <span className="text-xl font-black text-emerald-700 leading-tight">{presentCount}</span>
+            <span className="text-[9px] text-emerald-600 font-semibold block mt-0.5">Checked In</span>
+          </div>
+
+          <div className="text-center p-2 rounded-xl bg-rose-50 border border-rose-200">
+            <span className="text-[10px] text-rose-800 font-bold uppercase tracking-wider block">Denied</span>
+            <span className="text-xl font-black text-rose-700 leading-tight">{deniedCount}</span>
+            <span className="text-[9px] text-rose-600 font-semibold block mt-0.5">Not Present</span>
           </div>
 
           <div className="text-center p-2 rounded-xl bg-amber-50 border border-amber-200">
             <span className="text-[10px] text-amber-800 font-bold uppercase tracking-wider block">Pending</span>
-            <span className="text-2xl font-black text-amber-700 leading-tight">{pendingCount}</span>
-            <span className="text-[10px] text-amber-600 font-semibold block mt-0.5">Awaiting</span>
+            <span className="text-xl font-black text-amber-700 leading-tight">{pendingCount}</span>
+            <span className="text-[9px] text-amber-600 font-semibold block mt-0.5">Awaiting</span>
           </div>
         </div>
 
-        {/* Attendance Action Button */}
+        {/* Attendance Action Buttons: Present & Deny */}
         {isAlreadyPresent ? (
-          <div className="w-full py-3.5 px-4 rounded-2xl bg-emerald-100 border border-emerald-300 text-[#0f5238] font-bold text-sm flex items-center justify-center gap-2 shadow-xs">
-            <CheckCircle2 className="w-5 h-5 text-emerald-600" />
-            <span>✓ You Are Marked Present!</span>
+          <div className="w-full space-y-2">
+            <div className="w-full py-3.5 px-4 rounded-2xl bg-emerald-100 border border-emerald-300 text-[#0f5238] font-bold text-sm flex items-center justify-center gap-2 shadow-xs">
+              <CheckCircle2 className="w-5 h-5 text-emerald-600" />
+              <span>✓ You Are Marked Present!</span>
+            </div>
+            {onDenyAttendance && (
+              <button
+                type="button"
+                onClick={onDenyAttendance}
+                className="w-full py-2 px-3 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-bold transition-colors cursor-pointer"
+              >
+                Change to Deny
+              </button>
+            )}
+          </div>
+        ) : isAlreadyDenied ? (
+          <div className="w-full space-y-2">
+            <div className="w-full py-3.5 px-4 rounded-2xl bg-rose-100 border border-rose-300 text-rose-900 font-bold text-sm flex items-center justify-center gap-2 shadow-xs">
+              <XCircle className="w-5 h-5 text-rose-600" />
+              <span>✕ You Denied Attendance</span>
+            </div>
+            <button
+              type="button"
+              onClick={onMarkPresent}
+              className="w-full py-2 px-3 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-bold transition-colors cursor-pointer"
+            >
+              Change to Present
+            </button>
           </div>
         ) : (
-          <button
-            type="button"
-            onClick={() => {
-              onMarkPresent();
-            }}
-            className="w-full py-4 px-5 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-500 hover:to-teal-600 text-white font-black text-sm flex items-center justify-center gap-2 shadow-lg shadow-emerald-700/30 active:scale-95 transition-all cursor-pointer"
-          >
-            <CheckCircle2 className="w-5 h-5" />
-            <span>I Am Present</span>
-          </button>
+          <div className="w-full grid grid-cols-2 gap-2.5">
+            <button
+              type="button"
+              onClick={onMarkPresent}
+              className="py-3.5 px-4 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-500 hover:to-teal-600 text-white font-black text-sm flex items-center justify-center gap-1.5 shadow-lg shadow-emerald-700/25 active:scale-95 transition-all cursor-pointer"
+            >
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
+              <span>Present</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                if (onDenyAttendance) {
+                  onDenyAttendance();
+                } else {
+                  onClose();
+                }
+              }}
+              className="py-3.5 px-4 rounded-2xl bg-rose-600 hover:bg-rose-700 text-white font-black text-sm flex items-center justify-center gap-1.5 shadow-lg shadow-rose-700/20 active:scale-95 transition-all cursor-pointer"
+            >
+              <XCircle className="w-4 h-4 shrink-0" />
+              <span>Deny</span>
+            </button>
+          </div>
         )}
 
         <button
           type="button"
           onClick={onClose}
-          className="mt-3 text-xs text-slate-500 hover:text-slate-800 font-semibold transition-colors"
+          className="mt-3 text-xs text-slate-500 hover:text-slate-800 font-semibold transition-colors cursor-pointer"
         >
           Dismiss popup
         </button>
@@ -110,3 +162,4 @@ export const AttendanceAlertModal: React.FC<AttendanceAlertModalProps> = ({
     </div>
   );
 };
+

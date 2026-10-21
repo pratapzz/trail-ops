@@ -211,7 +211,10 @@ export const ExpeditionProfileScreen: React.FC<ExpeditionProfileScreenProps> = (
             <div className="w-10 h-10 rounded-full overflow-hidden ring-2 ring-emerald-500/40 bg-slate-200 flex items-center justify-center shadow-2xs group-hover:ring-emerald-600 transition-all">
               <img
                 className="w-full h-full object-cover"
-                src={formData.avatarUrl}
+                src={
+                  formData.avatarUrl ||
+                  'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=200&q=80'
+                }
                 alt={formData.fullName}
               />
             </div>
@@ -655,7 +658,10 @@ export const ExpeditionProfileScreen: React.FC<ExpeditionProfileScreenProps> = (
               >
                 <div className="w-20 h-20 rounded-2xl overflow-hidden ring-4 ring-emerald-500/20 shadow-md group-hover:scale-105 transition-transform bg-slate-100">
                   <img
-                    src={formData.avatarUrl}
+                    src={
+                      formData.avatarUrl ||
+                      'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=200&q=80'
+                    }
                     alt={formData.fullName}
                     className="w-full h-full object-cover"
                   />

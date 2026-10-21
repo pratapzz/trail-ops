@@ -302,7 +302,14 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({
 
                 {/* Cover Image Preview & Presets */}
                 <div className="mt-2 relative h-28 rounded-2xl overflow-hidden border border-slate-200 shadow-2xs group">
-                  <img src={coverBg} alt="Cover Preview" className="w-full h-full object-cover" />
+                  <img
+                    src={
+                      coverBg ||
+                      'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=1000&q=80'
+                    }
+                    alt="Cover Preview"
+                    className="w-full h-full object-cover"
+                  />
                   <div className="absolute inset-0 bg-black/40 flex items-center justify-between p-3 text-white">
                     <span className="text-[11px] font-bold flex items-center gap-1">
                       <Camera className="w-3.5 h-3.5" />

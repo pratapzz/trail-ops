@@ -217,7 +217,10 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
             <div className="relative">
               <div className="w-16 h-16 rounded-2xl overflow-hidden ring-4 ring-emerald-500/20 shadow-md">
                 <img
-                  src={profileData.avatarUrl}
+                  src={
+                    profileData.avatarUrl ||
+                    'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=200&q=80'
+                  }
                   alt={profileData.fullName}
                   className="w-full h-full object-cover"
                 />

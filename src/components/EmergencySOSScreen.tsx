@@ -822,7 +822,14 @@ export const EmergencySOSScreen: React.FC<EmergencySOSScreenProps> = ({
                 >
                   <div className="flex items-center gap-2 mb-2">
                     <div className="w-8 h-8 rounded-full overflow-hidden border border-emerald-500/30 shrink-0">
-                      <img src={lead.avatar} alt={lead.name} className="w-full h-full object-cover" />
+                      <img
+                        src={
+                          lead.avatar ||
+                          'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=120&q=80'
+                        }
+                        alt={lead.name}
+                        className="w-full h-full object-cover"
+                      />
                     </div>
                     <div className="min-w-0">
                       <h4 className="text-xs font-bold text-slate-900 truncate">{lead.name}</h4>

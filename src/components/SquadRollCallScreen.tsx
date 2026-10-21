@@ -57,6 +57,7 @@ import {
   Search,
   Train,
   Copy,
+  XCircle,
 } from 'lucide-react';
 import { SquadMember, ExcursionRequest, ScreenType, UserRole } from '../types';
 import { CallModal } from './modals/CallModal';
@@ -73,6 +74,12 @@ import {
   fetchSeatAssignments,
   fetchGroupMediaVault,
   uploadMediaToVault,
+  deleteMediaFromVault,
+  downloadMediaVaultFile,
+  startSquadRollCall,
+  respondSquadRollCall,
+  endSquadRollCall,
+  fetchSquadLiveState,
   createSquadGroup,
   fetchSquadMembers,
   fetchGroupJoinRequests,
@@ -240,7 +247,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
     }
   }, [hasJoinedGroup, activeSquad?.id, trainDirection]);
 
-  // High-Definition RAW Media Stream (Stored in Supabase Storage with local cache fallback)
+  // High-Definition RAW Media Stream (Stored on Server & Supabase Storage with local cache fallback)
   const [sharedHDMedia, setSharedHDMedia] = useState<Array<{
     id: string;
     title: string;
@@ -252,6 +259,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
     timestamp: string;
     altitude: string;
     url: string;
+    downloadUrl?: string;
     isLosslessRaw: boolean;
   }>>(() => {
     const squadKey = activeSquad?.id || 'default';
@@ -264,6 +272,41 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
     }
     return [];
   });
+
+  const syncMediaVaultFromServer = async () => {
+    const targetGroupId = activeSquad?.id || localStorage.getItem('trailoPS_active_squad_id') || 'default';
+    try {
+      const items = await fetchGroupMediaVault(targetGroupId, currentUserId);
+      if (Array.isArray(items)) {
+        const mapped = items.map((i) => ({
+          id: i.id,
+          title: i.file_name,
+          type: (i.mime_type || '').startsWith('video') ? ('video' as const) : ('photo' as const),
+          resolution: i.resolution || '4K UHD',
+          size: `${Math.max(0.1, Number(i.file_size || 0) / (1024 * 1024)).toFixed(1)} MB`,
+          format: (i.mime_type || '').split('/')[1]?.toUpperCase() || 'RAW',
+          author: i.uploader_name || 'Squad Member',
+          timestamp: i.created_at ? new Date(i.created_at).toLocaleDateString() : 'Just now',
+          altitude: i.altitude || 'Mountain Trail',
+          url:
+            i.signed_url ||
+            i.url ||
+            `/api/groups/${encodeURIComponent(targetGroupId)}/media/${encodeURIComponent(i.id)}/file`,
+          downloadUrl:
+            i.download_url ||
+            `/api/groups/${encodeURIComponent(targetGroupId)}/media/${encodeURIComponent(i.id)}/download`,
+          isLosslessRaw: true,
+        }));
+
+        if (mapped.length > 0) {
+          setSharedHDMedia(mapped);
+          try {
+            localStorage.setItem(`trailoPS_media_vault_${targetGroupId}`, JSON.stringify(mapped));
+          } catch {}
+        }
+      }
+    } catch {}
+  };
 
   const handleMediaFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -292,6 +335,8 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
 
     const uploadedItems: any[] = [];
     let processed = 0;
+    const targetGroupId = activeSquad?.id || localStorage.getItem('trailoPS_active_squad_id') || 'default';
+    const targetUserId = currentUserId || localStorage.getItem('trailoPS_currentUserId') || 'user_self';
 
     for (const file of uniqueFiles) {
       processed++;
@@ -299,50 +344,30 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
       setUploadProgress(currentPct);
       setUploadStatus(`Uploading "${file.name}" to private encrypted vault (${processed}/${uniqueFiles.length})...`);
 
-      if (activeSquad?.id && currentUserId) {
-        try {
-          const res = await uploadMediaToVault({
-            groupId: activeSquad.id,
-            uploaderId: currentUserId,
-            uploaderName: currentUserName,
-            file,
-          });
+      try {
+        const res = await uploadMediaToVault({
+          groupId: targetGroupId,
+          uploaderId: targetUserId,
+          uploaderName: currentUserName || 'Squad Member',
+          file,
+        });
 
-          if (res.success && res.item) {
-            uploadedItems.push({
-              id: res.item.id,
-              title: res.item.file_name,
-              type: res.item.mime_type.startsWith('video') ? 'video' : 'photo',
-              resolution: res.item.resolution || '4K Original',
-              size: `${(res.item.file_size / (1024 * 1024)).toFixed(1)} MB`,
-              format: res.item.mime_type.split('/')[1]?.toUpperCase() || 'RAW',
-              author: res.item.uploader_name,
-              timestamp: 'Just now',
-              altitude: 'Mountain Trail',
-              url: res.item.signed_url || URL.createObjectURL(file),
-              isLosslessRaw: true,
-            });
-          } else {
-            // Local fallback for offline / unconfigured bucket
-            const url = URL.createObjectURL(file);
-            uploadedItems.push({
-              id: Date.now().toString() + Math.random().toString(),
-              title: file.name,
-              type: file.type.startsWith('video') ? 'video' : 'photo',
-              resolution: 'Original Resolution',
-              size: `${(file.size / (1024 * 1024)).toFixed(1)} MB`,
-              format: file.type.split('/')[1]?.toUpperCase() || 'RAW',
-              author: `${currentUserName} (You)`,
-              timestamp: 'Just now',
-              altitude: 'Expedition Trail',
-              url,
-              isLosslessRaw: true,
-            });
-            if (res.error) {
-              onShowToast(`Saved locally: ${res.error}`);
-            }
-          }
-        } catch (err: any) {
+        if (res.success && res.item) {
+          uploadedItems.push({
+            id: res.item.id,
+            title: res.item.file_name,
+            type: res.item.mime_type.startsWith('video') ? 'video' : 'photo',
+            resolution: res.item.resolution || '4K Original',
+            size: `${Math.max(0.1, res.item.file_size / (1024 * 1024)).toFixed(1)} MB`,
+            format: res.item.mime_type.split('/')[1]?.toUpperCase() || 'RAW',
+            author: res.item.uploader_name,
+            timestamp: 'Just now',
+            altitude: 'Mountain Trail',
+            url: res.item.signed_url || `/api/groups/${encodeURIComponent(targetGroupId)}/media/${encodeURIComponent(res.item.id)}/file`,
+            downloadUrl: res.item.download_url || `/api/groups/${encodeURIComponent(targetGroupId)}/media/${encodeURIComponent(res.item.id)}/download`,
+            isLosslessRaw: true,
+          });
+        } else {
           const url = URL.createObjectURL(file);
           uploadedItems.push({
             id: Date.now().toString() + Math.random().toString(),
@@ -355,10 +380,14 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
             timestamp: 'Just now',
             altitude: 'Expedition Trail',
             url,
+            downloadUrl: url,
             isLosslessRaw: true,
           });
+          if (res.error) {
+            onShowToast(`Saved locally: ${res.error}`);
+          }
         }
-      } else {
+      } catch {
         const url = URL.createObjectURL(file);
         uploadedItems.push({
           id: Date.now().toString() + Math.random().toString(),
@@ -371,6 +400,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
           timestamp: 'Just now',
           altitude: 'Expedition Trail',
           url,
+          downloadUrl: url,
           isLosslessRaw: true,
         });
       }
@@ -379,13 +409,11 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
     setUploadProgress(100);
     setUploadStatus('Upload complete and verified!');
 
-    const updatedList = [...uploadedItems, ...sharedHDMedia];
+    const updatedList = [...uploadedItems, ...sharedHDMedia.filter((m) => !uploadedItems.some((u) => u.id === m.id))];
     setSharedHDMedia(updatedList);
 
-    // Persist cache locally
     try {
-      const squadKey = activeSquad?.id || 'default';
-      localStorage.setItem(`trailoPS_media_vault_${squadKey}`, JSON.stringify(updatedList));
+      localStorage.setItem(`trailoPS_media_vault_${targetGroupId}`, JSON.stringify(updatedList));
     } catch {}
 
     setTimeout(() => {
@@ -400,43 +428,20 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
 
     if (uploadedItems.length > 0) {
       onShowToast(`Successfully saved ${uploadedItems.length} media file(s) to Squad Vault!`);
+      syncMediaVaultFromServer();
     }
   };
 
   useEffect(() => {
-    if (activeSquad?.id) {
-      fetchGroupMediaVault(activeSquad.id).then((items) => {
-        if (items && items.length > 0) {
-          const mapped = items.map((i) => ({
-            id: i.id,
-            title: i.file_name,
-            type: i.mime_type.startsWith('video') ? ('video' as const) : ('photo' as const),
-            resolution: i.resolution || '4K UHD',
-            size: `${(i.file_size / (1024 * 1024)).toFixed(1)} MB`,
-            format: i.mime_type.split('/')[1]?.toUpperCase() || 'RAW',
-            author: i.uploader_name,
-            timestamp: new Date(i.created_at).toLocaleDateString(),
-            altitude: 'Mountain Trail',
-            url: i.signed_url || '',
-            isLosslessRaw: true,
-          }));
-
-          setSharedHDMedia((prev) => {
-            const combined = [...mapped];
-            for (const p of prev) {
-              if (!combined.some((c) => c.title === p.title)) {
-                combined.push(p);
-              }
-            }
-            try {
-              localStorage.setItem(`trailoPS_media_vault_${activeSquad.id}`, JSON.stringify(combined));
-            } catch {}
-            return combined;
-          });
-        }
-      });
-    }
-  }, [activeSquad?.id]);
+    syncMediaVaultFromServer();
+    const interval = setInterval(syncMediaVaultFromServer, 3500);
+    const handleVaultUpdate = () => syncMediaVaultFromServer();
+    window.addEventListener('trailoPS_media_vault_updated', handleVaultUpdate);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('trailoPS_media_vault_updated', handleVaultUpdate);
+    };
+  }, [activeSquad?.id, currentUserId]);
 
   // Edit Group Form state
   const [editFromLocation, setEditFromLocation] = useState('');
@@ -764,6 +769,25 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
             currentUserName ||
             'Member';
 
+          let computedStatus: 'present' | 'missing' =
+            m.status === 'distress' || m.status === 'standby' ? 'missing' : 'present';
+          try {
+            const rawRc = localStorage.getItem(`trailoPS_active_rollcall_${activeSquad.id}`);
+            if (rawRc) {
+              const rc = JSON.parse(rawRc);
+              if (rc && Array.isArray(rc.presentUserIds)) {
+                if (rc.presentUserIds.includes(m.user_id)) {
+                  computedStatus = 'present';
+                } else if (
+                  (Array.isArray(rc.deniedUserIds) && rc.deniedUserIds.includes(m.user_id)) ||
+                  rc.sessionId
+                ) {
+                  computedStatus = 'missing';
+                }
+              }
+            }
+          } catch {}
+
           return {
             id: m.user_id,
             name: resolvedName,
@@ -774,7 +798,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                 ? 'Sub-Admin'
                 : 'Expedition Member',
             roleHierarchy: (m.role === 'admin' ? 'subgroup_admin' : m.role) as any,
-            status: m.status === 'distress' ? 'missing' : 'present',
+            status: computedStatus,
             avatar:
               m.profile?.avatar_url ||
               (isMe ? currentUserAvatar : '') ||
@@ -1019,7 +1043,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
   const totalCount = members.length || 1;
   const confirmedRate = Math.round((presentCount / totalCount) * 100);
 
-  // Super Admin Live Roll Call Session State (synchronized across all devices)
+  // Super Admin Live Roll Call Session State (synchronized across all devices via Server & Realtime)
   const rollCallKey = `trailoPS_active_rollcall_${squadKey}`;
   const [rollCallSession, setRollCallSession] = useState<{
     sessionId: string;
@@ -1027,6 +1051,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
     startedAt: string;
     startedBy: string;
     presentUserIds: string[];
+    deniedUserIds?: string[];
   } | null>(() => {
     const saved = localStorage.getItem(rollCallKey);
     if (saved) {
@@ -1038,6 +1063,27 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
     return null;
   });
 
+  const applyRollCallToMembers = (sessionData: {
+    sessionId?: string;
+    active?: boolean;
+    presentUserIds?: string[];
+    deniedUserIds?: string[];
+  } | null) => {
+    if (!sessionData || !Array.isArray(sessionData.presentUserIds)) return;
+    setMembers((prev) => {
+      const next = prev.map((m) => ({
+        ...m,
+        status: sessionData.presentUserIds!.includes(m.id)
+          ? ('present' as const)
+          : ('missing' as const),
+      }));
+      try {
+        localStorage.setItem('trailoPS_squad_members', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  };
+
   useEffect(() => {
     const syncRollCall = () => {
       const saved = localStorage.getItem(rollCallKey);
@@ -1046,72 +1092,156 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
           const parsed = JSON.parse(saved);
           if (parsed && typeof parsed === 'object') {
             setRollCallSession(parsed);
+            applyRollCallToMembers(parsed);
           }
         } catch {}
       } else {
         setRollCallSession(null);
       }
     };
+
+    const pollServerRollCall = async () => {
+      if (!hasJoinedGroup || !activeSquad?.id) return;
+      const state = await fetchSquadLiveState(activeSquad.id, currentUserId);
+      if (state?.activeRollCall) {
+        setRollCallSession(state.activeRollCall);
+        localStorage.setItem(rollCallKey, JSON.stringify(state.activeRollCall));
+        applyRollCallToMembers(state.activeRollCall);
+      }
+    };
+
+    pollServerRollCall();
+    const interval = setInterval(pollServerRollCall, 2000);
     window.addEventListener('storage', syncRollCall);
     window.addEventListener('trailoPS_rollcall_sync', syncRollCall);
     return () => {
+      clearInterval(interval);
       window.removeEventListener('storage', syncRollCall);
       window.removeEventListener('trailoPS_rollcall_sync', syncRollCall);
     };
-  }, [rollCallKey]);
+  }, [rollCallKey, hasJoinedGroup, activeSquad?.id, currentUserId]);
 
   const liveActive = !!rollCallSession?.active;
-  const rollCallPresentCount = liveActive
-    ? rollCallSession.presentUserIds.length
+  const hasRollCallData = Boolean(rollCallSession && Array.isArray(rollCallSession.presentUserIds));
+  const rollCallPresentCount = hasRollCallData
+    ? rollCallSession!.presentUserIds.length
     : presentCount;
-  const rollCallPendingCount = Math.max(0, members.length - rollCallPresentCount);
-  const isCurrentUserMarkedPresent = liveActive
-    ? rollCallSession.presentUserIds.includes(currentUserId || '1')
+  const rollCallDeniedCount = hasRollCallData
+    ? (rollCallSession!.deniedUserIds || []).length
+    : 0;
+  const rollCallPendingCount = liveActive
+    ? Math.max(0, members.length - rollCallPresentCount - rollCallDeniedCount)
+    : Math.max(0, members.length - rollCallPresentCount);
+  const isCurrentUserMarkedPresent = hasRollCallData
+    ? rollCallSession!.presentUserIds.includes(currentUserId || '1')
     : members.find((m) => m.id === (currentUserId || '1'))?.status === 'present';
+  const isCurrentUserMarkedDenied = Boolean(
+    rollCallSession?.deniedUserIds?.includes(currentUserId || '1')
+  );
 
-  const handleStartRollCall = () => {
+  const handleStartRollCall = async () => {
     const myId = currentUserId || '1';
+    const startedAt = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const sessionId = `rc-${Date.now()}`;
     const newSession = {
-      sessionId: `rc-${Date.now()}`,
+      sessionId,
       active: true,
-      startedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      startedAt,
       startedBy: currentUserName || 'Squad Commander',
       presentUserIds: [myId],
+      deniedUserIds: [],
     };
     setRollCallSession(newSession);
     localStorage.setItem(rollCallKey, JSON.stringify(newSession));
+    applyRollCallToMembers(newSession);
     window.dispatchEvent(new CustomEvent('trailoPS_rollcall_sync', { detail: newSession }));
-    onShowToast('📢 Live Roll Call started! Alert notification sent to all squad members.');
+
+    onShowToast('📢 Live Roll Call started! Notification & popup sent to all squad members.');
+    const res = await startSquadRollCall(squadKey, {
+      userId: myId,
+      startedBy: currentUserName || 'Squad Commander',
+      startedAt,
+      sessionId,
+    });
+    if (res.success && res.session) {
+      setRollCallSession(res.session);
+      localStorage.setItem(rollCallKey, JSON.stringify(res.session));
+      applyRollCallToMembers(res.session);
+    }
   };
 
-  const handleEndRollCall = () => {
+  const handleEndRollCall = async () => {
     if (!rollCallSession) return;
-    const closedSession = { ...rollCallSession, active: false };
+    const closedSession = {
+      ...rollCallSession,
+      active: false,
+      deniedUserIds: rollCallSession.deniedUserIds || [],
+    };
     setRollCallSession(closedSession);
     localStorage.setItem(rollCallKey, JSON.stringify(closedSession));
+    applyRollCallToMembers(closedSession);
     window.dispatchEvent(new CustomEvent('trailoPS_rollcall_sync', { detail: closedSession }));
-    onShowToast(`Roll call closed. Final attendance: ${rollCallPresentCount} Present, ${rollCallPendingCount} Pending.`);
+
+    await endSquadRollCall(squadKey, currentUserId);
+    await syncSquadMembersList();
+    onShowToast(
+      `Roll call ended & overview refreshed: ${rollCallPresentCount} Present, ${rollCallDeniedCount} Denied, ${rollCallPendingCount} Absent.`
+    );
   };
 
-  const handleMarkPresent = (uid?: string) => {
+  const handleMarkPresent = async (uid?: string) => {
     const targetId = uid || currentUserId || '1';
-    if (!rollCallSession || !rollCallSession.active) return;
-    if (!rollCallSession.presentUserIds.includes(targetId)) {
-      const updated = {
-        ...rollCallSession,
-        presentUserIds: [...rollCallSession.presentUserIds, targetId],
-      };
-      setRollCallSession(updated);
-      localStorage.setItem(rollCallKey, JSON.stringify(updated));
-      window.dispatchEvent(new CustomEvent('trailoPS_rollcall_sync', { detail: updated }));
+    if (!rollCallSession) return;
+    const nextPresent = Array.from(new Set([...(rollCallSession.presentUserIds || []), targetId]));
+    const nextDenied = (rollCallSession.deniedUserIds || []).filter((id) => id !== targetId);
+    const updated = {
+      ...rollCallSession,
+      presentUserIds: nextPresent,
+      deniedUserIds: nextDenied,
+    };
+    setRollCallSession(updated);
+    localStorage.setItem(rollCallKey, JSON.stringify(updated));
+    applyRollCallToMembers(updated);
+    window.dispatchEvent(new CustomEvent('trailoPS_rollcall_sync', { detail: updated }));
+    onShowToast('✓ Attendance confirmed! You are marked Present.');
 
-      setMembers((prev) => {
-        const next = prev.map((m) => (m.id === targetId ? { ...m, status: 'present' as const } : m));
-        localStorage.setItem('trailoPS_squad_members', JSON.stringify(next));
-        return next;
-      });
-      window.dispatchEvent(new CustomEvent('trailoPS_members_updated'));
-      onShowToast('✓ Attendance confirmed! You are marked Present.');
+    const res = await respondSquadRollCall(squadKey, {
+      userId: targetId,
+      userName: currentUserName,
+      response: 'present',
+    });
+    if (res.success && res.session) {
+      setRollCallSession(res.session);
+      localStorage.setItem(rollCallKey, JSON.stringify(res.session));
+      applyRollCallToMembers(res.session);
+    }
+  };
+
+  const handleDenyRollCall = async (uid?: string) => {
+    const targetId = uid || currentUserId || '1';
+    if (!rollCallSession) return;
+    const nextDenied = Array.from(new Set([...(rollCallSession.deniedUserIds || []), targetId]));
+    const nextPresent = (rollCallSession.presentUserIds || []).filter((id) => id !== targetId);
+    const updated = {
+      ...rollCallSession,
+      presentUserIds: nextPresent,
+      deniedUserIds: nextDenied,
+    };
+    setRollCallSession(updated);
+    localStorage.setItem(rollCallKey, JSON.stringify(updated));
+    applyRollCallToMembers(updated);
+    window.dispatchEvent(new CustomEvent('trailoPS_rollcall_sync', { detail: updated }));
+    onShowToast('✕ You marked Deny (Not Present) for this attendance roll call.');
+
+    const res = await respondSquadRollCall(squadKey, {
+      userId: targetId,
+      userName: currentUserName,
+      response: 'deny',
+    });
+    if (res.success && res.session) {
+      setRollCallSession(res.session);
+      localStorage.setItem(rollCallKey, JSON.stringify(res.session));
+      applyRollCallToMembers(res.session);
     }
   };
 
@@ -1182,7 +1312,10 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
       {hasJoinedGroup && activeSquad && (
         <div className="relative w-full h-48 overflow-hidden border-b border-slate-200">
           <img
-            src={coverBg}
+            src={
+              coverBg ||
+              'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=1000&q=80'
+            }
             alt="Trip Cover Background"
             className="w-full h-full object-cover transition-all duration-500 brightness-75"
           />
@@ -1689,7 +1822,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
 
               {/* Check-In Button / Commander Live Roll Call Controls */}
               <div className="mt-3.5 space-y-2">
-                {userRole === 'super_admin' ? (
+                {userRole === 'super_admin' || userRole === 'admin' || userRole === 'subgroup_admin' || userRole === 'faculty' ? (
                   !liveActive ? (
                     <button
                       type="button"
@@ -1700,7 +1833,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                       <span>Start Attendance</span>
                     </button>
                   ) : (
-                    <div className="p-3 bg-emerald-50 border-2 border-emerald-500 rounded-2xl space-y-2">
+                    <div className="p-3.5 bg-emerald-50 border-2 border-emerald-500 rounded-2xl space-y-3">
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
                           <span className="w-2.5 h-2.5 rounded-full bg-emerald-600 animate-ping" />
@@ -1709,9 +1842,26 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                           </span>
                         </div>
                         <span className="text-[10px] font-bold text-emerald-800 bg-emerald-200/60 px-2 py-0.5 rounded-full">
-                          Super Admin
+                          Real-Time Sync
                         </span>
                       </div>
+
+                      {/* Real-Time Attendance Count Bar for Commander */}
+                      <div className="grid grid-cols-3 gap-2">
+                        <div className="p-2 rounded-xl bg-white border border-emerald-200 text-center">
+                          <span className="text-[10px] font-bold text-emerald-800 uppercase block">Present</span>
+                          <span className="text-lg font-black text-emerald-700">{rollCallPresentCount}</span>
+                        </div>
+                        <div className="p-2 rounded-xl bg-white border border-rose-200 text-center">
+                          <span className="text-[10px] font-bold text-rose-800 uppercase block">Denied</span>
+                          <span className="text-lg font-black text-rose-600">{rollCallDeniedCount}</span>
+                        </div>
+                        <div className="p-2 rounded-xl bg-white border border-amber-200 text-center">
+                          <span className="text-[10px] font-bold text-amber-800 uppercase block">Pending</span>
+                          <span className="text-lg font-black text-amber-600">{rollCallPendingCount}</span>
+                        </div>
+                      </div>
+
                       <div className="flex gap-2">
                         {!isCurrentUserMarkedPresent ? (
                           <button
@@ -1720,46 +1870,88 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                             className="flex-1 py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm active:scale-95 transition-all cursor-pointer"
                           >
                             <CheckCircle2 className="w-4 h-4" />
-                            <span>I Am Present</span>
+                            <span>Present</span>
                           </button>
                         ) : (
                           <div className="flex-1 py-2.5 px-3 rounded-xl bg-emerald-100 text-[#0f5238] text-xs font-bold flex items-center justify-center gap-1.5 border border-emerald-300">
                             <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                            <span>✓ You Are Marked Present</span>
+                            <span>✓ You Are Present</span>
                           </div>
                         )}
                         <button
                           type="button"
                           onClick={handleEndRollCall}
-                          className="py-2.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold transition-all active:scale-95 cursor-pointer shadow-xs"
+                          className="py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition-all active:scale-95 cursor-pointer shadow-xs"
                         >
                           End Roll Call
                         </button>
                       </div>
                     </div>
                   )
-                ) : (
-                  liveActive ? (
-                    !isCurrentUserMarkedPresent ? (
-                      <button
-                        type="button"
-                        onClick={() => handleMarkPresent()}
-                        className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-emerald-600 via-teal-600 to-[#0f5238] text-white text-xs sm:text-sm font-black flex items-center justify-center gap-2 shadow-lg shadow-emerald-700/30 active:scale-95 transition-all cursor-pointer animate-pulse"
-                      >
-                        <CheckCircle2 className="w-5 h-5 fill-white text-emerald-700" />
-                        <span>I AM PRESENT (Confirm Attendance)</span>
-                      </button>
-                    ) : (
-                      <div className="w-full py-3 px-4 rounded-2xl bg-emerald-100 border-2 border-emerald-500 text-[#0f5238] text-xs sm:text-sm font-bold flex items-center justify-center gap-2 shadow-xs">
-                        <CheckCircle2 className="w-5 h-5 text-emerald-600" />
-                        <span>YOU ARE MARKED PRESENT (Confirmed by Commander)</span>
-                      </div>
-                    )
-                  ) : (
-                    <div className="w-full py-2.5 px-3 rounded-2xl bg-slate-100 border border-slate-200 text-slate-600 text-xs text-center font-medium">
-                      Awaiting Squad Commander to initiate live attendance roll call.
+                ) : liveActive ? (
+                  <div className="p-3 bg-emerald-50/90 border-2 border-emerald-500 rounded-2xl space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-black text-emerald-950 flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-emerald-600 animate-ping" />
+                        Live Attendance Check-In ({rollCallSession?.startedAt})
+                      </span>
+                      <span className="text-[10px] font-bold text-emerald-800">
+                        {rollCallPresentCount} Present · {rollCallDeniedCount} Denied
+                      </span>
                     </div>
-                  )
+                    {isCurrentUserMarkedPresent ? (
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex-1 py-2.5 px-3 rounded-xl bg-emerald-100 border border-emerald-400 text-[#0f5238] text-xs font-bold flex items-center justify-center gap-1.5">
+                          <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                          <span>✓ Marked Present</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleDenyRollCall()}
+                          className="py-2.5 px-3 rounded-xl bg-rose-100 hover:bg-rose-200 text-rose-800 text-xs font-bold transition-colors cursor-pointer"
+                        >
+                          Change to Deny
+                        </button>
+                      </div>
+                    ) : isCurrentUserMarkedDenied ? (
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex-1 py-2.5 px-3 rounded-xl bg-rose-100 border border-rose-400 text-rose-900 text-xs font-bold flex items-center justify-center gap-1.5">
+                          <XCircle className="w-4 h-4 text-rose-600" />
+                          <span>✕ Marked Denied</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleMarkPresent()}
+                          className="py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-colors cursor-pointer"
+                        >
+                          Change to Present
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleMarkPresent()}
+                          className="py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black flex items-center justify-center gap-1.5 shadow-md active:scale-95 transition-all cursor-pointer"
+                        >
+                          <CheckCircle2 className="w-4 h-4" />
+                          <span>Present</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDenyRollCall()}
+                          className="py-3 px-4 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-black flex items-center justify-center gap-1.5 shadow-md active:scale-95 transition-all cursor-pointer"
+                        >
+                          <XCircle className="w-4 h-4" />
+                          <span>Deny</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="w-full py-2.5 px-3 rounded-2xl bg-slate-100 border border-slate-200 text-slate-600 text-xs text-center font-medium">
+                    Awaiting Squad Commander to initiate live attendance roll call.
+                  </div>
                 )}
               </div>
             </section>
@@ -1847,11 +2039,19 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                         : 'bg-amber-50/80 border-amber-200/80'
                     }`}
                   >
-                    <span className="text-[11px] text-amber-800 font-semibold block">Awaiting Response</span>
-                    <span className="text-xl text-amber-700 font-extrabold">{rollCallPendingCount}</span>
+                    <span className="text-[11px] text-amber-800 font-semibold block">
+                      {liveActive ? 'Denied / Pending' : 'Absent / Denied'}
+                    </span>
+                    <span className="text-xl text-amber-700 font-extrabold">
+                      {rollCallDeniedCount + rollCallPendingCount}
+                    </span>
                     <div className="flex items-center text-[10px] text-amber-700 font-semibold mt-0.5">
                       <Clock className="w-3 h-3 mr-0.5" />
-                      <span>Awaiting</span>
+                      <span>
+                        {rollCallDeniedCount > 0
+                          ? `${rollCallDeniedCount} Denied · ${rollCallPendingCount} Pending`
+                          : `${rollCallPendingCount} Awaiting`}
+                      </span>
                     </div>
                   </div>
                 </div>
@@ -1909,7 +2109,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                       : 'bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100'
                   }`}
                 >
-                  Present ({presentCount})
+                  Present ({rollCallPresentCount})
                 </button>
                 <button
                   type="button"
@@ -1920,7 +2120,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                       : 'bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100'
                   }`}
                 >
-                  Absent ({missingCount})
+                  Absent ({rollCallDeniedCount + rollCallPendingCount})
                 </button>
               </div>
 
@@ -2073,7 +2273,10 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                     >
                       <div className="relative shrink-0">
                         <img
-                          src={member.avatar}
+                          src={
+                            member.avatar ||
+                            'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=120&q=80'
+                          }
                           alt={member.name}
                           className="w-8 h-8 rounded-full object-cover border border-slate-200"
                         />
@@ -2182,7 +2385,10 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                             key={idx}
                             alt="Teammate"
                             className="w-7 h-7 rounded-full object-cover ring-2 ring-white"
-                            src={av}
+                            src={
+                              av ||
+                              'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=120&q=80'
+                            }
                           />
                         ))}
                         <span className="w-7 h-7 rounded-full bg-emerald-100 text-emerald-800 text-[10px] flex items-center justify-center ring-2 ring-white font-bold">
@@ -2312,7 +2518,10 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                             <img
                               alt={m.name}
                               className="w-9 h-9 rounded-full object-cover"
-                              src={m.avatar}
+                              src={
+                                m.avatar ||
+                                'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=120&q=80'
+                              }
                             />
                             <span
                               className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-white ${
@@ -2645,7 +2854,14 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                         }`}
                       >
                         <div className="flex items-center gap-2">
-                          <img src={m.avatar} alt={m.name} className="w-5 h-5 rounded-full object-cover" />
+                          <img
+                            src={
+                              m.avatar ||
+                              'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=120&q=80'
+                            }
+                            alt={m.name}
+                            className="w-5 h-5 rounded-full object-cover"
+                          />
                           <span className="font-semibold text-slate-800 text-[11px]">{m.name}</span>
                         </div>
                         <div className={`w-4 h-4 rounded-md border flex items-center justify-center ${
@@ -3130,7 +3346,14 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                 {members.map((m) => (
                   <div key={m.id} className="p-2.5 rounded-xl border border-slate-200 bg-white flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <img src={m.avatar} alt={m.name} className="w-7 h-7 rounded-full object-cover" />
+                      <img
+                        src={
+                          m.avatar ||
+                          'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=120&q=80'
+                        }
+                        alt={m.name}
+                        className="w-7 h-7 rounded-full object-cover"
+                      />
                       <div>
                         <p className="text-xs font-bold text-slate-900 leading-tight">{m.name}</p>
                         <span className={`text-[9px] font-extrabold px-1.5 py-0.5 rounded-md inline-block mt-0.5 ${
@@ -3901,16 +4124,21 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                     {/* Media Preview Box */}
                     <div className="relative h-44 w-full overflow-hidden bg-slate-950 group">
                       {media.type === 'video' ? (
-                        <video
-                          src={media.url}
-                          controls
-                          playsInline
-                          poster="https://images.unsplash.com/photo-1486870591958-9b9d0d1dda99?auto=format&fit=crop&w=1200&q=95"
-                          className="w-full h-full object-cover"
-                        />
+                        media.url ? (
+                          <video
+                            src={media.url}
+                            controls
+                            playsInline
+                            poster="https://images.unsplash.com/photo-1486870591958-9b9d0d1dda99?auto=format&fit=crop&w=1200&q=95"
+                            className="w-full h-full object-cover"
+                          />
+                        ) : null
                       ) : (
                         <img
-                          src={media.url}
+                          src={
+                            media.url ||
+                            'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=1000&q=80'
+                          }
                           alt={media.title}
                           className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
                         />
@@ -3952,14 +4180,22 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                       <div className="flex items-center gap-1.5 shrink-0">
                         <button
                           type="button"
-                          onClick={() => {
-                            onShowToast(`Downloading original uncompressed file: ${media.title} (${media.size})`);
+                          onClick={async () => {
+                            onShowToast(`Downloading "${media.title}" (${media.size}) to your phone...`);
+                            const res = await downloadMediaVaultFile({
+                              url: media.url,
+                              downloadUrl: (media as any).downloadUrl,
+                              fileName: media.title,
+                            });
+                            if (!res.success && res.error) {
+                              onShowToast(`Download error: ${res.error}`);
+                            }
                           }}
                           className="px-2.5 py-1 rounded-lg bg-[#0f5238] hover:bg-[#166534] text-white text-[10px] font-bold flex items-center gap-1 transition-all cursor-pointer shadow-2xs active:scale-95"
-                          title="Download Uncompressed Original RAW"
+                          title="Download Uncompressed Original File"
                         >
                           <Download className="w-3 h-3" />
-                          <span>Original RAW</span>
+                          <span>Download</span>
                         </button>
 
                         <button
@@ -3975,16 +4211,17 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
 
                         <button
                           type="button"
-                          onClick={() => {
-                            if (window.confirm(`Delete "${media.title}" from the squad media vault?`)) {
-                              setSharedHDMedia((prev) => {
-                                const next = prev.filter((m) => m.id !== media.id);
-                                const squadKey = activeSquad?.id || 'default';
-                                localStorage.setItem(`trailoPS_shared_hd_media_${squadKey}`, JSON.stringify(next));
-                                return next;
-                              });
-                              onShowToast(`Deleted ${media.title} from media vault.`);
-                            }
+                          onClick={async () => {
+                            const targetGroupId = activeSquad?.id || 'default';
+                            setSharedHDMedia((prev) => {
+                              const next = prev.filter((m) => m.id !== media.id);
+                              try {
+                                localStorage.setItem(`trailoPS_media_vault_${targetGroupId}`, JSON.stringify(next));
+                              } catch {}
+                              return next;
+                            });
+                            await deleteMediaFromVault(targetGroupId, media.id, currentUserId);
+                            onShowToast(`Deleted "${media.title}" from squad media vault.`);
                           }}
                           className="flex items-center gap-1 px-2 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-[10px] font-bold transition-all cursor-pointer shadow-2xs active:scale-95"
                           title="Delete media file from vault"
@@ -4122,7 +4359,10 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                       >
                         <div className="relative shrink-0">
                           <img
-                            src={member.avatar}
+                            src={
+                              member.avatar ||
+                              'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=120&q=80'
+                            }
                             alt={member.name}
                             className="w-10 h-10 rounded-full object-cover ring-2 ring-slate-100"
                           />

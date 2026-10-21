@@ -25,12 +25,22 @@ import {
   Loader2,
 } from 'lucide-react';
 import { FacultyDocument, UserRole } from '../types';
+import {
+  fetchFacultyDriveDocuments,
+  uploadFacultyDriveDocument,
+  updateFacultyDriveDocumentStatus,
+  deleteFacultyDriveDocument,
+  downloadMediaVaultFile,
+} from '../lib/supabase';
 
 interface FacultyDriveModalProps {
   isOpen: boolean;
   onClose: () => void;
   userRole: UserRole;
   onShowToast: (message: string) => void;
+  groupId?: string;
+  currentUserId?: string;
+  currentUserName?: string;
 }
 
 export const FacultyDriveModal: React.FC<FacultyDriveModalProps> = ({
@@ -38,9 +48,26 @@ export const FacultyDriveModal: React.FC<FacultyDriveModalProps> = ({
   onClose,
   userRole,
   onShowToast,
+  groupId,
+  currentUserId,
+  currentUserName,
 }) => {
+  const effectiveGroupId = groupId || localStorage.getItem('trailoPS_active_squad_id') || 'default';
+  const effectiveUserId = currentUserId || localStorage.getItem('trailoPS_currentUserId') || 'user_self';
+  const effectiveUserName =
+    currentUserName ||
+    (() => {
+      try {
+        const p = JSON.parse(localStorage.getItem('trailoPS_profile_data') || '{}');
+        return p.fullName || '';
+      } catch {
+        return '';
+      }
+    })();
+
   const [activeCategory, setActiveCategory] = useState<'all' | 'ticket' | 'bill' | 'permit' | 'sop'>('all');
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
+  const [isUploadingDoc, setIsUploadingDoc] = useState(false);
   const [previewDoc, setPreviewDoc] = useState<FacultyDocument | null>(null);
   const [deleteConfirmDoc, setDeleteConfirmDoc] = useState<FacultyDocument | null>(null);
 
@@ -73,8 +100,9 @@ export const FacultyDriveModal: React.FC<FacultyDriveModalProps> = ({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Documents state - strictly initialized to saved storage or empty (ZERO mock/demo records)
+  const storageKey = `trailoPS_faculty_documents_${effectiveGroupId}`;
   const [documents, setDocuments] = useState<FacultyDocument[]>(() => {
-    const saved = localStorage.getItem('trailoPS_faculty_documents_v2');
+    const saved = localStorage.getItem(storageKey) || localStorage.getItem('trailoPS_faculty_documents_v2');
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
@@ -85,8 +113,50 @@ export const FacultyDriveModal: React.FC<FacultyDriveModalProps> = ({
   });
 
   useEffect(() => {
-    localStorage.setItem('trailoPS_faculty_documents_v2', JSON.stringify(documents));
-  }, [documents]);
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(documents));
+      localStorage.setItem('trailoPS_faculty_documents_v2', JSON.stringify(documents));
+    } catch {}
+  }, [documents, storageKey]);
+
+  const syncServerDocuments = async () => {
+    const serverDocs = await fetchFacultyDriveDocuments(effectiveGroupId, effectiveUserId);
+    if (Array.isArray(serverDocs)) {
+      setDocuments((prev) => {
+        const mapped: FacultyDocument[] = serverDocs.map((d: any) => ({
+          id: d.id,
+          name: d.name,
+          category: d.category,
+          uploadedBy: d.uploadedBy || 'Squad Member',
+          uploaderRole: d.uploaderRole || 'member',
+          date: d.date || new Date().toLocaleDateString(),
+          size: d.size || '1.0 MB',
+          status: d.status === 'pending' ? 'pending' : 'approved',
+          fileType: d.fileType === 'img' ? 'img' : 'pdf',
+          url: d.url,
+          notes: d.notes,
+          ...(d.downloadUrl ? { downloadUrl: d.downloadUrl } : {}),
+          ...(d.fileName ? { fileName: d.fileName } : {}),
+        }));
+        if (mapped.length > 0) {
+          return mapped;
+        }
+        return prev;
+      });
+    }
+  };
+
+  useEffect(() => {
+    if (!isOpen) return;
+    syncServerDocuments();
+    const interval = setInterval(syncServerDocuments, 3000);
+    const handleUpdate = () => syncServerDocuments();
+    window.addEventListener('trailoPS_faculty_drive_updated', handleUpdate);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('trailoPS_faculty_drive_updated', handleUpdate);
+    };
+  }, [isOpen, effectiveGroupId]);
 
   // Fetch real Google Drive files when connected
   const fetchDriveFiles = async (token: string) => {
@@ -237,30 +307,58 @@ export const FacultyDriveModal: React.FC<FacultyDriveModalProps> = ({
 
   const isSuperAdmin = userRole === 'super_admin' || (userRole as string) === 'faculty';
 
-  const handleApprove = (id: string, name: string) => {
+  const handleApprove = async (id: string, name: string) => {
     setDocuments((prev) =>
       prev.map((doc) => (doc.id === id ? { ...doc, status: 'approved' } : doc))
     );
-    onShowToast(`Approved: "${name}" is now active in Faculty Drive.`);
+    await updateFacultyDriveDocumentStatus(effectiveGroupId, id, 'approved');
+    onShowToast(`Approved: "${name}" is now active in Faculty Drive for all members.`);
   };
 
-  const handleReject = (id: string) => {
+  const handleReject = async (id: string) => {
     setDocuments((prev) => prev.filter((doc) => doc.id !== id));
+    await deleteFacultyDriveDocument(effectiveGroupId, id);
     onShowToast(`Document request rejected.`);
   };
 
-  const handleDeleteConfirmed = () => {
+  const handleDeleteConfirmed = async () => {
     if (!deleteConfirmDoc) return;
-    setDocuments((prev) => prev.filter((d) => d.id !== deleteConfirmDoc.id));
-    onShowToast(`Document "${deleteConfirmDoc.name}" removed.`);
+    const target = deleteConfirmDoc;
     setDeleteConfirmDoc(null);
+    setDocuments((prev) => prev.filter((d) => d.id !== target.id));
+    await deleteFacultyDriveDocument(effectiveGroupId, target.id);
+    onShowToast(`Document "${target.name}" removed from Faculty Drive.`);
+  };
+
+  const handleDownloadDocument = async (doc: FacultyDocument) => {
+    const downloadUrl =
+      (doc as any).downloadUrl ||
+      `/api/groups/${encodeURIComponent(effectiveGroupId)}/faculty-drive/${encodeURIComponent(doc.id)}/download`;
+    const fileUrl =
+      doc.url ||
+      `/api/groups/${encodeURIComponent(effectiveGroupId)}/faculty-drive/${encodeURIComponent(doc.id)}/file`;
+    const ext = doc.fileType === 'img' ? '.jpg' : '.pdf';
+    const fileName =
+      (doc as any).fileName ||
+      (doc.name.includes('.') ? doc.name : `${doc.name}${ext}`);
+
+    onShowToast(`Downloading "${doc.name}" to your device...`);
+    const res = await downloadMediaVaultFile({
+      url: fileUrl,
+      downloadUrl,
+      fileName,
+    });
+    if (!res.success && res.error) {
+      onShowToast(`Download error: ${res.error}`);
+    }
   };
 
   const handleCreateDocument = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!docName.trim()) return;
+    if (!docName.trim() || isUploadingDoc) return;
 
-    let cloudUrl = uploadedFileMeta?.url;
+    setIsUploadingDoc(true);
+    let externalUrl: string | undefined = undefined;
 
     // If connected to Google Drive and token is available, perform real upload
     if (isDriveConnected && googleAccessToken && selectedFile) {
@@ -285,29 +383,69 @@ export const FacultyDriveModal: React.FC<FacultyDriveModalProps> = ({
 
         if (uploadRes.ok) {
           const resData = await uploadRes.json();
-          cloudUrl = resData.webViewLink;
+          externalUrl = resData.webViewLink;
           onShowToast(`Uploaded directly to Google Drive!`);
         }
       } catch (err) {
-        console.warn('Direct Drive upload warning, saving to local vault:', err);
+        console.warn('Direct Drive upload warning, saving to squad vault:', err);
       }
     }
 
-    const newDoc: FacultyDocument = {
-      id: Date.now().toString(),
+    const uploaderDisplay =
+      effectiveUserName || (isSuperAdmin ? 'Faculty Lead' : 'Expedition Member');
+    const docStatus: 'approved' | 'pending' = isSuperAdmin ? 'approved' : 'pending';
+
+    const uploadResult = await uploadFacultyDriveDocument(effectiveGroupId, {
       name: docName.trim(),
       category: docCategory,
-      uploadedBy: isSuperAdmin ? 'Faculty Lead' : 'Expedition Member',
+      uploadedBy: uploaderDisplay,
+      uploaderId: effectiveUserId,
       uploaderRole: userRole,
-      date: new Date().toLocaleDateString(),
-      size: uploadedFileMeta?.size || '1.2 MB',
-      status: isSuperAdmin ? 'approved' : 'pending',
+      status: docStatus,
       fileType: uploadedFileMeta?.type || 'pdf',
-      url: cloudUrl,
+      size: uploadedFileMeta?.size || '1.2 MB',
       notes: docNotes.trim() || undefined,
-    };
+      externalUrl,
+      file: selectedFile,
+    });
 
-    setDocuments([newDoc, ...documents]);
+    if (uploadResult.success && uploadResult.document) {
+      const serverDoc = uploadResult.document;
+      const newDoc: FacultyDocument = {
+        id: serverDoc.id,
+        name: serverDoc.name,
+        category: serverDoc.category,
+        uploadedBy: serverDoc.uploadedBy || uploaderDisplay,
+        uploaderRole: serverDoc.uploaderRole || userRole,
+        date: serverDoc.date || new Date().toLocaleDateString(),
+        size: serverDoc.size || uploadedFileMeta?.size || '1.2 MB',
+        status: serverDoc.status || docStatus,
+        fileType: serverDoc.fileType || uploadedFileMeta?.type || 'pdf',
+        url: serverDoc.url,
+        notes: serverDoc.notes,
+        ...(serverDoc.downloadUrl ? { downloadUrl: serverDoc.downloadUrl } : {}),
+        ...(serverDoc.fileName ? { fileName: serverDoc.fileName } : {}),
+      } as FacultyDocument;
+
+      setDocuments((prev) => [newDoc, ...prev.filter((d) => d.id !== newDoc.id)]);
+    } else {
+      const fallbackDoc: FacultyDocument = {
+        id: Date.now().toString(),
+        name: docName.trim(),
+        category: docCategory,
+        uploadedBy: uploaderDisplay,
+        uploaderRole: userRole,
+        date: new Date().toLocaleDateString(),
+        size: uploadedFileMeta?.size || '1.2 MB',
+        status: docStatus,
+        fileType: uploadedFileMeta?.type || 'pdf',
+        url: uploadedFileMeta?.url,
+        notes: docNotes.trim() || undefined,
+      };
+      setDocuments((prev) => [fallbackDoc, ...prev]);
+    }
+
+    setIsUploadingDoc(false);
     setDocName('');
     setDocNotes('');
     setSelectedFile(null);
@@ -315,9 +453,9 @@ export const FacultyDriveModal: React.FC<FacultyDriveModalProps> = ({
     setIsUploadModalOpen(false);
 
     if (isSuperAdmin) {
-      onShowToast(`File "${newDoc.name}" published to Faculty Drive.`);
+      onShowToast(`File "${docName.trim()}" published to Faculty Drive for all squad members.`);
     } else {
-      onShowToast(`Upload request for "${newDoc.name}" submitted for approval.`);
+      onShowToast(`Upload request for "${docName.trim()}" submitted for approval.`);
     }
   };
 
@@ -624,13 +762,7 @@ export const FacultyDriveModal: React.FC<FacultyDriveModalProps> = ({
                     ) : (
                       <button
                         type="button"
-                        onClick={() => {
-                          if (doc.url) {
-                            window.open(doc.url, '_blank');
-                          } else {
-                            onShowToast(`Downloading "${doc.name}"...`);
-                          }
-                        }}
+                        onClick={() => handleDownloadDocument(doc)}
                         className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer"
                       >
                         <Download className="w-3.5 h-3.5" />
@@ -812,8 +944,16 @@ export const FacultyDriveModal: React.FC<FacultyDriveModalProps> = ({
               </button>
             </div>
 
-            <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100 text-center space-y-2">
-              <FileText className="w-12 h-12 text-emerald-700 mx-auto" />
+            <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100 text-center space-y-2 overflow-hidden">
+              {previewDoc.fileType === 'img' && previewDoc.url ? (
+                <img
+                  src={previewDoc.url}
+                  alt={previewDoc.name}
+                  className="max-h-48 w-full object-contain rounded-xl mx-auto"
+                />
+              ) : (
+                <FileText className="w-12 h-12 text-emerald-700 mx-auto" />
+              )}
               <div className="text-xs font-bold text-slate-800">{previewDoc.name}</div>
               <p className="text-[11px] text-slate-500">
                 {previewDoc.size} · {previewDoc.category.toUpperCase()} · Verified
@@ -830,33 +970,20 @@ export const FacultyDriveModal: React.FC<FacultyDriveModalProps> = ({
               <button
                 type="button"
                 onClick={() => setPreviewDoc(null)}
-                className="px-3 py-1.5 text-xs text-slate-500 hover:text-slate-800 font-medium"
+                className="px-3 py-1.5 text-xs text-slate-500 hover:text-slate-800 font-medium cursor-pointer"
               >
                 Close
               </button>
-              {previewDoc.url ? (
-                <a
-                  href={previewDoc.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="px-4 py-2 text-xs bg-emerald-700 hover:bg-emerald-800 text-white font-bold rounded-xl shadow-xs flex items-center gap-1"
-                >
-                  <ExternalLink className="w-3.5 h-3.5" />
-                  <span>Open in Drive</span>
-                </a>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => {
-                    onShowToast(`Downloading "${previewDoc.name}"...`);
-                    setPreviewDoc(null);
-                  }}
-                  className="px-4 py-2 text-xs bg-emerald-700 hover:bg-emerald-800 text-white font-bold rounded-xl shadow-xs flex items-center gap-1"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>Download</span>
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={() => {
+                  handleDownloadDocument(previewDoc);
+                }}
+                className="px-4 py-2 text-xs bg-emerald-700 hover:bg-emerald-800 text-white font-bold rounded-xl shadow-xs flex items-center gap-1 cursor-pointer"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Download to Phone</span>
+              </button>
             </div>
           </div>
         </div>

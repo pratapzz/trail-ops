@@ -65,7 +65,10 @@ export const Header: React.FC<HeaderProps> = ({
           >
             <div className="w-9 h-9 rounded-full overflow-hidden ring-2 ring-emerald-500/30 bg-slate-100 flex items-center justify-center shadow-xs hover:ring-emerald-500 transition-all">
               <img
-                src={avatarUrl}
+                src={
+                  avatarUrl ||
+                  'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=200&q=80'
+                }
                 alt="Expedition Member"
                 className="w-full h-full object-cover"
               />

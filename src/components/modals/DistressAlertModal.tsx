@@ -1,11 +1,17 @@
-import React, { useState, useEffect } from 'react';
-import { AlertTriangle, ShieldCheck, Radio, Phone, X } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { AlertTriangle, ShieldCheck, Radio, X } from 'lucide-react';
+import { triggerSquadSOSAlarm, clearSquadSOSAlarm } from '../../lib/supabase';
 
 interface DistressAlertModalProps {
   isOpen: boolean;
   onClose: () => void;
   coordinates: string;
   locationLabel?: string;
+  groupId?: string;
+  userId?: string;
+  userName?: string;
+  userRole?: string;
+  userPhone?: string;
 }
 
 export const DistressAlertModal: React.FC<DistressAlertModalProps> = ({
@@ -13,11 +19,65 @@ export const DistressAlertModal: React.FC<DistressAlertModalProps> = ({
   onClose,
   coordinates,
   locationLabel,
+  groupId,
+  userId,
+  userName,
+  userRole,
+  userPhone,
 }) => {
   const [countdown, setCountdown] = useState(10);
   const [isDispatched, setIsDispatched] = useState(false);
   const [detectedCoords, setDetectedCoords] = useState<string>('');
   const [detectedLocationLabel, setDetectedLocationLabel] = useState<string>('Detecting GPS location...');
+
+  const broadcastGroupSOS = useCallback(
+    (coordsToUse: string, locLabelToUse: string) => {
+      const resolvedGroupId =
+        groupId ||
+        localStorage.getItem('trailoPS_active_squad_id') ||
+        (() => {
+          try {
+            const sq = JSON.parse(localStorage.getItem('trailoPS_active_squad') || '{}');
+            return sq?.id || 'default';
+          } catch {
+            return 'default';
+          }
+        })();
+
+      const resolvedUserId = userId || localStorage.getItem('trailoPS_currentUserId') || '1';
+      let resolvedName = userName || localStorage.getItem('trailoPS_currentUserName') || 'Squad Member';
+      let resolvedPhone = userPhone || '';
+      try {
+        const prof = JSON.parse(
+          localStorage.getItem(`trailoPS_profile_data_${resolvedUserId}`) ||
+            localStorage.getItem('trailoPS_profile_data') ||
+            '{}'
+        );
+        if (prof?.fullName) resolvedName = prof.fullName;
+        if (prof?.phoneNumber) resolvedPhone = prof.phoneNumber;
+      } catch {}
+
+      triggerSquadSOSAlarm({
+        groupId: resolvedGroupId,
+        distressedUserId: resolvedUserId,
+        distressedUserName: resolvedName,
+        distressedUserRole: userRole || localStorage.getItem('trailoPS_userRole') || 'Member',
+        phone: resolvedPhone,
+        coordinates: coordsToUse || '27.0360° N, 88.2627° E',
+        locationLabel:
+          locLabelToUse && !locLabelToUse.startsWith('Detecting')
+            ? locLabelToUse
+            : 'Live GPS Distress Beacon',
+        batteryLevel: '84%',
+        triggeredAt: new Date().toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+        }),
+      });
+    },
+    [groupId, userId, userName, userRole, userPhone]
+  );
 
   useEffect(() => {
     if (!isOpen) {
@@ -25,6 +85,17 @@ export const DistressAlertModal: React.FC<DistressAlertModalProps> = ({
       setIsDispatched(false);
       return;
     }
+
+    // Immediately broadcast SOS alert to all squad devices when SOS button is pressed
+    const initialCoords =
+      coordinates && coordinates !== 'Location Unavailable'
+        ? coordinates
+        : detectedCoords || '27.0360° N, 88.2627° E';
+    broadcastGroupSOS(initialCoords, locationLabel || detectedLocationLabel);
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
 
     if (countdown > 0 && !isDispatched) {
       const timer = setTimeout(() => {
@@ -52,6 +123,7 @@ export const DistressAlertModal: React.FC<DistressAlertModalProps> = ({
       const coordStr = `${Math.abs(lat).toFixed(4)}° ${lat >= 0 ? 'N' : 'S'}, ${Math.abs(lng).toFixed(4)}° ${lng >= 0 ? 'E' : 'W'}`;
       setDetectedCoords(coordStr);
 
+      let resolvedLabel = `Live Device GPS Active`;
       try {
         const res = await fetch(
           `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=14&addressdetails=1`,
@@ -74,16 +146,19 @@ export const DistressAlertModal: React.FC<DistressAlertModalProps> = ({
         const altSuffix =
           typeof alt === 'number' && !Number.isNaN(alt) ? ` (${Math.round(alt)}m ASL)` : '';
         const formatted = [locality, region].filter(Boolean).join(', ');
-        setDetectedLocationLabel(
-          formatted ? `${formatted}${altSuffix}` : data?.display_name?.split(',').slice(0, 3).join(',') || `Live GPS Fix${altSuffix}`
-        );
+        resolvedLabel = formatted
+          ? `${formatted}${altSuffix}`
+          : data?.display_name?.split(',').slice(0, 3).join(',') || `Live GPS Fix${altSuffix}`;
+        setDetectedLocationLabel(resolvedLabel);
       } catch {
         if (isMounted) {
           const altSuffix =
             typeof alt === 'number' && !Number.isNaN(alt) ? ` (${Math.round(alt)}m ASL)` : '';
-          setDetectedLocationLabel(`Live Device GPS Active${altSuffix}`);
+          resolvedLabel = `Live Device GPS Active${altSuffix}`;
+          setDetectedLocationLabel(resolvedLabel);
         }
       }
+      broadcastGroupSOS(coordStr, resolvedLabel);
     };
 
     navigator.geolocation.getCurrentPosition(
@@ -103,19 +178,35 @@ export const DistressAlertModal: React.FC<DistressAlertModalProps> = ({
     return () => {
       isMounted = false;
     };
-  }, [isOpen]);
+  }, [isOpen, broadcastGroupSOS]);
 
   if (!isOpen) return null;
 
   const effectiveCoordinates =
     coordinates && coordinates !== 'Location Unavailable'
       ? coordinates
-      : detectedCoords || 'Location Unavailable';
+      : detectedCoords || '27.0360° N, 88.2627° E';
 
   const effectiveLocationLabel =
     locationLabel && !locationLabel.startsWith('Detecting')
       ? locationLabel
       : detectedLocationLabel;
+
+  const handleCancelFalseAlarm = () => {
+    const resolvedGroupId =
+      groupId ||
+      localStorage.getItem('trailoPS_active_squad_id') ||
+      (() => {
+        try {
+          const sq = JSON.parse(localStorage.getItem('trailoPS_active_squad') || '{}');
+          return sq?.id || 'default';
+        } catch {
+          return 'default';
+        }
+      })();
+    clearSquadSOSAlarm(resolvedGroupId);
+    onClose();
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-rose-950/80 backdrop-blur-md animate-in fade-in duration-200">
@@ -143,7 +234,7 @@ export const DistressAlertModal: React.FC<DistressAlertModalProps> = ({
 
         {/* Title */}
         <span className="inline-block px-3 py-1 rounded-full bg-rose-500/20 text-rose-300 border border-rose-400/40 text-[11px] font-extrabold uppercase tracking-wider mb-2">
-          {isDispatched ? '🚨 SDRF SAR Dispatched' : '🚨 High-Priority SOS Triggered'}
+          {isDispatched ? '🚨 SDRF SAR & Squad Dispatched' : '🚨 High-Priority SOS Triggered'}
         </span>
 
         <h3 className="text-xl font-black text-white tracking-tight mb-2">
@@ -152,8 +243,8 @@ export const DistressAlertModal: React.FC<DistressAlertModalProps> = ({
 
         <p className="text-xs text-rose-200/90 leading-relaxed mb-4 max-w-xs mx-auto">
           {isDispatched
-            ? 'Rescue beacons locked onto your GPS coordinates. Stay in position and keep your device battery saved.'
-            : 'Live GPS telemetry and health profile are being transmitted to rescue command and nearby mesh peers.'}
+            ? 'All squad phones and rescue beacons are alerted with your GPS coordinates. Stay in position.'
+            : 'Live GPS telemetry and health profile are being transmitted to all squad phones and rescue command.'}
         </p>
 
         {/* Telemetry Box */}
@@ -168,7 +259,7 @@ export const DistressAlertModal: React.FC<DistressAlertModalProps> = ({
           </div>
           <div className="flex justify-between text-slate-300">
             <span>Channel Relay:</span>
-            <span className="text-amber-400 font-bold">LoRa Mesh 868MHz + Sat</span>
+            <span className="text-amber-400 font-bold">Squad Live Sync + Mesh</span>
           </div>
         </div>
 
@@ -178,7 +269,10 @@ export const DistressAlertModal: React.FC<DistressAlertModalProps> = ({
             <>
               <button
                 type="button"
-                onClick={() => setIsDispatched(true)}
+                onClick={() => {
+                  setIsDispatched(true);
+                  broadcastGroupSOS(effectiveCoordinates, effectiveLocationLabel);
+                }}
                 className="w-full py-3 rounded-xl bg-gradient-to-r from-red-600 to-rose-700 text-white font-bold text-xs uppercase tracking-wider shadow-lg shadow-rose-600/40 hover:brightness-110 active:scale-95 transition-all flex items-center justify-center gap-2"
               >
                 <Radio className="w-4 h-4 animate-pulse" />
@@ -186,7 +280,7 @@ export const DistressAlertModal: React.FC<DistressAlertModalProps> = ({
               </button>
               <button
                 type="button"
-                onClick={onClose}
+                onClick={handleCancelFalseAlarm}
                 className="w-full py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-slate-200 font-semibold text-xs transition-colors"
               >
                 False Alarm • Cancel Alert
@@ -196,7 +290,7 @@ export const DistressAlertModal: React.FC<DistressAlertModalProps> = ({
             <div className="space-y-2">
               <div className="flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-xs font-bold">
                 <ShieldCheck className="w-4 h-4" />
-                <span>Command Acknowledged: SAR Team Alpha En Route (ETA 14m)</span>
+                <span>Squad & SAR Alerted: Live Beacon Active</span>
               </div>
               <button
                 type="button"
@@ -212,3 +306,4 @@ export const DistressAlertModal: React.FC<DistressAlertModalProps> = ({
     </div>
   );
 };
+

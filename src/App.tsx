@@ -31,6 +31,8 @@ import {
   SquadGroupRecord,
   SquadSOSAlarmData,
   clearSquadSOSAlarm,
+  respondSquadRollCall,
+  fetchSquadLiveState,
 } from './lib/supabase';
 import { CheckCircle2, Database, Shield } from 'lucide-react';
 
@@ -117,6 +119,8 @@ export default function App() {
     startedAt: string;
     startedBy: string;
     presentUserIds: string[];
+    deniedUserIds?: string[];
+    totalMembers?: number;
   } | null>(() => {
     const saved = localStorage.getItem(`trailoPS_active_rollcall_${squadKey}`);
     if (saved) {
@@ -153,16 +157,33 @@ export default function App() {
 
   // Sync Roll Call, Broadcast alerts, and Group-Wide SOS Siren across tabs and screens
   useEffect(() => {
-    const handleRollCallSync = () => {
+    const handleRollCallSync = (e?: any) => {
+      const detail = e?.detail;
+      if (detail && typeof detail === 'object') {
+        setActiveRollCallSession((prev) => ({
+          ...detail,
+          deniedUserIds: detail.deniedUserIds || prev?.deniedUserIds || [],
+          totalMembers: detail.totalMembers || prev?.totalMembers || 1,
+        }));
+        const myId = currentUserId || localStorage.getItem('trailoPS_currentUserId') || '1';
+        const presentIds: string[] = detail.presentUserIds || [];
+        const deniedIds: string[] = detail.deniedUserIds || [];
+        if (detail.active && !presentIds.includes(myId) && !deniedIds.includes(myId)) {
+          setIsAttendanceModalOpen(true);
+        }
+        return;
+      }
       const saved = localStorage.getItem(`trailoPS_active_rollcall_${squadKey}`);
       if (saved) {
         try {
           const parsed = JSON.parse(saved);
           if (parsed && typeof parsed === 'object') {
             setActiveRollCallSession(parsed);
-            const myId = currentUserId || '1';
-            // Show alert popup if roll call is active and user has not marked present yet
-            if (parsed.active && !parsed.presentUserIds.includes(myId)) {
+            const myId = currentUserId || localStorage.getItem('trailoPS_currentUserId') || '1';
+            const presentIds: string[] = parsed.presentUserIds || [];
+            const deniedIds: string[] = parsed.deniedUserIds || [];
+            // Show alert popup if roll call is active and user has not marked present or denied yet
+            if (parsed.active && !presentIds.includes(myId) && !deniedIds.includes(myId)) {
               setIsAttendanceModalOpen(true);
             }
           }
@@ -351,14 +372,14 @@ export default function App() {
     };
   }, [squadKey, currentUserId]);
 
-  // Global cross-device background sync for notices and alerts (operates on any active screen)
+  // Global cross-device background sync for notices, roll calls, and SOS alerts (operates on any active screen)
   useEffect(() => {
     let isMounted = true;
 
     const pollIncomingNoticesAndBroadcasts = async () => {
       try {
         const targetUserId = currentUserId || localStorage.getItem('trailoPS_currentUserId');
-        const targetGroupId = activeSquad?.id || localStorage.getItem('trailoPS_active_squad_id');
+        const targetGroupId = activeSquad?.id || localStorage.getItem('trailoPS_active_squad_id') || 'default';
 
         // 1. Check user notifications if user ID available
         if (targetUserId) {
@@ -381,12 +402,98 @@ export default function App() {
                 setIsBroadcastModalOpen(true);
                 showToast(`📢 ${notif.title}: ${notif.message}`);
               }
+            } else if (!notif.read && notif.type === 'rollcall_started') {
+              const seenRcKey = `trailoPS_seen_rc_notif_${targetUserId}_${notif.id}`;
+              if (!localStorage.getItem(seenRcKey)) {
+                localStorage.setItem(seenRcKey, 'true');
+                markNotificationRead(notif.id);
+                setIsAttendanceModalOpen(true);
+                showToast(`📡 ${notif.title || 'Live Roll Call Started'}: ${notif.message}`);
+              }
+            } else if (!notif.read && notif.type === 'sos_alert') {
+              const seenSosKey = `trailoPS_seen_sos_notif_${targetUserId}_${notif.id}`;
+              if (!localStorage.getItem(seenSosKey)) {
+                localStorage.setItem(seenSosKey, 'true');
+                markNotificationRead(notif.id);
+                showToast(`🚨 ${notif.title || 'EMERGENCY SOS'}: ${notif.message}`);
+              }
             }
           }
         }
 
-        // 2. Also check group notices endpoint for newly published broadcasts
-        if (targetGroupId) {
+        // 2. Poll live squad state (Roll Call Attendance + SOS Distress Alarm + Member count)
+        if (targetGroupId || targetUserId) {
+          const liveState = await fetchSquadLiveState(targetGroupId, targetUserId || undefined);
+          if (!isMounted) return;
+
+          const totalMembersCount = Array.isArray(liveState.members) && liveState.members.length > 0
+            ? liveState.members.length
+            : 1;
+
+          // Sync Cross-Device Roll Call
+          if (liveState.rollCall) {
+            const rc = liveState.rollCall;
+            const sessionObj = {
+              sessionId: rc.sessionId,
+              active: Boolean(rc.active),
+              startedAt: rc.startedAt,
+              startedBy: rc.startedBy,
+              presentUserIds: Array.isArray(rc.presentUserIds) ? rc.presentUserIds : [],
+              deniedUserIds: Array.isArray(rc.deniedUserIds) ? rc.deniedUserIds : [],
+              totalMembers: totalMembersCount,
+            };
+            setActiveRollCallSession(sessionObj);
+            localStorage.setItem(`trailoPS_active_rollcall_${squadKey}`, JSON.stringify(sessionObj));
+
+            const myId = targetUserId || '1';
+            const hasResponded =
+              sessionObj.presentUserIds.includes(myId) || sessionObj.deniedUserIds.includes(myId);
+            const alertedSessionKey = `trailoPS_alerted_rc_${myId}_${sessionObj.sessionId}`;
+
+            if (sessionObj.active && !hasResponded) {
+              if (!localStorage.getItem(alertedSessionKey)) {
+                localStorage.setItem(alertedSessionKey, 'true');
+                setIsAttendanceModalOpen(true);
+                showToast(
+                  `📡 Live Attendance started by ${sessionObj.startedBy}! Mark Present or Deny.`
+                );
+              }
+            } else if (!sessionObj.active) {
+              setIsAttendanceModalOpen(false);
+            }
+          }
+
+          // Sync Cross-Device Emergency SOS Alarm
+          if (liveState.sosAlarm) {
+            const alarm = liveState.sosAlarm;
+            const alarmUniqueKey = alarm.id || `${alarm.distressedUserId}_${alarm.triggeredAt}`;
+            const mutedKey = `trailoPS_muted_sos_${alarmUniqueKey}`;
+            if (!localStorage.getItem(mutedKey)) {
+              setActiveSOSAlarm((prev) => {
+                const prevKey = prev ? prev.id || `${prev.distressedUserId}_${prev.triggeredAt}` : '';
+                if (prevKey !== alarmUniqueKey) {
+                  startEmergencySiren();
+                  showToast(
+                    `🚨 EMERGENCY SOS: ${alarm.distressedUserName} triggered a distress beacon!`
+                  );
+                }
+                return alarm;
+              });
+              localStorage.setItem(`trailoPS_squad_sos_alarm_${squadKey}`, JSON.stringify(alarm));
+            }
+          } else {
+            setActiveSOSAlarm((prev) => {
+              if (prev) {
+                stopEmergencySiren();
+                localStorage.removeItem(`trailoPS_squad_sos_alarm_${squadKey}`);
+              }
+              return null;
+            });
+          }
+        }
+
+        // 3. Also check group notices endpoint for newly published broadcasts
+        if (targetGroupId && targetGroupId !== 'default') {
           const res = await fetchGroupNotices(targetGroupId, targetUserId || undefined);
           if (!isMounted) return;
           if (res.notices && res.notices.length > 0) {
@@ -413,24 +520,29 @@ export default function App() {
     };
 
     pollIncomingNoticesAndBroadcasts();
-    const interval = setInterval(pollIncomingNoticesAndBroadcasts, 3500);
+    const interval = setInterval(pollIncomingNoticesAndBroadcasts, 2500);
 
     return () => {
       isMounted = false;
       clearInterval(interval);
     };
-  }, [currentUserId, activeSquad?.id]);
+  }, [currentUserId, activeSquad?.id, squadKey]);
 
-  const handleMarkPresentFromModal = () => {
-    const myId = currentUserId || '1';
+  const handleMarkPresentFromModal = async () => {
+    const myId = currentUserId || localStorage.getItem('trailoPS_currentUserId') || '1';
     if (!activeRollCallSession) return;
+    const nextPresent = Array.from(new Set([...(activeRollCallSession.presentUserIds || []), myId]));
+    const nextDenied = (activeRollCallSession.deniedUserIds || []).filter((id) => id !== myId);
     const updated = {
       ...activeRollCallSession,
-      presentUserIds: Array.from(new Set([...activeRollCallSession.presentUserIds, myId])),
+      presentUserIds: nextPresent,
+      deniedUserIds: nextDenied,
     };
     setActiveRollCallSession(updated);
     localStorage.setItem(`trailoPS_active_rollcall_${squadKey}`, JSON.stringify(updated));
     window.dispatchEvent(new CustomEvent('trailoPS_rollcall_sync', { detail: updated }));
+
+    await respondSquadRollCall(squadKey, myId, 'present');
 
     const savedMembers = localStorage.getItem('trailoPS_squad_members');
     if (savedMembers) {
@@ -444,6 +556,39 @@ export default function App() {
       } catch {}
     }
     showToast('✓ Attendance confirmed! You are marked Present.');
+    setTimeout(() => {
+      setIsAttendanceModalOpen(false);
+    }, 600);
+  };
+
+  const handleDenyAttendanceFromModal = async () => {
+    const myId = currentUserId || localStorage.getItem('trailoPS_currentUserId') || '1';
+    if (!activeRollCallSession) return;
+    const nextDenied = Array.from(new Set([...(activeRollCallSession.deniedUserIds || []), myId]));
+    const nextPresent = (activeRollCallSession.presentUserIds || []).filter((id) => id !== myId);
+    const updated = {
+      ...activeRollCallSession,
+      presentUserIds: nextPresent,
+      deniedUserIds: nextDenied,
+    };
+    setActiveRollCallSession(updated);
+    localStorage.setItem(`trailoPS_active_rollcall_${squadKey}`, JSON.stringify(updated));
+    window.dispatchEvent(new CustomEvent('trailoPS_rollcall_sync', { detail: updated }));
+
+    await respondSquadRollCall(squadKey, myId, 'deny');
+
+    const savedMembers = localStorage.getItem('trailoPS_squad_members');
+    if (savedMembers) {
+      try {
+        const parsed = JSON.parse(savedMembers);
+        if (Array.isArray(parsed)) {
+          const next = parsed.map((m: any) => (m.id === myId ? { ...m, status: 'missing' } : m));
+          localStorage.setItem('trailoPS_squad_members', JSON.stringify(next));
+          window.dispatchEvent(new CustomEvent('trailoPS_members_updated'));
+        }
+      } catch {}
+    }
+    showToast('✕ Attendance denied. Commander notified in real time.');
     setTimeout(() => {
       setIsAttendanceModalOpen(false);
     }, 600);
@@ -591,6 +736,9 @@ export default function App() {
   });
 
   // User Profile State with per-account isolation
+  const DEFAULT_AVATAR_URL =
+    'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=200&q=80';
+
   const [profileData, setProfileData] = useState<ProfileFormData>(() => {
     const activeUserId = localStorage.getItem('trailoPS_currentUserId');
     const activeEmail = localStorage.getItem('trailoPS_currentUserEmail');
@@ -598,7 +746,8 @@ export default function App() {
       const saved = localStorage.getItem(`trailoPS_profile_${activeUserId}`);
       if (saved) {
         try {
-          return JSON.parse(saved);
+          const parsed = JSON.parse(saved);
+          return { ...parsed, avatarUrl: parsed.avatarUrl || DEFAULT_AVATAR_URL };
         } catch {}
       }
     }
@@ -606,7 +755,8 @@ export default function App() {
       const saved = localStorage.getItem(`trailoPS_profile_${activeEmail}`);
       if (saved) {
         try {
-          return JSON.parse(saved);
+          const parsed = JSON.parse(saved);
+          return { ...parsed, avatarUrl: parsed.avatarUrl || DEFAULT_AVATAR_URL };
         } catch {}
       }
     }
@@ -660,7 +810,7 @@ export default function App() {
         weightKg: 70,
         experienceLevel: 'Intermediate',
         healthNotes: '',
-        avatarUrl: remoteProfile.avatar_url || metaAvatar || '',
+        avatarUrl: remoteProfile.avatar_url || metaAvatar || DEFAULT_AVATAR_URL,
       };
       setProfileData(mappedProfile);
       setCurrentUserName(mappedProfile.fullName);
@@ -719,7 +869,11 @@ export default function App() {
 
       if (savedLocal && isDoneLocal) {
         try {
-          const parsed = JSON.parse(savedLocal);
+          const rawParsed = JSON.parse(savedLocal);
+          const parsed = {
+            ...rawParsed,
+            avatarUrl: rawParsed.avatarUrl || DEFAULT_AVATAR_URL,
+          };
           setProfileData(parsed);
           setCurrentUserName(parsed.fullName);
           setCurrentUserAvatar(parsed.avatarUrl);
@@ -1182,6 +1336,11 @@ export default function App() {
         isOpen={isSOSModalOpen}
         onClose={() => setIsSOSModalOpen(false)}
         coordinates="Location Unavailable"
+        groupId={activeSquad?.id || 'default'}
+        userId={currentUserId}
+        userName={profileData.fullName || currentUserName}
+        userRole={userRole}
+        userPhone={profileData.phoneNumber}
       />
 
       {/* Faculty Drive Modal */}
@@ -1190,6 +1349,9 @@ export default function App() {
         onClose={() => setIsFacultyDriveOpen(false)}
         userRole={userRole}
         onShowToast={showToast}
+        groupId={activeSquad?.id || 'default'}
+        currentUserId={currentUserId}
+        currentUserName={profileData.fullName || currentUserName}
       />
 
       {/* Splitwise Shared Ledger Modal */}
@@ -1271,10 +1433,22 @@ export default function App() {
           onClose={() => setIsAttendanceModalOpen(false)}
           startedBy={activeRollCallSession.startedBy}
           startedAt={activeRollCallSession.startedAt}
-          presentCount={activeRollCallSession.presentUserIds.length}
-          pendingCount={Math.max(0, 1 - activeRollCallSession.presentUserIds.length)}
-          isAlreadyPresent={activeRollCallSession.presentUserIds.includes(currentUserId || '1')}
+          presentCount={(activeRollCallSession.presentUserIds || []).length}
+          deniedCount={(activeRollCallSession.deniedUserIds || []).length}
+          pendingCount={Math.max(
+            0,
+            (activeRollCallSession.totalMembers || 1) -
+              (activeRollCallSession.presentUserIds || []).length -
+              (activeRollCallSession.deniedUserIds || []).length
+          )}
+          isAlreadyPresent={(activeRollCallSession.presentUserIds || []).includes(
+            currentUserId || '1'
+          )}
+          isAlreadyDenied={(activeRollCallSession.deniedUserIds || []).includes(
+            currentUserId || '1'
+          )}
           onMarkPresent={handleMarkPresentFromModal}
+          onDenyAttendance={handleDenyAttendanceFromModal}
         />
       )}
 
@@ -1291,17 +1465,24 @@ export default function App() {
         alarmData={activeSOSAlarm}
         onMuteAndClose={() => {
           stopEmergencySiren();
+          if (activeSOSAlarm) {
+            const alarmUniqueKey =
+              activeSOSAlarm.id ||
+              `${activeSOSAlarm.distressedUserId}_${activeSOSAlarm.triggeredAt}`;
+            localStorage.setItem(`trailoPS_muted_sos_${alarmUniqueKey}`, 'true');
+          }
           setActiveSOSAlarm(null);
         }}
         onResolveAlarm={() => {
           stopEmergencySiren();
-          if (activeSOSAlarm?.groupId) {
-            clearSquadSOSAlarm(activeSOSAlarm.groupId);
-          }
+          const targetGroup = activeSOSAlarm?.groupId || activeSquad?.id || 'default';
+          clearSquadSOSAlarm(targetGroup);
           setActiveSOSAlarm(null);
-          showToast('Emergency distress alert resolved.');
+          showToast('Emergency distress alert resolved for all squad members.');
         }}
-        isSuperAdminOrAdmin={userRole === 'super_admin' || userRole === 'admin' || userRole === 'subgroup_admin'}
+        isSuperAdminOrAdmin={
+          userRole === 'super_admin' || userRole === 'admin' || userRole === 'subgroup_admin'
+        }
       />
     </div>
   );
