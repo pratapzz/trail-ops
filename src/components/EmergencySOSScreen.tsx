@@ -54,15 +54,114 @@ export const EmergencySOSScreen: React.FC<EmergencySOSScreenProps> = ({
   currentUserName = 'Pratap Paul',
   userRole = 'super_admin',
 }) => {
-  const coordinates = '27.3184° N, 88.2412° E';
-  const [copied, setCopied] = useState(false);
+  const [liveCoords, setLiveCoords] = useState<{ lat: number | null; lng: number | null; altitude?: number | null }>({
+    lat: null,
+    lng: null,
+    altitude: null,
+  });
+  const [liveLocationLabel, setLiveLocationLabel] = useState<string>('Detecting device GPS location...');
+  const lastGeocodedRef = useRef<string>('');
 
-  // Hold-to-broadcast state
+  useEffect(() => {
+    if (!navigator.geolocation) {
+      setLiveLocationLabel('Location Unavailable (Geolocation not supported)');
+      return;
+    }
+
+    let isMounted = true;
+
+    const reverseGeocode = async (lat: number, lng: number, alt?: number | null) => {
+      const key = `${lat.toFixed(3)},${lng.toFixed(3)}`;
+      if (lastGeocodedRef.current === key) return;
+      lastGeocodedRef.current = key;
+      try {
+        const res = await fetch(
+          `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=14&addressdetails=1`,
+          { headers: { 'Accept-Language': 'en' } }
+        );
+        if (!res.ok) throw new Error('Reverse geocode failed');
+        const data = await res.json();
+        if (!isMounted) return;
+        const addr = data?.address || {};
+        const locality =
+          addr.town ||
+          addr.city ||
+          addr.village ||
+          addr.suburb ||
+          addr.county ||
+          addr.state_district ||
+          data?.name ||
+          '';
+        const region = addr.state || addr.country || '';
+        const altSuffix =
+          typeof alt === 'number' && !Number.isNaN(alt) ? ` (${Math.round(alt)}m ASL)` : '';
+        const formatted = [locality, region].filter(Boolean).join(', ');
+        setLiveLocationLabel(
+          formatted ? `${formatted}${altSuffix}` : data?.display_name?.split(',').slice(0, 3).join(',') || `Live GPS Fix${altSuffix}`
+        );
+      } catch {
+        if (isMounted) {
+          const altSuffix =
+            typeof alt === 'number' && !Number.isNaN(alt) ? ` (${Math.round(alt)}m ASL)` : '';
+          setLiveLocationLabel(`Live Device GPS Active${altSuffix}`);
+        }
+      }
+    };
+
+    const updatePos = (pos: GeolocationPosition) => {
+      if (!isMounted) return;
+      const lat = pos.coords.latitude;
+      const lng = pos.coords.longitude;
+      const alt = pos.coords.altitude;
+      setLiveCoords({ lat, lng, altitude: alt });
+      reverseGeocode(lat, lng, alt);
+    };
+
+    const handleErr = (err: GeolocationPositionError) => {
+      console.warn('GPS location error:', err.message);
+      // Fallback to network/cell location if high-accuracy satellite lock times out
+      navigator.geolocation.getCurrentPosition(
+        updatePos,
+        (fallbackErr) => {
+          if (!isMounted) return;
+          if (fallbackErr.code === 1) {
+            setLiveLocationLabel('Location Unavailable (Permission Denied)');
+          } else {
+            setLiveLocationLabel('Location Unavailable — Check device GPS');
+          }
+        },
+        { enableHighAccuracy: false, timeout: 10000, maximumAge: 30000 }
+      );
+    };
+
+    navigator.geolocation.getCurrentPosition(updatePos, handleErr, {
+      enableHighAccuracy: true,
+      timeout: 8000,
+      maximumAge: 0,
+    });
+
+    const watchId = navigator.geolocation.watchPosition(updatePos, () => {}, {
+      enableHighAccuracy: true,
+      timeout: 15000,
+      maximumAge: 5000,
+    });
+
+    return () => {
+      isMounted = false;
+      navigator.geolocation.clearWatch(watchId);
+    };
+  }, []);
+
+  const coordinates =
+    liveCoords.lat !== null && liveCoords.lng !== null
+      ? `${Math.abs(liveCoords.lat).toFixed(4)}° ${liveCoords.lat >= 0 ? 'N' : 'S'}, ${Math.abs(liveCoords.lng).toFixed(4)}° ${liveCoords.lng >= 0 ? 'E' : 'W'}`
+      : 'Location Unavailable';
+
+  const [copied, setCopied] = useState(false);
   const [holdProgress, setHoldProgress] = useState(0);
   const [isHolding, setIsHolding] = useState(false);
   const holdIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Modals state
   const [isDistressModalOpen, setIsDistressModalOpen] = useState(false);
   const [selectedCallContact, setSelectedCallContact] = useState<{
     name: string;
@@ -76,7 +175,6 @@ export const EmergencySOSScreen: React.FC<EmergencySOSScreenProps> = ({
     avatar?: string;
   } | null>(null);
 
-  // Dedicated Emergency Contacts for active squad (stored locally for that squad)
   const squadKey = activeSquadId || 'default';
   const emergencyContactsStorageKey = `trailoPS_emergency_contacts_${squadKey}`;
 
@@ -91,14 +189,14 @@ export const EmergencySOSScreen: React.FC<EmergencySOSScreenProps> = ({
     return [
       {
         id: 'ec-default-1',
-        name: 'SDRF Mountain Rescue Lead',
-        phone: '+91 3592 202022',
+        name: 'SDRF Emergency Rescue Lead',
+        phone: '112',
         role: 'Rescue',
       },
       {
         id: 'ec-default-2',
-        name: 'Pelling Base Emergency Hospital',
-        phone: '+91 3595 250102',
+        name: 'Emergency Medical Dispatch',
+        phone: '108',
         role: 'Medical',
       },
     ];
@@ -107,7 +205,6 @@ export const EmergencySOSScreen: React.FC<EmergencySOSScreenProps> = ({
   const [isAddContactModalOpen, setIsAddContactModalOpen] = useState(false);
   const [newContactName, setNewContactName] = useState('');
   const [newContactPhone, setNewContactPhone] = useState('');
-  const [liveCoords, setLiveCoords] = useState({ lat: 27.3184, lng: 88.2412 });
 
   // Direct phone dialer redirect using tel: protocol
   const handleDirectDial = (phone: string, name?: string) => {
@@ -357,7 +454,7 @@ export const EmergencySOSScreen: React.FC<EmergencySOSScreenProps> = ({
           distressedUserName: currentUserName,
           distressedUserRole: userRole === 'super_admin' ? 'Super Admin' : userRole === 'admin' ? 'Admin' : userRole === 'faculty' ? 'Faculty Lead' : 'Squad Member',
           phone: leads[0]?.phone || '',
-          coordinates: { lat: 27.3184, lng: 88.2412 },
+          coordinates: { lat: liveCoords.lat || 0, lng: liveCoords.lng || 0 },
           batteryLevel: 92,
         });
         onShowToast('🚨 SOS DISTRESS BEACON ACTIVE! Continuous siren sounding across squad.');
@@ -454,7 +551,7 @@ export const EmergencySOSScreen: React.FC<EmergencySOSScreenProps> = ({
               <div>
                 <p className="text-xs sm:text-sm text-slate-900 font-bold">{coordinates}</p>
                 <p className="text-[11px] text-slate-500 font-medium">
-                  Pelling Sector 4, West Sikkim (2,150m ASL)
+                  {liveLocationLabel}
                 </p>
               </div>
             </div>
@@ -566,47 +663,50 @@ export const EmergencySOSScreen: React.FC<EmergencySOSScreenProps> = ({
           </div>
 
           <InteractiveTrailMap
-            center={{ lat: liveCoords.lat, lng: liveCoords.lng }}
+            center={{ lat: liveCoords.lat || 20.0, lng: liveCoords.lng || 0.0 }}
             zoom={13}
             heightClass="h-56"
-            markers={[
-              {
-                id: 'you',
-                lat: liveCoords.lat,
-                lng: liveCoords.lng,
-                label: 'YOU (Live GPS)',
-                color: 'rose',
-                isUser: true,
-              },
-              ...(leads[0]
+            markers={
+              liveCoords.lat !== null && liveCoords.lng !== null
                 ? [
                     {
-                      id: leads[0].id,
-                      lat: liveCoords.lat + 0.0045,
-                      lng: liveCoords.lng - 0.0035,
-                      label: `${leads[0].name} (Squad)`,
-                      color: 'emerald' as const,
+                      id: 'you',
+                      lat: liveCoords.lat,
+                      lng: liveCoords.lng,
+                      label: 'YOU (Live GPS)',
+                      color: 'rose',
+                      isUser: true,
                     },
+                    ...(leads[0]
+                      ? [
+                          {
+                            id: leads[0].id,
+                            lat: liveCoords.lat + 0.0045,
+                            lng: liveCoords.lng - 0.0035,
+                            label: `${leads[0].name} (Squad)`,
+                            color: 'emerald' as const,
+                          },
+                        ]
+                      : []),
+                    ...(leads[1]
+                      ? [
+                          {
+                            id: leads[1].id,
+                            lat: liveCoords.lat - 0.0038,
+                            lng: liveCoords.lng + 0.0042,
+                            label: `${leads[1].name} (Squad)`,
+                            color: 'blue' as const,
+                          },
+                        ]
+                      : []),
                   ]
-                : []),
-              ...(leads[1]
-                ? [
-                    {
-                      id: leads[1].id,
-                      lat: liveCoords.lat - 0.0038,
-                      lng: liveCoords.lng + 0.0042,
-                      label: `${leads[1].name} (Squad)`,
-                      color: 'blue' as const,
-                    },
-                  ]
-                : []),
-            ]}
+                : []
+            }
             onLocateGps={(coords) => {
-              setLiveCoords((prev) => ({
-                ...prev,
+              setLiveCoords({
                 lat: coords.lat,
                 lng: coords.lng,
-              }));
+              });
               onShowToast('📍 Centered map on your live GPS coordinates!');
             }}
           />
@@ -746,7 +846,7 @@ export const EmergencySOSScreen: React.FC<EmergencySOSScreenProps> = ({
         <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-xs space-y-3">
           <div className="flex items-center justify-between pb-2 border-b border-slate-100">
             <div>
-              <h3 className="text-sm font-bold text-slate-900">Route Helplines: Pelling</h3>
+              <h3 className="text-sm font-bold text-slate-900">Route Helplines</h3>
               <p className="text-[11px] text-slate-500">Instant one-tap direct line emergency dispatch</p>
             </div>
             <button
@@ -959,6 +1059,7 @@ export const EmergencySOSScreen: React.FC<EmergencySOSScreenProps> = ({
         isOpen={isDistressModalOpen}
         onClose={() => setIsDistressModalOpen(false)}
         coordinates={coordinates}
+        locationLabel={liveLocationLabel}
       />
 
       {/* Call Simulator Modal */}

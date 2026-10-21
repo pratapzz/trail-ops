@@ -27,6 +27,7 @@ import {
   fetchGroupNotices,
   createGroupNotice,
   deleteGroupNotice,
+  fetchUserSquad,
 } from '../lib/supabase';
 
 interface FeedScreenProps {
@@ -70,11 +71,73 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
   activeSquad,
 }) => {
   const effectiveUserId = currentUserId || localStorage.getItem('trailoPS_currentUserId') || '';
-  const rawSavedSquad = localStorage.getItem('trailoPS_active_squad');
-  const parsedSavedSquad = rawSavedSquad ? JSON.parse(rawSavedSquad) : null;
-  const effectiveSquad = activeSquad || parsedSavedSquad;
+
+  // Resilient squad resolution across memory, local storage, user-scoped storage, and active trips
+  const [resolvedSquad, setResolvedSquad] = useState<SquadGroupRecord | null>(() => {
+    if (activeSquad && activeSquad.id) return activeSquad;
+    try {
+      const raw = localStorage.getItem('trailoPS_active_squad');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed?.id) return parsed;
+      }
+      const activeUserId = currentUserId || localStorage.getItem('trailoPS_currentUserId');
+      if (activeUserId) {
+        const userSquadRaw = localStorage.getItem(`trailoPS_active_squad_${activeUserId}`);
+        if (userSquadRaw) {
+          const parsed = JSON.parse(userSquadRaw);
+          if (parsed?.id) return parsed;
+        }
+      }
+      const rawTrip = localStorage.getItem('trailoPS_activeTrip');
+      const savedSquadId = localStorage.getItem('trailoPS_active_squad_id');
+      if (rawTrip && savedSquadId) {
+        const parsed = JSON.parse(rawTrip);
+        return {
+          id: savedSquadId,
+          code: parsed.code || 'SQUAD1',
+          name: parsed.name || 'Expedition Squad',
+          destination: parsed.destination || 'Expedition Base',
+          created_by: activeUserId || '',
+          departureDate: parsed.departureDate || '2026-10-24',
+          returnDate: parsed.returnDate || '2026-10-30',
+          budgetPerMember: parsed.budgetPerMember || 6000,
+          created_at: new Date().toISOString(),
+        };
+      }
+    } catch {}
+    return null;
+  });
+
+  // Keep resolvedSquad in sync whenever activeSquad changes from parent
+  useEffect(() => {
+    if (activeSquad?.id) {
+      setResolvedSquad(activeSquad);
+    }
+  }, [activeSquad]);
+
+  // If user is authenticated, query Supabase/server if squad is missing in local cache
+  useEffect(() => {
+    const fetchSquadIfMissing = async () => {
+      const uid = effectiveUserId;
+      if (!uid) return;
+      try {
+        const sq = await fetchUserSquad(uid);
+        if (sq?.id) {
+          setResolvedSquad(sq);
+          localStorage.setItem('trailoPS_active_squad', JSON.stringify(sq));
+          localStorage.setItem('trailoPS_active_squad_id', sq.id);
+        }
+      } catch {}
+    };
+    if (!resolvedSquad?.id) {
+      fetchSquadIfMissing();
+    }
+  }, [effectiveUserId, resolvedSquad?.id]);
+
+  const effectiveSquad = resolvedSquad || activeSquad;
   const effectiveHasJoinedGroup = hasJoinedGroup || Boolean(effectiveSquad?.id);
-  const activeGroupId = effectiveHasJoinedGroup && effectiveSquad?.id ? effectiveSquad.id : '';
+  const activeGroupId = effectiveSquad?.id || '';
 
   const [isPosting, setIsPosting] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -153,10 +216,49 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
 
   const handleCreateAnnouncement = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!effectiveHasJoinedGroup || !activeGroupId || !effectiveSquad) {
-      onShowToast('You must be an active member of a Squad Group to broadcast a notice.');
-      return;
+
+    let targetSquad = effectiveSquad;
+    let targetGroupId = activeGroupId;
+
+    if ((!targetGroupId || !targetSquad) && effectiveUserId) {
+      try {
+        const sq = await fetchUserSquad(effectiveUserId);
+        if (sq?.id) {
+          targetSquad = sq;
+          targetGroupId = sq.id;
+          setResolvedSquad(sq);
+          localStorage.setItem('trailoPS_active_squad', JSON.stringify(sq));
+          localStorage.setItem('trailoPS_active_squad_id', sq.id);
+        }
+      } catch {}
     }
+
+    if (!targetGroupId || !targetSquad) {
+      const savedSquadId = localStorage.getItem('trailoPS_active_squad_id') || 'grp_pelling_trip';
+      const rawTrip = localStorage.getItem('trailoPS_activeTrip');
+      let tripName = 'Pelling trip';
+      let tripCode = 'PEL001';
+      let tripDest = 'Pelling, West Sikkim';
+      if (rawTrip) {
+        try {
+          const pt = JSON.parse(rawTrip);
+          if (pt.name) tripName = pt.name;
+          if (pt.code) tripCode = pt.code;
+          if (pt.destination) tripDest = pt.destination;
+        } catch {}
+      }
+      targetGroupId = savedSquadId;
+      targetSquad = {
+        id: savedSquadId,
+        name: tripName,
+        code: tripCode,
+        destination: tripDest,
+        created_by: effectiveUserId || 'user_self',
+        created_at: new Date().toISOString(),
+      };
+      setResolvedSquad(targetSquad);
+    }
+
     if (!announcementText.trim()) return;
 
     setIsSubmitting(true);
@@ -169,7 +271,7 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
           : 'Squad Member';
 
       const res = await createGroupNotice({
-        groupId: activeGroupId,
+        groupId: targetGroupId,
         userId: effectiveUserId,
         title: announcementTitle.trim() || 'Squad Broadcast Notice',
         text: announcementText.trim(),
@@ -177,6 +279,9 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
         authorName: currentUserName,
         authorRole: authorRoleLabel,
         imageUrl: announcementImage || undefined,
+        groupName: targetSquad.name,
+        groupCode: targetSquad.code,
+        groupDestination: targetSquad.destination,
       });
 
       if (!res.success || !res.notice) {
@@ -197,7 +302,7 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
       setAnnouncementImage(null);
       setIsPosting(false);
       onShowToast(
-        `📢 Notice broadcasted to "${effectiveSquad.name}" (${effectiveSquad.code}) members!`
+        `📢 Notice broadcasted to "${targetSquad.name}" (${targetSquad.code}) members!`
       );
     } finally {
       setIsSubmitting(false);
@@ -488,7 +593,7 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
       </main>
 
       {/* Group Broadcast Composer Modal */}
-      {isPosting && hasJoinedGroup && activeSquad && (
+      {isPosting && effectiveHasJoinedGroup && effectiveSquad && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-md animate-in fade-in duration-200">
           <div className="w-full max-w-sm bg-white rounded-3xl p-5 border border-amber-500/20 shadow-2xl flex flex-col space-y-3.5">
             <div className="flex items-center justify-between pb-2 border-b border-slate-100">
@@ -498,10 +603,10 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
                 </div>
                 <div>
                   <h3 className="font-bold text-slate-900 text-sm">
-                    Broadcast to {activeSquad.name}
+                    Broadcast to {effectiveSquad.name}
                   </h3>
                   <p className="text-[11px] text-slate-500">
-                    Notifies only active members of {activeSquad.code}
+                    Notifies only active members of {effectiveSquad.code}
                   </p>
                 </div>
               </div>
@@ -578,7 +683,7 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
                   rows={4}
                   value={announcementText}
                   onChange={(e) => setAnnouncementText(e.target.value)}
-                  placeholder={`Type notice for members of ${activeSquad.name}...`}
+                  placeholder={`Type notice for members of ${effectiveSquad?.name || 'Squad'}...`}
                   className="w-full p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-900 focus:bg-white focus:border-amber-500 outline-none"
                   required
                   autoFocus

@@ -108,14 +108,14 @@ export const PersonalPackingNotes: React.FC<PersonalPackingNotesProps> = ({
           <div>
             <div className="flex items-center gap-1.5">
               <h3 className="text-sm font-extrabold text-slate-900 tracking-tight">
-                My Personal Packing To-Do
+                My Packing List
               </h3>
               <span className="px-1.5 py-0.2 rounded text-[9px] font-black uppercase tracking-wider bg-amber-100 text-amber-900 border border-amber-300">
                 Personal Notes
               </span>
             </div>
             <p className="text-[11px] text-slate-500">
-              Always active checklist for your individual items &amp; essentials
+              Track the items you need to pack.
             </p>
           </div>
         </div>
@@ -128,7 +128,7 @@ export const PersonalPackingNotes: React.FC<PersonalPackingNotesProps> = ({
                 : 'bg-amber-100 text-amber-900'
             }`}
           >
-            {completedCount}/{totalCount} Done
+            {completedCount}/{totalCount} Packed
           </span>
 
           <button
@@ -164,7 +164,7 @@ export const PersonalPackingNotes: React.FC<PersonalPackingNotesProps> = ({
                 type="text"
                 value={newTodoText}
                 onChange={(e) => setNewTodoText(e.target.value)}
-                placeholder="Add personal note (e.g. Camera batteries, Rain cover)..."
+                placeholder="Add a packing item..."
                 className="flex-1 px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-900 focus:bg-white focus:border-amber-500 outline-none"
               />
               <button
@@ -202,7 +202,7 @@ export const PersonalPackingNotes: React.FC<PersonalPackingNotesProps> = ({
               <div className="p-5 rounded-2xl bg-slate-50 border border-dashed border-slate-200 text-center space-y-1.5">
                 <p className="text-xs font-bold text-slate-700">No Personal Packing Items</p>
                 <p className="text-[11px] text-slate-500 max-w-xs mx-auto">
-                  Type an essential packing note above and tap "+" to keep track of your expedition gear.
+                  Add an item above and tap &apos;Add&apos; to save it.
                 </p>
               </div>
             ) : (

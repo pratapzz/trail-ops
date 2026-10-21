@@ -32,13 +32,38 @@ export interface GearItem {
   isCustom?: boolean;
 }
 
+import {
+  fetchSquadChecklist,
+  saveSquadChecklistItem,
+  updateSquadChecklistPacking,
+  deleteSquadChecklistRecord,
+} from '../lib/supabase';
+import { UserRole } from '../types';
+
+export interface GearItem {
+  id: string;
+  name: string;
+  category: 'navigation' | 'medical' | 'apparel' | 'camp';
+  isPacked: boolean;
+  isMandatory: boolean;
+  weightGrams: number;
+  spec?: string;
+  isCustom?: boolean;
+}
+
 interface TripGearChecklistProps {
   onShowToast: (message: string) => void;
+  groupId?: string;
+  currentUserId?: string;
+  userRole?: UserRole;
   className?: string;
 }
 
 export const TripGearChecklist: React.FC<TripGearChecklistProps> = ({
   onShowToast,
+  groupId = 'default',
+  currentUserId,
+  userRole = 'member',
   className = '',
 }) => {
   const [activeCategory, setActiveCategory] = useState<
@@ -56,20 +81,58 @@ export const TripGearChecklist: React.FC<TripGearChecklistProps> = ({
   const [newItemWeight, setNewItemWeight] = useState(300);
   const [newItemSpec, setNewItemSpec] = useState('');
 
-  const [gearList, setGearList] = useState<GearItem[]>(() => {
-    const saved = localStorage.getItem('trailoPS_trip_gear');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) return parsed;
-      } catch {}
-    }
-    return [];
-  });
+  const [gearList, setGearList] = useState<GearItem[]>([]);
+  const effectiveGroupId = groupId || 'default';
+
+  const loadChecklist = React.useCallback(async () => {
+    try {
+      const records = await fetchSquadChecklist(effectiveGroupId, currentUserId);
+      if (records && Array.isArray(records)) {
+        const mapped: GearItem[] = records.map((r) => ({
+          id: r.id,
+          name: r.name,
+          category: r.category,
+          isPacked: r.is_packed,
+          isMandatory: r.is_mandatory,
+          weightGrams: r.weight_grams,
+          spec: r.spec || undefined,
+          isCustom: r.is_custom || false,
+        }));
+        setGearList(mapped);
+      }
+    } catch {}
+  }, [effectiveGroupId, currentUserId]);
 
   React.useEffect(() => {
-    localStorage.setItem('trailoPS_trip_gear', JSON.stringify(gearList));
-  }, [gearList]);
+    loadChecklist();
+    const interval = setInterval(loadChecklist, 4000);
+
+    const handleGearUpdated = (e: any) => {
+      if (!e?.detail?.groupId || e.detail.groupId === effectiveGroupId) {
+        loadChecklist();
+      }
+    };
+
+    window.addEventListener('trailoPS_gear_updated', handleGearUpdated);
+
+    let bc: BroadcastChannel | null = null;
+    if (typeof BroadcastChannel !== 'undefined') {
+      try {
+        bc = new BroadcastChannel(`trailops_squad_bus_${effectiveGroupId}`);
+        bc.onmessage = (ev) => {
+          if (ev.data?.type === 'GEAR_CHECKLIST_UPDATED') {
+            loadChecklist();
+          }
+        };
+      } catch {}
+    }
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('trailoPS_gear_updated', handleGearUpdated);
+      if (bc) bc.close();
+    };
+  }, [effectiveGroupId, loadChecklist]);
 
   // Calculations
   const totalItems = gearList.length;
@@ -92,33 +155,41 @@ export const TripGearChecklist: React.FC<TripGearChecklistProps> = ({
     gearList.reduce((sum, item) => sum + item.weightGrams, 0) / 1000
   ).toFixed(2);
 
-  const toggleGear = (id: string) => {
+  const toggleGear = async (id: string) => {
+    const target = gearList.find((item) => item.id === id);
+    if (!target) return;
+    const nextPacked = !target.isPacked;
+
     setGearList((prev) =>
-      prev.map((item) => {
-        if (item.id === id) {
-          return { ...item, isPacked: !item.isPacked };
-        }
-        return item;
-      })
+      prev.map((item) => (item.id === id ? { ...item, isPacked: nextPacked } : item))
     );
+
+    await updateSquadChecklistPacking(effectiveGroupId, id, nextPacked, currentUserId);
   };
 
-  const handlePackAll = () => {
+  const handlePackAll = async () => {
     setGearList((prev) => prev.map((item) => ({ ...item, isPacked: true })));
-    onShowToast('All gear items marked as Packed in expedition kit!');
+    for (const item of gearList) {
+      await updateSquadChecklistPacking(effectiveGroupId, item.id, true, currentUserId);
+    }
+    onShowToast('All gear items marked as Packed in shared expedition kit!');
   };
 
-  const handleResetAll = () => {
+  const handleResetAll = async () => {
     setGearList((prev) => prev.map((item) => ({ ...item, isPacked: false })));
-    onShowToast('Gear checklist reset to unpacked state.');
+    for (const item of gearList) {
+      await updateSquadChecklistPacking(effectiveGroupId, item.id, false, currentUserId);
+    }
+    onShowToast('Shared checklist reset to unpacked state.');
   };
 
-  const handleDeleteItem = (id: string, name: string) => {
+  const handleDeleteItem = async (id: string, name: string) => {
     setGearList((prev) => prev.filter((item) => item.id !== id));
-    onShowToast(`Removed "${name}" from gear checklist.`);
+    await deleteSquadChecklistRecord(effectiveGroupId, id);
+    onShowToast(`Removed "${name}" from shared checklist.`);
   };
 
-  const handleAddCustomItem = (e: React.FormEvent) => {
+  const handleAddCustomItem = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newItemName.trim()) return;
 
@@ -133,11 +204,13 @@ export const TripGearChecklist: React.FC<TripGearChecklistProps> = ({
       isCustom: true,
     };
 
-    setGearList([...gearList, newItem]);
+    setGearList((prev) => [...prev, newItem]);
     setNewItemName('');
     setNewItemSpec('');
     setIsAddModalOpen(false);
-    onShowToast(`Added "${newItem.name}" to gear checklist!`);
+
+    await saveSquadChecklistItem(effectiveGroupId, newItem, currentUserId);
+    onShowToast(`Added "${newItem.name}" to shared trip checklist!`);
   };
 
   const filteredItems = gearList.filter((item) => {
@@ -165,7 +238,7 @@ export const TripGearChecklist: React.FC<TripGearChecklistProps> = ({
               </span>
             </div>
             <p className="text-[11px] text-slate-500">
-              Pre-expedition loadout &amp; essential pack checklist
+              Everything you need for your trip.
             </p>
           </div>
         </div>
@@ -181,7 +254,7 @@ export const TripGearChecklist: React.FC<TripGearChecklistProps> = ({
                 : 'bg-amber-100 text-amber-900 border border-amber-300'
             }`}
           >
-            {completionPercent}% Ready
+            {completionPercent}% Packed
           </span>
 
           <button
@@ -205,10 +278,10 @@ export const TripGearChecklist: React.FC<TripGearChecklistProps> = ({
           <span className="text-slate-700 flex items-center gap-1.5">
             <CheckCheck className="w-4 h-4 text-emerald-700" />
             <span>
-              {packedItems} of {totalItems} Essentials Packed
+              {packedItems} of {totalItems} Essential Items Packed
             </span>
             <span className="text-[10px] text-slate-400 font-normal">
-              ({mandatoryPacked}/{mandatoryTotal} Mandatory)
+              ({mandatoryPacked}/{mandatoryTotal} Required)
             </span>
           </span>
 
@@ -237,7 +310,7 @@ export const TripGearChecklist: React.FC<TripGearChecklistProps> = ({
               ? '✓ Full loadout verified for alpine ascent.'
               : mandatoryPacked < mandatoryTotal
               ? `⚠️ ${mandatoryTotal - mandatoryPacked} mandatory item(s) unverified.`
-              : 'All mandatory gear ready. Recommended items pending.'}
+              : 'Pack all essential items before departure.'}
           </span>
 
           <div className="shrink-0">
@@ -264,10 +337,10 @@ export const TripGearChecklist: React.FC<TripGearChecklistProps> = ({
               {(
                 [
                   { id: 'all', label: 'All', icon: Layers },
-                  { id: 'navigation', label: 'Comms', icon: Compass },
+                  { id: 'navigation', label: 'Electronics', icon: Compass },
                   { id: 'medical', label: 'Medical', icon: HeartPulse },
-                  { id: 'apparel', label: 'Apparel', icon: Shirt },
-                  { id: 'camp', label: 'Camp', icon: Flame },
+                  { id: 'apparel', label: 'Clothing', icon: Shirt },
+                  { id: 'camp', label: 'Camping', icon: Flame },
                 ] as const
               ).map((tab) => {
                 const Icon = tab.icon;
@@ -316,9 +389,9 @@ export const TripGearChecklist: React.FC<TripGearChecklistProps> = ({
             {filteredItems.length === 0 ? (
               <div className="p-6 rounded-2xl bg-slate-50 border border-dashed border-slate-200 text-center space-y-2">
                 <Backpack className="w-8 h-8 text-slate-300 mx-auto" />
-                <h5 className="text-xs font-bold text-slate-700">No Gear Items Logged</h5>
+                <h5 className="text-xs font-bold text-slate-700">No items added yet</h5>
                 <p className="text-[11px] text-slate-500 max-w-xs mx-auto">
-                  Your expedition packing list is empty. Tap "+ Add Item" above to add equipment.
+                  Your checklist is empty. Tap &apos;Add Item&apos; to get started.
                 </p>
                 <button
                   type="button"
@@ -326,7 +399,7 @@ export const TripGearChecklist: React.FC<TripGearChecklistProps> = ({
                   className="mt-1 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-700 text-white text-[11px] font-bold hover:bg-emerald-800 transition-colors cursor-pointer"
                 >
                   <Plus className="w-3.5 h-3.5" />
-                  <span>Add First Item</span>
+                  <span>Add Item</span>
                 </button>
               </div>
             ) : (
@@ -365,7 +438,7 @@ export const TripGearChecklist: React.FC<TripGearChecklistProps> = ({
 
                         {item.isMandatory && (
                           <span className="px-1.5 py-0.2 rounded text-[9px] font-black uppercase tracking-wider bg-rose-100 text-rose-800 border border-rose-300">
-                            Mandatory
+                            Required
                           </span>
                         )}
 
@@ -425,11 +498,11 @@ export const TripGearChecklist: React.FC<TripGearChecklistProps> = ({
               className="text-[11px] font-semibold text-slate-500 hover:text-rose-700 flex items-center gap-1 cursor-pointer transition-colors"
             >
               <RotateCcw className="w-3 h-3" />
-              <span>Reset Checklist</span>
+              <span>Clear Checklist</span>
             </button>
 
             <span className="text-[11px] text-emerald-800 font-bold">
-              {packedItems === totalItems ? 'Ready for Deployment' : 'Inspection Active'}
+              {packedItems === totalItems ? 'Ready for Your Trip' : 'Inspection Active'}
             </span>
           </div>
         </div>

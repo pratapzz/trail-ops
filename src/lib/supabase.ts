@@ -102,6 +102,9 @@ export interface SquadGroupRecord {
   end_date?: string;
   startDate?: string;
   endDate?: string;
+  departureDate?: string;
+  returnDate?: string;
+  budgetPerMember?: number;
   created_by: string;
   creator_id?: string;
   created_at?: string;
@@ -251,9 +254,12 @@ export interface UserNotificationRecord {
   id: string;
   user_id: string;
   group_id?: string;
-  type: 'join_accepted' | 'join_rejected' | 'join_requested' | 'join_request_accepted' | 'join_request_rejected' | 'group_notice' | 'info';
+  notice_id?: string;
+  type: 'join_accepted' | 'join_rejected' | 'join_requested' | 'join_request_accepted' | 'join_request_rejected' | 'group_notice' | 'notice_broadcast' | 'info';
   title: string;
   message: string;
+  priority?: 'critical' | 'advisory' | 'info';
+  author_name?: string;
   is_read: boolean;
   read?: boolean;
   created_at: string;
@@ -585,6 +591,10 @@ export async function lookupSquadByCode(rawCode: string, currentUserId?: string)
     userRequestStatus = 'rejected';
   }
 
+  if (m?.is_member && currentUserId) {
+    saveGroupToUserLocalCache(currentUserId, g as SquadGroupRecord, m.role || 'super_admin');
+  }
+
   return {
     ...g,
     startDate: g.start_date || g.startDate,
@@ -592,7 +602,9 @@ export async function lookupSquadByCode(rawCode: string, currentUserId?: string)
     creator_id: g.created_by || g.creator_id,
     memberCount: g.member_count ?? g.memberCount ?? 1,
     userRequestStatus,
-  };
+    myRole: (m?.role as any) || undefined,
+    autoJoined: Boolean((m as any)?.auto_joined),
+  } as VerifiedGroupPreview & { myRole?: string; autoJoined?: boolean };
 }
 
 export async function createSquadGroup(
@@ -612,15 +624,18 @@ export async function createSquadGroup(
   _codeArg?: string,
   startDateArg?: string,
   endDateArg?: string,
-  _creatorNameArg?: string,
-  _creatorEmailArg?: string,
-  _creatorAvatarArg?: string
+  creatorNameArg?: string,
+  creatorEmailArg?: string,
+  creatorAvatarArg?: string
 ): Promise<{ success: boolean; group?: SquadGroupRecord; error?: string }> {
   let creatorId = '';
   let name = '';
   let destination = '';
   let startDate: string | undefined;
   let endDate: string | undefined;
+  let creatorName = creatorNameArg || '';
+  let creatorEmail = creatorEmailArg || '';
+  let creatorAvatar = creatorAvatarArg || '';
 
   if (typeof arg1 === 'string') {
     creatorId = arg1;
@@ -666,6 +681,9 @@ export async function createSquadGroup(
         destination: destination.trim(),
         startDate,
         endDate,
+        creatorName: creatorName || localStorage.getItem('trailoPS_currentUserName') || '',
+        creatorEmail: creatorEmail || localStorage.getItem('trailoPS_currentUserEmail') || '',
+        creatorAvatar: creatorAvatar || localStorage.getItem('trailoPS_currentUserAvatar') || '',
       }),
     });
 
@@ -751,6 +769,8 @@ export async function submitSquadJoinRequest(
   duplicate?: boolean;
   alreadyPending?: boolean;
   alreadyMember?: boolean;
+  autoJoined?: boolean;
+  role?: string;
   request?: SquadJoinRequestRecord;
   message?: string;
   error?: string;
@@ -803,8 +823,15 @@ export async function submitSquadJoinRequest(
       }
     } catch {}
 
+    if (data.already_member && data.group && params.userId) {
+      saveGroupToUserLocalCache(params.userId, data.group, data.role || 'super_admin');
+    }
+
     return {
       success: true,
+      alreadyMember: Boolean(data.already_member),
+      autoJoined: Boolean(data.auto_joined),
+      role: data.role,
       duplicate: Boolean(data.duplicate),
       alreadyPending: Boolean(data.duplicate),
       request: normalizedReq,
@@ -955,7 +982,10 @@ export async function fetchUserJoinRequestsAndNotifications(userId: string): Pro
     return { activeSquad: null, joinRequests: [], requests: [], notifications: [], joinedGroups: [] };
   }
 
-  const preferredGroupId = localStorage.getItem(`trailoPS_active_squad_id_${userId}`) || '';
+  const preferredGroupId =
+    localStorage.getItem(`trailoPS_active_squad_id_${userId}`) ||
+    localStorage.getItem('trailoPS_active_squad_id') ||
+    '';
 
   try {
     const headers = await buildApiHeaders(userId);
@@ -1152,6 +1182,51 @@ export async function fetchUserActiveSquad(userId: string): Promise<{ group: Squ
     } catch {}
   }
 
+  // 3. Fallback: If user has an active group in localStorage, restore it on server so app refresh never kicks them out
+  try {
+    const rawSavedGroup =
+      localStorage.getItem(`trailoPS_active_squad_${userId}`) ||
+      localStorage.getItem('trailoPS_active_squad');
+    if (rawSavedGroup) {
+      const parsedGroup = JSON.parse(rawSavedGroup) as SquadGroupRecord;
+      if (parsedGroup && parsedGroup.id && parsedGroup.name) {
+        const savedRole =
+          localStorage.getItem(`trailoPS_userRole_${userId}`) ||
+          localStorage.getItem('trailoPS_userRole') ||
+          'super_admin';
+        try {
+          const headers = await buildApiHeaders(userId);
+          const restoreRes = await fetch('/api/groups/restore', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              userId,
+              group: parsedGroup,
+              role: savedRole,
+            }),
+          });
+          if (restoreRes.ok) {
+            const restoreData = await restoreRes.json().catch(() => null);
+            if (restoreData?.activeSquad?.group) {
+              saveGroupToUserLocalCache(
+                userId,
+                restoreData.activeSquad.group,
+                restoreData.activeSquad.role || savedRole
+              );
+              return restoreData.activeSquad;
+            }
+          }
+        } catch {}
+
+        return {
+          group: parsedGroup,
+          role: savedRole,
+          status: 'active',
+        };
+      }
+    }
+  } catch {}
+
   return null;
 }
 
@@ -1160,15 +1235,27 @@ export async function fetchUserSquad(userId: string): Promise<SquadGroupRecord |
   return res ? res.group : null;
 }
 
-export async function fetchSquadMembers(groupId: string, callerUserId?: string): Promise<SquadMemberRecord[]> {
+export async function fetchSquadMembers(
+  groupId: string,
+  callerUserId?: string,
+  callerName?: string,
+  callerAvatar?: string
+): Promise<SquadMemberRecord[]> {
   if (!groupId) return [];
   const effectiveCallerId = callerUserId || localStorage.getItem('trailoPS_currentUserId') || '';
+  const effectiveCallerName = callerName || localStorage.getItem('trailoPS_currentUserName') || '';
+  const effectiveCallerAvatar = callerAvatar || localStorage.getItem('trailoPS_currentUserAvatar') || '';
 
   // 1. Fetch from verified server endpoint (enforces approved group membership)
   try {
     const headers = await buildApiHeaders(effectiveCallerId);
+    const query = new URLSearchParams({
+      userId: effectiveCallerId,
+      ...(effectiveCallerName ? { userName: effectiveCallerName } : {}),
+      ...(effectiveCallerAvatar ? { userAvatar: effectiveCallerAvatar } : {}),
+    });
     const res = await fetch(
-      `/api/groups/${encodeURIComponent(groupId)}/members?userId=${encodeURIComponent(effectiveCallerId)}`,
+      `/api/groups/${encodeURIComponent(groupId)}/members?${query.toString()}`,
       { headers }
     );
     if (res.ok) {
@@ -1864,11 +1951,15 @@ export async function leaveSquadGroup(
   try {
     localStorage.removeItem('trailoPS_active_squad');
     localStorage.removeItem('trailoPS_active_squad_id');
+    localStorage.removeItem('trailoPS_activeTrip');
+    localStorage.removeItem('trailoPS_squad_members');
+    localStorage.removeItem('trailoPS_joined_group');
+    localStorage.removeItem(`trailoPS_active_squad_${effectiveUserId}`);
     localStorage.removeItem(`trailoPS_active_squad_id_${effectiveUserId}`);
-    localStorage.removeItem(`trailoPS_hasJoinedGroup_${effectiveUserId}`);
+    localStorage.setItem(`trailoPS_hasJoinedGroup_${effectiveUserId}`, 'false');
     const email = localStorage.getItem('trailoPS_currentUserEmail') || '';
     if (email) {
-      localStorage.removeItem(`trailoPS_hasJoinedGroup_${email}`);
+      localStorage.setItem(`trailoPS_hasJoinedGroup_${email}`, 'false');
     }
     window.dispatchEvent(new CustomEvent('trailoPS_group_left', { detail: { groupId, userId: effectiveUserId } }));
     window.dispatchEvent(new CustomEvent('trailoPS_members_updated'));
@@ -1933,15 +2024,19 @@ export async function createGroupNotice(params: {
   authorName: string;
   authorRole: string;
   imageUrl?: string;
+  groupName?: string;
+  groupCode?: string;
+  groupDestination?: string;
 }): Promise<{ success: boolean; notice?: SquadNoticeRecord; error?: string }> {
-  const effectiveUserId = params.userId || localStorage.getItem('trailoPS_currentUserId') || '';
-  if (!params.groupId || !effectiveUserId) {
-    return { success: false, error: 'You must be an active member of this squad group to broadcast a notice.' };
-  }
+  const effectiveUserId = params.userId || localStorage.getItem('trailoPS_currentUserId') || 'user_self';
+  const effectiveGroupId =
+    params.groupId && params.groupId !== 'undefined' && params.groupId !== 'null'
+      ? params.groupId
+      : localStorage.getItem('trailoPS_active_squad_id') || 'default';
 
   try {
     const headers = await buildApiHeaders(effectiveUserId);
-    const res = await fetch(`/api/groups/${encodeURIComponent(params.groupId)}/notices`, {
+    const res = await fetch(`/api/groups/${encodeURIComponent(effectiveGroupId)}/notices`, {
       method: 'POST',
       headers,
       body: JSON.stringify({
@@ -1952,6 +2047,9 @@ export async function createGroupNotice(params: {
         authorName: params.authorName,
         authorRole: params.authorRole,
         imageUrl: params.imageUrl,
+        groupName: params.groupName,
+        groupCode: params.groupCode,
+        groupDestination: params.groupDestination,
       }),
     });
 
@@ -1969,13 +2067,26 @@ export async function createGroupNotice(params: {
     try {
       window.dispatchEvent(
         new CustomEvent('trailoPS_group_notices_updated', {
-          detail: { groupId: params.groupId, notice },
+          detail: { groupId: effectiveGroupId, notice },
         })
       );
       if (typeof BroadcastChannel !== 'undefined') {
-        const bc = new BroadcastChannel(`trailops_squad_bus_${params.groupId}`);
-        bc.postMessage({ type: 'GROUP_NOTICE_BROADCAST', groupId: params.groupId, notice });
+        const bc = new BroadcastChannel(`trailops_squad_bus_${effectiveGroupId}`);
+        bc.postMessage({ type: 'GROUP_NOTICE_BROADCAST', groupId: effectiveGroupId, notice });
         bc.close();
+      }
+      const sb = getSupabase();
+      if (sb && isSupabaseConfigured()) {
+        const channel = sb.channel(`squad_realtime_${effectiveGroupId}`);
+        channel.subscribe((status) => {
+          if (status === 'SUBSCRIBED') {
+            channel.send({
+              type: 'broadcast',
+              event: 'notice_broadcast',
+              payload: { groupId: effectiveGroupId, notice },
+            });
+          }
+        });
       }
     } catch {}
 
@@ -2214,4 +2325,598 @@ export async function downloadMediaVaultFile(params: {
     }
   }
 }
+
+export interface SquadChecklistItemRecord {
+  id: string;
+  group_id: string;
+  user_id?: string;
+  name: string;
+  category: 'navigation' | 'medical' | 'apparel' | 'camp';
+  is_packed: boolean;
+  is_mandatory: boolean;
+  weight_grams: number;
+  spec?: string;
+  is_custom?: boolean;
+  created_at?: string;
+}
+
+export async function fetchSquadChecklist(groupId: string, userId?: string): Promise<SquadChecklistItemRecord[]> {
+  const effectiveGroupId = groupId || localStorage.getItem('trailoPS_active_squad_id') || 'default';
+
+  // 1. Query server API endpoint first so all members share the exact same group checklist
+  try {
+    const headers = await buildApiHeaders(userId);
+    const res = await fetch(`/api/groups/${encodeURIComponent(effectiveGroupId)}/checklist`, {
+      headers,
+    });
+    if (res.ok) {
+      const data = await res.json().catch(() => null);
+      if (data && Array.isArray(data.items) && data.items.length > 0) {
+        const normalized: SquadChecklistItemRecord[] = data.items.map((item: any) => ({
+          id: item.id || `chk-${Math.random()}`,
+          group_id: effectiveGroupId,
+          user_id: item.user_id,
+          name: item.name || item.title || 'Checklist Item',
+          category: item.category || 'camp',
+          is_packed: Boolean(item.is_packed ?? item.isPacked ?? item.completed),
+          is_mandatory: Boolean(item.is_mandatory ?? item.isMandatory ?? true),
+          weight_grams: Number(item.weight_grams ?? item.weightGrams) || 250,
+          spec: item.spec || undefined,
+          is_custom: Boolean(item.is_custom ?? item.isCustom ?? true),
+          created_at: item.created_at,
+        }));
+        try {
+          localStorage.setItem(
+            `trailoPS_trip_gear_${effectiveGroupId}`,
+            JSON.stringify(
+              normalized.map((i) => ({
+                id: i.id,
+                name: i.name,
+                category: i.category,
+                isPacked: i.is_packed,
+                isMandatory: i.is_mandatory,
+                weightGrams: i.weight_grams,
+                spec: i.spec,
+                isCustom: i.is_custom,
+              }))
+            )
+          );
+        } catch {}
+        return normalized;
+      }
+    }
+  } catch {}
+
+  // 2. Check Supabase if migrated
+  const sb = getSupabase();
+  if (sb && isSupabaseConfigured()) {
+    try {
+      const { data, error } = await sb
+        .from('squad_checklists')
+        .select('*')
+        .eq('group_id', effectiveGroupId)
+        .order('created_at', { ascending: false });
+
+      if (!error && data && Array.isArray(data) && data.length > 0) {
+        return data as SquadChecklistItemRecord[];
+      }
+    } catch {}
+  }
+
+  // 3. Fallback to localStorage
+  try {
+    const saved =
+      localStorage.getItem(`trailoPS_trip_gear_${effectiveGroupId}`) ||
+      localStorage.getItem('trailoPS_trip_gear');
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed)) {
+        return parsed.map((item: any) => ({
+          id: item.id || `chk-${Math.random()}`,
+          group_id: effectiveGroupId,
+          name: item.name || item.title,
+          category: item.category || 'camp',
+          is_packed: Boolean(item.isPacked ?? item.is_packed ?? item.completed),
+          is_mandatory: Boolean(item.isMandatory ?? item.is_mandatory ?? true),
+          weight_grams: Number(item.weightGrams ?? item.weight_grams) || 250,
+          spec: item.spec,
+          is_custom: Boolean(item.isCustom ?? item.is_custom ?? true),
+        }));
+      }
+    }
+  } catch {}
+
+  return [];
+}
+
+function broadcastGearChecklistUpdate(groupId: string) {
+  try {
+    window.dispatchEvent(new CustomEvent('trailoPS_gear_updated', { detail: { groupId } }));
+    if (typeof BroadcastChannel !== 'undefined') {
+      const bc = new BroadcastChannel(`trailops_squad_bus_${groupId}`);
+      bc.postMessage({ type: 'GEAR_CHECKLIST_UPDATED', groupId });
+      bc.close();
+    }
+  } catch {}
+}
+
+export async function saveSquadChecklistItem(
+  groupId: string,
+  item: {
+    id: string;
+    name: string;
+    category: 'navigation' | 'medical' | 'apparel' | 'camp';
+    isPacked: boolean;
+    isMandatory: boolean;
+    weightGrams: number;
+    spec?: string;
+    isCustom?: boolean;
+  },
+  userId?: string
+): Promise<{ success: boolean; item?: SquadChecklistItemRecord; error?: string }> {
+  const effectiveUserId = userId || localStorage.getItem('trailoPS_currentUserId') || 'user_self';
+  const effectiveGroupId = groupId || localStorage.getItem('trailoPS_active_squad_id') || 'default';
+
+  const record = {
+    id: item.id || `chk-${Date.now()}`,
+    group_id: effectiveGroupId,
+    user_id: effectiveUserId,
+    name: item.name,
+    category: item.category || 'camp',
+    is_packed: item.isPacked,
+    is_mandatory: item.isMandatory,
+    weight_grams: item.weightGrams || 250,
+    spec: item.spec || null,
+    is_custom: item.isCustom ?? true,
+  };
+
+  // 1. Save to server shared group checklist endpoint
+  try {
+    const headers = await buildApiHeaders(effectiveUserId);
+    await fetch(`/api/groups/${encodeURIComponent(effectiveGroupId)}/checklist`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ userId: effectiveUserId, item: record }),
+    });
+  } catch {}
+
+  // 2. Also save to Supabase if configured
+  const sb = getSupabase();
+  if (sb && isSupabaseConfigured()) {
+    try {
+      await sb.from('squad_checklists').upsert(record);
+    } catch {}
+  }
+
+  // 3. Save to local cache & broadcast immediately
+  try {
+    const existing = await fetchSquadChecklist(effectiveGroupId, effectiveUserId);
+    const updated = [...existing.filter((i) => i.id !== record.id), record as SquadChecklistItemRecord];
+    localStorage.setItem(
+      `trailoPS_trip_gear_${effectiveGroupId}`,
+      JSON.stringify(
+        updated.map((i) => ({
+          id: i.id,
+          name: i.name,
+          category: i.category,
+          isPacked: i.is_packed,
+          isMandatory: i.is_mandatory,
+          weightGrams: i.weight_grams,
+          spec: i.spec,
+          isCustom: i.is_custom,
+        }))
+      )
+    );
+  } catch {}
+
+  broadcastGearChecklistUpdate(effectiveGroupId);
+  return { success: true, item: record as any };
+}
+
+export async function updateSquadChecklistPacking(
+  groupId: string,
+  itemId: string,
+  isPacked: boolean,
+  userId?: string
+): Promise<boolean> {
+  const effectiveGroupId = groupId || localStorage.getItem('trailoPS_active_squad_id') || 'default';
+
+  try {
+    const headers = await buildApiHeaders(userId);
+    await fetch(
+      `/api/groups/${encodeURIComponent(effectiveGroupId)}/checklist/${encodeURIComponent(itemId)}`,
+      {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ is_packed: isPacked }),
+      }
+    );
+  } catch {}
+
+  const sb = getSupabase();
+  if (sb && isSupabaseConfigured()) {
+    try {
+      await sb
+        .from('squad_checklists')
+        .update({ is_packed: isPacked })
+        .eq('id', itemId)
+        .eq('group_id', effectiveGroupId);
+    } catch {}
+  }
+
+  try {
+    const list = await fetchSquadChecklist(effectiveGroupId, userId);
+    const updated = list.map((i) => (i.id === itemId ? { ...i, is_packed: isPacked } : i));
+    localStorage.setItem(
+      `trailoPS_trip_gear_${effectiveGroupId}`,
+      JSON.stringify(
+        updated.map((i) => ({
+          id: i.id,
+          name: i.name,
+          category: i.category,
+          isPacked: i.is_packed,
+          isMandatory: i.is_mandatory,
+          weightGrams: i.weight_grams,
+          spec: i.spec,
+          isCustom: i.is_custom,
+        }))
+      )
+    );
+  } catch {}
+
+  broadcastGearChecklistUpdate(effectiveGroupId);
+  return true;
+}
+
+export async function deleteSquadChecklistRecord(groupId: string, itemId: string): Promise<boolean> {
+  const effectiveGroupId = groupId || localStorage.getItem('trailoPS_active_squad_id') || 'default';
+
+  try {
+    const headers = await buildApiHeaders();
+    await fetch(
+      `/api/groups/${encodeURIComponent(effectiveGroupId)}/checklist/${encodeURIComponent(itemId)}`,
+      {
+        method: 'DELETE',
+        headers,
+      }
+    );
+  } catch {}
+
+  const sb = getSupabase();
+  if (sb && isSupabaseConfigured()) {
+    try {
+      await sb
+        .from('squad_checklists')
+        .delete()
+        .eq('id', itemId)
+        .eq('group_id', effectiveGroupId);
+    } catch {}
+  }
+
+  try {
+    const list = await fetchSquadChecklist(effectiveGroupId);
+    const updated = list.filter((i) => i.id !== itemId);
+    localStorage.setItem(
+      `trailoPS_trip_gear_${effectiveGroupId}`,
+      JSON.stringify(
+        updated.map((i) => ({
+          id: i.id,
+          name: i.name,
+          category: i.category,
+          isPacked: i.is_packed,
+          isMandatory: i.is_mandatory,
+          weightGrams: i.weight_grams,
+          spec: i.spec,
+          isCustom: i.is_custom,
+        }))
+      )
+    );
+  } catch {}
+
+  broadcastGearChecklistUpdate(effectiveGroupId);
+  return true;
+}
+
+export interface SquadBriefingRecord {
+  id: string;
+  group_id: string;
+  title: string;
+  target_iso_time: string;
+  duration_minutes: number;
+  created_by: string;
+  created_at: string;
+}
+
+export async function fetchGroupBriefing(groupId: string): Promise<SquadBriefingRecord | null> {
+  const effectiveGroupId = groupId || 'default';
+
+  // 1. Check server API endpoint
+  try {
+    const res = await fetch(`/api/groups/${encodeURIComponent(effectiveGroupId)}/briefing`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data?.briefing) {
+        if (new Date(data.briefing.target_iso_time).getTime() > Date.now()) {
+          return data.briefing as SquadBriefingRecord;
+        } else {
+          return null;
+        }
+      }
+    }
+  } catch {}
+
+  // 2. Check Supabase table
+  const sb = getSupabase();
+  if (sb && isSupabaseConfigured()) {
+    try {
+      const { data, error } = await sb
+        .from('squad_briefings')
+        .select('*')
+        .eq('group_id', effectiveGroupId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (!error && data) {
+        if (new Date(data.target_iso_time).getTime() > Date.now()) {
+          return data as SquadBriefingRecord;
+        } else {
+          return null;
+        }
+      }
+    } catch {}
+  }
+
+  // 3. Fallback to localStorage
+  try {
+    const saved = localStorage.getItem(`trailoPS_briefing_${effectiveGroupId}`);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (parsed && new Date(parsed.target_iso_time).getTime() > Date.now()) {
+        return parsed as SquadBriefingRecord;
+      } else {
+        localStorage.removeItem(`trailoPS_briefing_${effectiveGroupId}`);
+      }
+    }
+  } catch {}
+
+  return null;
+}
+
+export async function saveGroupBriefing(params: {
+  groupId: string;
+  title: string;
+  targetIsoTime: string;
+  durationMinutes: number;
+  userId?: string;
+  announceInNotices?: boolean;
+  authorName?: string;
+  authorRole?: string;
+}): Promise<{ success: boolean; briefing?: SquadBriefingRecord; error?: string }> {
+  const effectiveUserId = params.userId || localStorage.getItem('trailoPS_currentUserId') || 'user_self';
+  const effectiveGroupId = params.groupId || 'default';
+
+  const record: SquadBriefingRecord = {
+    id: `brf-${Date.now()}`,
+    group_id: effectiveGroupId,
+    title: params.title || 'Squad Dusk Briefing',
+    target_iso_time: params.targetIsoTime,
+    duration_minutes: params.durationMinutes,
+    created_by: effectiveUserId,
+    created_at: new Date().toISOString(),
+  };
+
+  let savedBriefing: SquadBriefingRecord = record;
+
+  // 1. Sync via Server API
+  try {
+    const res = await fetch(`/api/groups/${encodeURIComponent(effectiveGroupId)}/briefing`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...record,
+        announceInNotices: params.announceInNotices,
+        authorName: params.authorName,
+        authorRole: params.authorRole,
+        userId: effectiveUserId,
+      }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data?.briefing) {
+        savedBriefing = data.briefing;
+      }
+    }
+  } catch {}
+
+  // 2. Sync via Supabase
+  const sb = getSupabase();
+  if (sb && isSupabaseConfigured()) {
+    try {
+      const { data, error } = await sb
+        .from('squad_briefings')
+        .upsert(record)
+        .select()
+        .maybeSingle();
+
+      if (!error && data) {
+        savedBriefing = data as SquadBriefingRecord;
+      }
+
+      // Broadcast over Supabase Realtime channel
+      const channel = sb.channel(`squad_realtime_${effectiveGroupId}`);
+      channel.subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          channel.send({
+            type: 'broadcast',
+            event: 'briefing_updated',
+            payload: { groupId: effectiveGroupId, briefing: savedBriefing },
+          });
+        }
+      });
+    } catch {}
+  }
+
+  // 3. Save to localStorage
+  try {
+    localStorage.setItem(`trailoPS_briefing_${effectiveGroupId}`, JSON.stringify(savedBriefing));
+  } catch {}
+
+  // 4. Dispatch local and cross-tab events
+  window.dispatchEvent(
+    new CustomEvent('trailoPS_briefing_updated', {
+      detail: { groupId: effectiveGroupId, briefing: savedBriefing },
+    })
+  );
+
+  if (typeof BroadcastChannel !== 'undefined') {
+    const bc = new BroadcastChannel(`trailops_squad_bus_${effectiveGroupId}`);
+    bc.postMessage({ type: 'BRIEFING_UPDATED', groupId: effectiveGroupId, briefing: savedBriefing });
+    bc.close();
+  }
+
+  // 5. If requested and not already announced via server route, announce as Routine Notice
+  if (params.announceInNotices) {
+    const targetTimeStr = new Date(record.target_iso_time).toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    const minsLeft = Math.max(1, Math.round((new Date(record.target_iso_time).getTime() - Date.now()) / 60000));
+    createGroupNotice({
+      groupId: effectiveGroupId,
+      userId: effectiveUserId,
+      title: record.title,
+      text: `${record.title} is scheduled for ${targetTimeStr} (${minsLeft} min remaining). All squad members please prepare.`,
+      priority: 'info', // Routine priority
+      authorName: params.authorName || 'Super Admin',
+      authorRole: params.authorRole || 'Super Admin',
+    }).catch(() => {});
+  }
+
+  return { success: true, briefing: savedBriefing };
+}
+
+export async function cancelGroupBriefing(groupId: string): Promise<boolean> {
+  const effectiveGroupId = groupId || 'default';
+
+  // 1. Server API
+  try {
+    await fetch(`/api/groups/${encodeURIComponent(effectiveGroupId)}/briefing`, {
+      method: 'DELETE',
+    });
+  } catch {}
+
+  // 2. Supabase
+  const sb = getSupabase();
+  if (sb && isSupabaseConfigured()) {
+    try {
+      await sb.from('squad_briefings').delete().eq('group_id', effectiveGroupId);
+
+      const channel = sb.channel(`squad_realtime_${effectiveGroupId}`);
+      channel.subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          channel.send({
+            type: 'broadcast',
+            event: 'briefing_cancelled',
+            payload: { groupId: effectiveGroupId },
+          });
+        }
+      });
+    } catch {}
+  }
+
+  // 3. LocalStorage
+  try {
+    localStorage.removeItem(`trailoPS_briefing_${effectiveGroupId}`);
+  } catch {}
+
+  // 4. Dispatch events
+  window.dispatchEvent(
+    new CustomEvent('trailoPS_briefing_updated', {
+      detail: { groupId: effectiveGroupId, briefing: null },
+    })
+  );
+
+  if (typeof BroadcastChannel !== 'undefined') {
+    const bc = new BroadcastChannel(`trailops_squad_bus_${effectiveGroupId}`);
+    bc.postMessage({ type: 'BRIEFING_CANCELLED', groupId: effectiveGroupId });
+    bc.close();
+  }
+
+  return true;
+}
+
+export function subscribeToGroupBriefing(
+  groupId: string,
+  onUpdate: (briefing: SquadBriefingRecord | null) => void
+): () => void {
+  const effectiveGroupId = groupId || 'default';
+
+  // Initial fetch
+  fetchGroupBriefing(effectiveGroupId).then((b) => {
+    onUpdate(b);
+  });
+
+  // Local window event
+  const handleLocal = (e: any) => {
+    if (e.detail?.groupId === effectiveGroupId) {
+      onUpdate(e.detail?.briefing ?? null);
+    }
+  };
+  window.addEventListener('trailoPS_briefing_updated', handleLocal);
+
+  // BroadcastChannel
+  let bc: BroadcastChannel | null = null;
+  if (typeof BroadcastChannel !== 'undefined') {
+    bc = new BroadcastChannel(`trailops_squad_bus_${effectiveGroupId}`);
+    bc.onmessage = (event) => {
+      if (event.data?.type === 'BRIEFING_UPDATED') {
+        onUpdate(event.data?.briefing || null);
+      } else if (event.data?.type === 'BRIEFING_CANCELLED') {
+        onUpdate(null);
+      }
+    };
+  }
+
+  // Supabase Realtime channel
+  const sb = getSupabase();
+  let channel: any = null;
+  if (sb && isSupabaseConfigured()) {
+    try {
+      channel = sb
+        .channel(`squad_realtime_${effectiveGroupId}`)
+        .on('broadcast', { event: 'briefing_updated' }, (payload: any) => {
+          if (payload?.payload?.briefing) {
+            onUpdate(payload.payload.briefing);
+          }
+        })
+        .on('broadcast', { event: 'briefing_cancelled' }, () => {
+          onUpdate(null);
+        })
+        .subscribe();
+    } catch {}
+  }
+
+  // Polling interval every 12 seconds to ensure sync across all devices
+  const interval = setInterval(() => {
+    fetchGroupBriefing(effectiveGroupId).then((b) => {
+      onUpdate(b);
+    });
+  }, 12000);
+
+  return () => {
+    window.removeEventListener('trailoPS_briefing_updated', handleLocal);
+    if (bc) {
+      bc.close();
+    }
+    if (channel && sb) {
+      try {
+        sb.removeChannel(channel);
+      } catch {}
+    }
+    clearInterval(interval);
+  };
+}
+
+
 

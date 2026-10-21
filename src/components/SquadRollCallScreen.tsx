@@ -64,6 +64,8 @@ import { ChatModal } from './modals/ChatModal';
 import { CreateTripModal } from './modals/CreateTripModal';
 import { TrainJourneyModal } from './modals/TrainJourneyModal';
 import { MemberProfileModal } from './modals/MemberProfileModal';
+import { BriefingTimerModal } from './modals/BriefingTimerModal';
+import { BriefingCountdownBanner } from './BriefingCountdownBanner';
 import {
   TrainJourneyRecord,
   TrainSeatAssignmentRecord,
@@ -78,9 +80,19 @@ import {
   updateMemberRole,
   manageMemberRole,
   normalizeSquadCode,
+  fetchGroupBriefing,
+  saveGroupBriefing,
+  cancelGroupBriefing,
+  subscribeToGroupBriefing,
+  createGroupNotice,
+  fetchSquadChecklist,
+  saveSquadChecklistItem,
+  updateSquadChecklistPacking,
+  deleteSquadChecklistRecord,
   SquadGroupRecord,
   SquadMemberRecord,
   SquadJoinRequestRecord,
+  SquadBriefingRecord,
 } from '../lib/supabase';
 
 interface SquadRollCallScreenProps {
@@ -97,6 +109,7 @@ interface SquadRollCallScreenProps {
   currentUserId?: string;
   activeSquad?: SquadGroupRecord | null;
   onRefreshSquad?: () => void;
+  onSquadJoined?: (group: SquadGroupRecord, role?: UserRole) => void;
 }
 
 export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
@@ -113,10 +126,12 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
   currentUserId,
   activeSquad,
   onRefreshSquad,
+  onSquadJoined,
 }) => {
   const [isCheckedIn, setIsCheckedIn] = useState(false);
   const [activeFilter, setActiveFilter] = useState<'all' | 'present' | 'missing' | 'excursion' | 'scout' | 'medical'>('all');
-  const [countdownSecs, setCountdownSecs] = useState(165); // 02:45
+  const [activeBriefing, setActiveBriefing] = useState<SquadBriefingRecord | null>(null);
+  const [isBriefingModalOpen, setIsBriefingModalOpen] = useState(false);
   const [isPushToTalk, setIsPushToTalk] = useState(false);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
 
@@ -514,7 +529,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
     localStorage.setItem(key, JSON.stringify(missingItems));
   }, [missingItems, activeSquad?.id]);
 
-  // Shared Journey Checklist State (strictly real records)
+  // Shared Journey Checklist State (synced with Home Page Trip Gear Checklist & all squad members)
   const [newJourneyTask, setNewJourneyTask] = useState('');
   const [newJourneyCategory, setNewJourneyCategory] = useState('Permits & Entry');
   const [journeyChecklist, setJourneyChecklist] = useState<Array<{
@@ -535,10 +550,37 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
     return [];
   });
 
+  const syncSharedChecklist = async () => {
+    const targetGroupId = activeSquad?.id || localStorage.getItem('trailoPS_active_squad_id') || 'default';
+    if (!targetGroupId || (!hasJoinedGroup && targetGroupId === 'default')) return;
+    try {
+      const items = await fetchSquadChecklist(targetGroupId, currentUserId);
+      if (Array.isArray(items)) {
+        const mapped = items.map((item) => ({
+          id: item.id,
+          title: item.name,
+          category: item.spec || item.category || 'Camp',
+          completed: Boolean(item.is_packed),
+          assignedRole: 'All Squad',
+        }));
+        setJourneyChecklist(mapped);
+        localStorage.setItem(`trailoPS_journey_checklist_${targetGroupId}`, JSON.stringify(mapped));
+      }
+    } catch {}
+  };
+
   useEffect(() => {
-    const key = `trailoPS_journey_checklist_${activeSquad?.id || 'default'}`;
-    localStorage.setItem(key, JSON.stringify(journeyChecklist));
-  }, [journeyChecklist, activeSquad?.id]);
+    syncSharedChecklist();
+    const interval = setInterval(syncSharedChecklist, 3500);
+    const handleGearUpdated = () => {
+      syncSharedChecklist();
+    };
+    window.addEventListener('trailoPS_gear_updated', handleGearUpdated);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('trailoPS_gear_updated', handleGearUpdated);
+    };
+  }, [activeSquad?.id, hasJoinedGroup, currentUserId]);
 
   // Admin Governance Permissions State
   const [adminPermissions, setAdminPermissions] = useState({
@@ -561,7 +603,9 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
   const [isSimulatingSync, setIsSimulatingSync] = useState(false);
 
   // Dynamic Trip Header
-  const [tripName, setTripName] = useState(activeSquad?.name || 'Expedition Route');
+  const [tripName, setTripName] = useState(
+    hasJoinedGroup && activeSquad?.name ? activeSquad.name : 'Expedition Route'
+  );
   const [isEditingTripName, setIsEditingTripName] = useState(false);
   const [coverBg, setCoverBg] = useState(
     'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=1200&q=80'
@@ -569,13 +613,16 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
   const [isCoverPickerOpen, setIsCoverPickerOpen] = useState(false);
 
   useEffect(() => {
-    if (activeSquad?.name) {
+    if (hasJoinedGroup && activeSquad?.name) {
       setTripName(activeSquad.name);
+    } else if (!hasJoinedGroup) {
+      setTripName('');
+      setIsEditingTripName(false);
     }
-    if (activeSquad?.destination) {
+    if (hasJoinedGroup && activeSquad?.destination) {
       setEditDestination(activeSquad.destination);
     }
-  }, [activeSquad?.name, activeSquad?.destination]);
+  }, [hasJoinedGroup, activeSquad?.name, activeSquad?.destination]);
 
   const presetCovers = [
     {
@@ -668,42 +715,76 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
     }
 
     try {
-      const rawMembers = await fetchSquadMembers(activeSquad.id);
+      const rawMembers = await fetchSquadMembers(
+        activeSquad.id,
+        currentUserId,
+        currentUserName,
+        currentUserAvatar
+      );
       const sbMembers = (rawMembers || []).filter((m) => Boolean(m && m.user_id));
       if (sbMembers.length > 0) {
+        const isCreator =
+          activeSquad.created_by === currentUserId ||
+          activeSquad.creator_id === currentUserId ||
+          activeSquad.created_by === 'user_self';
+        const isInRoster = sbMembers.some(
+          (m) => m?.user_id === currentUserId || m?.user_id === 'user_self'
+        );
+        const locallyJoined =
+          localStorage.getItem(`trailoPS_hasJoinedGroup_${currentUserId}`) === 'true' ||
+          localStorage.getItem('trailoPS_active_squad_id') === activeSquad.id;
+
         // Prevent unauthorized access to private group data if user is not an approved member
-        if (
-          currentUserId &&
-          activeSquad.creator_id !== currentUserId &&
-          !sbMembers.some((m) => m?.user_id === currentUserId)
-        ) {
+        if (currentUserId && !isCreator && !isInRoster && !locallyJoined) {
           onSetJoinedGroup(false);
           setMembers([]);
           onShowToast('Access restricted: Your join request is awaiting Super Admin approval.');
           return;
         }
 
-        const mapped: SquadMember[] = sbMembers.map((m) => ({
-          id: m.user_id,
-          name:
-            m.profile?.full_name ||
-            (m.user_id === currentUserId ? `${currentUserName} (You)` : 'Squad Member'),
-          role:
-            m.role === 'super_admin'
-              ? 'Squad Commander'
-              : m.role === 'admin'
-              ? 'Sub-Admin'
-              : 'Expedition Member',
-          roleHierarchy: (m.role === 'admin' ? 'subgroup_admin' : m.role) as any,
-          status: m.status === 'distress' ? 'missing' : 'present',
-          avatar:
-            m.profile?.avatar_url ||
-            'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=120&q=80',
-          distance: m.user_id === currentUserId ? '0m' : '15m',
-          battery: 95,
-          lastPing: 'Just now',
-          phone: m.profile?.phone,
-        }));
+        const isPlaceholderName = (n?: string | null) =>
+          !n ||
+          n === 'Squad Member' ||
+          n === 'Expedition Member' ||
+          n === 'Trekker' ||
+          n === 'Member' ||
+          /^Trekker\s+[0-9a-f-]{4,}/i.test(n);
+
+        const mapped: SquadMember[] = sbMembers.map((m) => {
+          const isMe = m.user_id === currentUserId || m.user_id === 'user_self';
+          const profileFullName = !isPlaceholderName(m.profile?.full_name)
+            ? m.profile?.full_name
+            : null;
+          const resolvedName =
+            (isMe && currentUserName && !isPlaceholderName(currentUserName)
+              ? currentUserName
+              : null) ||
+            profileFullName ||
+            (m.profile?.email ? m.profile.email.split('@')[0] : null) ||
+            currentUserName ||
+            'Member';
+
+          return {
+            id: m.user_id,
+            name: resolvedName,
+            role:
+              m.role === 'super_admin'
+                ? 'Squad Commander'
+                : m.role === 'admin'
+                ? 'Sub-Admin'
+                : 'Expedition Member',
+            roleHierarchy: (m.role === 'admin' ? 'subgroup_admin' : m.role) as any,
+            status: m.status === 'distress' ? 'missing' : 'present',
+            avatar:
+              m.profile?.avatar_url ||
+              (isMe ? currentUserAvatar : '') ||
+              'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=120&q=80',
+            distance: isMe ? '0m' : '15m',
+            battery: 95,
+            lastPing: 'Just now',
+            phone: m.profile?.phone,
+          };
+        });
 
         // Sync current user's role from database membership
         const myMembership = sbMembers.find((m) => m?.user_id === currentUserId);
@@ -798,19 +879,14 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
     );
   }, [userRole, currentUserName, currentUserAvatar]);
 
-  // Countdown timer
+  // Synchronized Group Briefing Timer subscription across devices
   useEffect(() => {
-    const timer = setInterval(() => {
-      setCountdownSecs((prev) => (prev > 0 ? prev - 1 : 180));
-    }, 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  const formatCountdown = (secs: number) => {
-    const m = Math.floor(secs / 60);
-    const s = secs % 60;
-    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-  };
+    const groupId = activeSquad?.id || 'default';
+    const unsubscribe = subscribeToGroupBriefing(groupId, (b) => {
+      setActiveBriefing(b);
+    });
+    return () => unsubscribe();
+  }, [activeSquad?.id]);
 
   const handleCheckIn = () => {
     setIsCheckedIn(!isCheckedIn);
@@ -922,9 +998,11 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
   };
 
   // Shared Checklist minus deletion (Request 10)
-  const handleDeleteJourneyTask = (id: string, title: string) => {
+  const handleDeleteJourneyTask = async (id: string, title: string) => {
+    const targetGroupId = activeSquad?.id || localStorage.getItem('trailoPS_active_squad_id') || 'default';
     setJourneyChecklist((prev) => prev.filter((t) => t.id !== id));
-    onShowToast(`Removed task "${title}" from squad checklist.`);
+    await deleteSquadChecklistRecord(targetGroupId, id);
+    onShowToast(`Removed "${title}" from shared squad & home trip gear checklist.`);
   };
 
   const filteredMembers = members.filter((m) => {
@@ -1100,45 +1178,42 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
 
   return (
     <div className="max-w-md mx-auto min-h-screen bg-[#f8faf9] dark:bg-slate-950 text-slate-900 dark:text-slate-100 pb-32 transition-colors duration-200">
-      {/* 1ST: EDITABLE TRIP NAME WITH CUSTOMIZABLE BACKGROUND BANNER */}
-      <div className="relative w-full h-48 overflow-hidden border-b border-slate-200">
-        <img
-          src={coverBg}
-          alt="Trip Cover Background"
-          className="w-full h-full object-cover transition-all duration-500 brightness-75"
-        />
-        <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/40 to-black/20" />
+      {/* 1ST: EDITABLE TRIP NAME WITH CUSTOMIZABLE BACKGROUND BANNER (Shown only when joined to an active group) */}
+      {hasJoinedGroup && activeSquad && (
+        <div className="relative w-full h-48 overflow-hidden border-b border-slate-200">
+          <img
+            src={coverBg}
+            alt="Trip Cover Background"
+            className="w-full h-full object-cover transition-all duration-500 brightness-75"
+          />
+          <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/40 to-black/20" />
 
-        {/* Change Cover Button */}
-        <button
-          type="button"
-          onClick={() => setIsCoverPickerOpen(true)}
-          className="absolute top-3 right-3 px-2.5 py-1 rounded-full bg-black/60 hover:bg-black/80 backdrop-blur-md text-white text-[11px] font-bold flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer border border-white/20"
-        >
-          <Camera className="w-3.5 h-3.5" />
-          <span>Edit Background</span>
-        </button>
+          {/* Change Cover Button */}
+          <button
+            type="button"
+            onClick={() => setIsCoverPickerOpen(true)}
+            className="absolute top-3 right-3 p-2 rounded-full bg-black/60 hover:bg-black/80 backdrop-blur-md text-white transition-all active:scale-95 cursor-pointer border border-white/20 shadow-sm"
+            title="Edit Background"
+          >
+            <Camera className="w-4 h-4" />
+          </button>
 
-        {/* Share Squad via WhatsApp / Native Share Button */}
-        {hasJoinedGroup && (
+          {/* Share Squad Button */}
           <button
             type="button"
             onClick={handleShareGroup}
-            className="absolute top-3 left-3 px-3 py-1 rounded-full bg-emerald-600/90 hover:bg-emerald-500 backdrop-blur-md text-white text-[11px] font-bold flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer border border-emerald-400/40 shadow-sm"
-            title="Share squad invitation code via WhatsApp"
+            className="absolute top-3 left-3 p-2 rounded-full bg-emerald-600/90 hover:bg-emerald-500 backdrop-blur-md text-white transition-all active:scale-95 cursor-pointer border border-emerald-400/40 shadow-sm"
+            title="Share Squad"
           >
-            <Share2 className="w-3.5 h-3.5" />
-            <span>Share (WhatsApp)</span>
+            <Share2 className="w-4 h-4" />
           </button>
-        )}
 
-        {/* Trip Name & Editable title */}
-        <div className="absolute bottom-3 left-4 right-4 text-white z-10">
-          <div className="flex items-center gap-2 mb-1 flex-wrap">
-            <span className="px-2 py-0.5 rounded-md bg-emerald-500/80 text-white text-[10px] font-extrabold uppercase tracking-wider backdrop-blur-xs">
-              Expedition Squad
-            </span>
-            {hasJoinedGroup && (
+          {/* Trip Name & Editable title */}
+          <div className="absolute bottom-3 left-4 right-4 text-white z-10">
+            <div className="flex items-center gap-2 mb-1 flex-wrap">
+              <span className="px-2 py-0.5 rounded-md bg-emerald-500/80 text-white text-[10px] font-extrabold uppercase tracking-wider backdrop-blur-xs">
+                YOUR GROUP
+              </span>
               <button
                 type="button"
                 onClick={() => {
@@ -1151,66 +1226,90 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                 <span>CODE: {effectiveGroupCode}</span>
                 <Copy className="w-2.5 h-2.5" />
               </button>
-            )}
-            <span className="text-emerald-300 text-xs font-semibold truncate">
-              {activeSquad?.destination || 'Siliguri → Pelling Ridge'}
+              <span className="text-emerald-300 text-xs font-semibold truncate">
+                {activeSquad.destination || 'Expedition Base'}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between">
+              {isEditingTripName ? (
+                <div className="flex items-center gap-2 w-full">
+                  <input
+                    type="text"
+                    value={tripName}
+                    onChange={(e) => setTripName(e.target.value)}
+                    onBlur={() => setIsEditingTripName(false)}
+                    onKeyDown={(e) => e.key === 'Enter' && setIsEditingTripName(false)}
+                    autoFocus
+                    className="bg-black/60 text-white font-black text-lg px-2.5 py-1 rounded-lg border border-emerald-400 w-full outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setIsEditingTripName(false)}
+                    className="px-2.5 py-1 bg-emerald-600 rounded-lg text-xs font-bold"
+                  >
+                    Save
+                  </button>
+                </div>
+              ) : (
+                <div
+                  onClick={() => setIsEditingTripName(true)}
+                  className="flex items-center gap-2 cursor-pointer group"
+                  title="Tap to rename expedition"
+                >
+                  <h1 className="text-xl font-black tracking-tight text-white drop-shadow-sm">
+                    {tripName || activeSquad.name}
+                  </h1>
+                  <Edit2 className="w-4 h-4 text-emerald-400 opacity-80 group-hover:opacity-100 transition-opacity" />
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 2ND: SYNCHRONIZED GROUP BRIEFING TIMER BANNER (Auto-removes immediately when zero) */}
+      {hasJoinedGroup && activeSquad && (
+        <BriefingCountdownBanner
+          briefing={activeBriefing}
+          isSuperAdminOrAdmin={userRole === 'super_admin' || userRole === 'subgroup_admin'}
+          onOpenManageModal={() => setIsBriefingModalOpen(true)}
+          onCancelBriefing={async () => {
+            if (activeSquad?.id) {
+              await cancelGroupBriefing(activeSquad.id);
+              setActiveBriefing(null);
+              onShowToast('Group briefing timer cancelled.');
+            }
+          }}
+        />
+      )}
+
+      {/* Organizer Quick-Trigger for Group Briefing when no briefing is active */}
+      {!activeBriefing && (userRole === 'super_admin' || userRole === 'subgroup_admin') && hasJoinedGroup && activeSquad && (
+        <div className="bg-gradient-to-r from-slate-900 via-slate-850 to-slate-900 text-white px-4 py-2 flex items-center justify-between border-b border-slate-800 shadow-2xs">
+          <div className="flex items-center gap-2">
+            <Clock className="w-3.5 h-3.5 text-amber-400" />
+            <span className="text-xs text-slate-300 font-semibold">
+              Group Briefing Timer: <span className="text-slate-400 font-normal">Inactive</span>
             </span>
           </div>
-
-          <div className="flex items-center justify-between">
-            {isEditingTripName ? (
-              <div className="flex items-center gap-2 w-full">
-                <input
-                  type="text"
-                  value={tripName}
-                  onChange={(e) => setTripName(e.target.value)}
-                  onBlur={() => setIsEditingTripName(false)}
-                  onKeyDown={(e) => e.key === 'Enter' && setIsEditingTripName(false)}
-                  autoFocus
-                  className="bg-black/60 text-white font-black text-lg px-2.5 py-1 rounded-lg border border-emerald-400 w-full outline-none"
-                />
-                <button
-                  type="button"
-                  onClick={() => setIsEditingTripName(false)}
-                  className="px-2.5 py-1 bg-emerald-600 rounded-lg text-xs font-bold"
-                >
-                  Save
-                </button>
-              </div>
-            ) : (
-              <div
-                onClick={() => setIsEditingTripName(true)}
-                className="flex items-center gap-2 cursor-pointer group"
-                title="Tap to rename expedition"
-              >
-                <h1 className="text-xl font-black tracking-tight text-white drop-shadow-sm">
-                  {tripName}
-                </h1>
-                <Edit2 className="w-4 h-4 text-emerald-400 opacity-80 group-hover:opacity-100 transition-opacity" />
-              </div>
-            )}
-          </div>
+          <button
+            type="button"
+            onClick={() => setIsBriefingModalOpen(true)}
+            className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold transition-all flex items-center gap-1 cursor-pointer active:scale-95"
+          >
+            <Clock className="w-3 h-3" />
+            <span>Set Dusk Briefing</span>
+          </button>
         </div>
-      </div>
-
-      {/* 2ND: TRIP COUNTDOWN BANNER */}
-      <div className="bg-gradient-to-r from-emerald-950 via-[#0f5238] to-emerald-900 text-white px-4 py-2.5 flex items-center justify-between shadow-xs">
-        <div className="flex items-center gap-2">
-          <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
-          <span className="text-xs font-bold tracking-wide">Squad Dusk Briefing:</span>
-        </div>
-        <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-400/20 border border-amber-300/40 text-amber-300 font-mono text-xs font-black shadow-xs">
-          <Clock className="w-3.5 h-3.5 animate-spin" />
-          <span>{formatCountdown(countdownSecs)} left</span>
-        </div>
-      </div>
+      )}
 
       {/* SQUAD OPERATIONS CIRCULAR ACTION TAB (Circular Icons for Group Edit, Sub-Group, Announce, Admin Board, Missing Item, Checklist) */}
-      {hasJoinedGroup && (
+      {hasJoinedGroup && activeSquad && (
         <div className="px-4 pt-3.5 pb-1">
           <div className="flex items-center justify-between pb-1.5">
             <span className="text-[10px] font-extrabold text-slate-500 uppercase tracking-wider">
-              Squad Operations &amp; Tools
+              Group Tools
             </span>
             <span className="text-[10px] font-bold text-emerald-800 bg-emerald-100/60 px-2 py-0.5 rounded-full border border-emerald-300">
               Quick Actions
@@ -1228,7 +1327,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
               <div className="w-11 h-11 rounded-full bg-gradient-to-tr from-slate-800 to-slate-700 text-white flex items-center justify-center shadow-md group-hover:ring-2 ring-emerald-500 transition-all">
                 <Settings className="w-5 h-5 group-hover:rotate-45 transition-transform" />
               </div>
-              <span className="text-[11px] font-bold text-slate-800">Edit Group</span>
+              <span className="text-[11px] font-bold text-slate-800">Group Settings</span>
             </button>
 
             {/* Tool 2: Create Sub-Group */}
@@ -1252,7 +1351,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
               <div className="w-11 h-11 rounded-full bg-gradient-to-tr from-amber-600 to-orange-500 text-white flex items-center justify-center shadow-md group-hover:ring-2 ring-amber-400 transition-all">
                 <Megaphone className="w-5 h-5" />
               </div>
-              <span className="text-[11px] font-bold text-slate-800">Announce</span>
+              <span className="text-[11px] font-bold text-slate-800">Announcement</span>
             </button>
 
             {/* Tool 4: Admin Dashboard */}
@@ -1264,7 +1363,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
               <div className="w-11 h-11 rounded-full bg-gradient-to-tr from-indigo-700 to-purple-600 text-white flex items-center justify-center shadow-md group-hover:ring-2 ring-indigo-400 transition-all">
                 <Crown className="w-5 h-5" />
               </div>
-              <span className="text-[11px] font-bold text-slate-800">Admin Board</span>
+              <span className="text-[11px] font-bold text-slate-800">Admin Panel</span>
             </button>
 
             {/* Tool 5: Missing Item Request */}
@@ -1295,7 +1394,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
           {/* SECONDARY TOOLS IN A CLEAN ROW BELOW (NO HORIZONTAL OVERFLOW) */}
           <div className="pt-2.5 mt-2 border-t border-slate-200/80">
             <span className="text-[9.5px] font-bold uppercase tracking-wider text-slate-400 block mb-1.5 px-0.5">
-              Extended Squad Utilities
+              More Tools
             </span>
             <div className="grid grid-cols-4 gap-2">
               {/* Secondary 1: Sync Hub */}
@@ -1309,7 +1408,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                   <Database className="w-4 h-4" />
                   <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-400 rounded-full ring-2 ring-white animate-pulse" />
                 </div>
-                <span className="text-[9.5px] font-bold truncate">Sync Hub</span>
+                <span className="text-[9.5px] font-bold truncate">Sync Status</span>
               </button>
 
               {/* Secondary 2: HD Share */}
@@ -1341,7 +1440,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                     Rail
                   </span>
                 </div>
-                <span className="text-[9.5px] font-bold truncate">Train Hub</span>
+                <span className="text-[9.5px] font-bold truncate">Train Details</span>
               </button>
 
               {/* Secondary 4: View All Members */}
@@ -1357,7 +1456,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                     {members.length}
                   </span>
                 </div>
-                <span className="text-[9.5px] font-bold truncate">Roster ({members.length})</span>
+                <span className="text-[9.5px] font-bold truncate">Members ({members.length})</span>
               </button>
             </div>
           </div>
@@ -1365,7 +1464,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
       )}
 
       {/* DUAL SHORTCUTS: FACULTY DRIVE & SPLITWISE (Active Only When Joined to a Group) */}
-      {hasJoinedGroup && (
+      {hasJoinedGroup && activeSquad && (
         <div className="px-4 pt-3 grid grid-cols-2 gap-2.5">
           <button
             type="button"
@@ -1399,7 +1498,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
 
       {/* Main Operational Workspace */}
       <main className="flex-1 px-4 pt-3.5 space-y-4">
-        {!hasJoinedGroup ? (
+        {!hasJoinedGroup || !activeSquad ? (
           <div className="bg-white rounded-3xl p-6 border-2 border-emerald-500/30 text-center space-y-4 shadow-sm">
             <div className="w-16 h-16 rounded-2xl bg-emerald-100 text-[#0f5238] mx-auto flex items-center justify-center shadow-xs">
               <Users className="w-8 h-8" />
@@ -1446,7 +1545,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                   </div>
                   <div>
                     <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
-                      Shared Train Journey
+                      Train Schedule
                     </h3>
                     <p className="text-[10px] text-slate-500">
                       Live countdown, intermediate halts &amp; coach roster
@@ -1491,7 +1590,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                   return (
                     <div className="p-4 rounded-2xl bg-slate-50 border border-dashed border-slate-200 text-center space-y-2">
                       <p className="text-xs text-slate-500">
-                        No {trainDirection} train itinerary scheduled yet.
+                        {trainDirection === 'onward' ? 'No onward train added yet.' : 'No return train added yet.'}
                       </p>
                       {isAdmin ? (
                         <button
@@ -1574,15 +1673,15 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                   <div>
                     <div className="flex items-center gap-1.5">
                       <span className="text-[11px] text-emerald-800 font-bold uppercase tracking-wider">
-                        Basecamp Check-In
+                        GROUP CHECK-IN
                       </span>
                       <span className="inline-flex w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping" />
                     </div>
                     <h2 className="text-sm sm:text-base text-slate-900 mt-0.5 font-bold">
-                      Assembly: Pelling Basecamp
+                      Meeting Point: Pelling Basecamp
                     </h2>
                     <p className="text-xs text-slate-600 mt-0.5">
-                      Please check in near Ridge Marker #3 for dusk briefing.
+                      Meet near Ridge Marker #3 for the evening briefing.
                     </p>
                   </div>
                 </div>
@@ -1598,7 +1697,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                       className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-emerald-600 via-teal-600 to-[#0f5238] text-white text-xs sm:text-sm font-black flex items-center justify-center gap-2 shadow-lg shadow-emerald-700/25 active:scale-95 transition-all cursor-pointer"
                     >
                       <Radio className="w-5 h-5 animate-pulse" />
-                      <span>START SQUAD ROLL CALL (Take Attendance)</span>
+                      <span>Start Attendance</span>
                     </button>
                   ) : (
                     <div className="p-3 bg-emerald-50 border-2 border-emerald-500 rounded-2xl space-y-2">
@@ -1670,7 +1769,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
               <div className="flex items-center justify-between pb-3 border-b border-slate-100">
                 <div>
                   <span className="text-[10px] text-emerald-700 uppercase font-bold tracking-wider">
-                    Squad Attendance &amp; Roll Call
+                    GROUP ATTENDANCE
                   </span>
                   <h3 className="text-base font-bold text-slate-900">Attendance Overview</h3>
                 </div>
@@ -1719,7 +1818,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                       </span>
                     </div>
                   </div>
-                  <span className="text-xs text-slate-500 font-medium mt-1">Confirmed Rate</span>
+                  <span className="text-xs text-slate-500 font-medium mt-1">Attendance Rate</span>
                 </div>
 
                 {/* Numeric Split-Cells */}
@@ -1748,7 +1847,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                         : 'bg-amber-50/80 border-amber-200/80'
                     }`}
                   >
-                    <span className="text-[11px] text-amber-800 font-semibold block">Pending</span>
+                    <span className="text-[11px] text-amber-800 font-semibold block">Awaiting Response</span>
                     <span className="text-xl text-amber-700 font-extrabold">{rollCallPendingCount}</span>
                     <div className="flex items-center text-[10px] text-amber-700 font-semibold mt-0.5">
                       <Clock className="w-3 h-3 mr-0.5" />
@@ -1821,7 +1920,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                       : 'bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100'
                   }`}
                 >
-                  Missing ({missingCount})
+                  Absent ({missingCount})
                 </button>
               </div>
 
@@ -1848,7 +1947,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                       </div>
                       <span className="text-[10px] text-slate-500 block">
                         {isCurrentUserSuperAdmin
-                          ? 'Super Admin Authority: Review & approve new squad members'
+                          ? 'Review and approve new members'
                           : 'Only authorized Super Admins may approve or reject requests'}
                       </span>
                     </div>
@@ -1867,8 +1966,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                 {/* Pending Join Requests Queue */}
                 {joinRequests.filter((r) => r.status === 'pending').length === 0 ? (
                   <div className="p-3 rounded-xl bg-white border border-dashed border-slate-200 text-center text-[11px] text-slate-500">
-                    No pending join requests for this group right now. Share group code{' '}
-                    <strong className="font-mono text-slate-800">{effectiveGroupCode || '—'}</strong> to invite members.
+                    No pending requests. Share your group code to invite members.
                   </div>
                 ) : (
                   <div className="pt-1 space-y-2">
@@ -1936,7 +2034,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
               {/* Header with Separate Window Button (Request 9) */}
               <div className="mt-3 pt-2 flex items-center justify-between border-t border-slate-100">
                 <span className="text-[11px] font-bold text-slate-800">
-                  Squad Roster ({filteredMembers.length})
+                  Group Members ({filteredMembers.length})
                 </span>
                 <button
                   type="button"
@@ -2678,6 +2776,22 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                 localStorage.setItem(latestKey, JSON.stringify(newAnnounce));
                 window.dispatchEvent(new CustomEvent('trailoPS_new_announcement', { detail: newAnnounce }));
 
+                // Persist announcement to Supabase / server group notices
+                const targetGroupId = activeSquad?.id || localStorage.getItem('trailoPS_active_squad_id') || 'grp_pelling_trip';
+                createGroupNotice({
+                  groupId: targetGroupId,
+                  userId: currentUserId || 'user_self',
+                  title: quickAnnounceTitle.trim() || 'Squad Announcement',
+                  text: quickAnnounceText.trim(),
+                  priority: quickAnnouncePriority,
+                  authorName: currentUserName,
+                  authorRole: roleLabel,
+                  imageUrl: quickAnnounceImage || undefined,
+                  groupName: activeSquad?.name || 'Pelling trip',
+                  groupCode: activeSquad?.code || 'PEL001',
+                  groupDestination: activeSquad?.destination || 'Pelling, West Sikkim',
+                }).catch(() => {});
+
                 setIsAnnouncementModalOpen(false);
                 setQuickAnnounceTitle('');
                 setQuickAnnounceText('');
@@ -3374,11 +3488,15 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                   }`}
                 >
                   <div
-                    onClick={() => {
+                    onClick={async () => {
+                      const nextCompleted = !task.completed;
+                      const targetGroupId =
+                        activeSquad?.id || localStorage.getItem('trailoPS_active_squad_id') || 'default';
                       setJourneyChecklist((prev) =>
-                        prev.map((t) => (t.id === task.id ? { ...t, completed: !t.completed } : t))
+                        prev.map((t) => (t.id === task.id ? { ...t, completed: nextCompleted } : t))
                       );
-                      onShowToast(`Checklist task updated: ${task.title}`);
+                      await updateSquadChecklistPacking(targetGroupId, task.id, nextCompleted, currentUserId);
+                      onShowToast(`Checklist item updated: ${task.title}`);
                     }}
                     className="flex items-start gap-2.5 flex-1 min-w-0 cursor-pointer"
                   >
@@ -3420,19 +3538,48 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
 
             {/* Add New Shared Task */}
             <form
-              onSubmit={(e) => {
+              onSubmit={async (e) => {
                 e.preventDefault();
                 if (!newJourneyTask.trim()) return;
+                const taskId = `chk-${Date.now()}`;
+                const title = newJourneyTask.trim();
+                const targetGroupId =
+                  activeSquad?.id || localStorage.getItem('trailoPS_active_squad_id') || 'default';
                 const newTask = {
-                  id: `j-${Date.now()}`,
-                  title: newJourneyTask.trim(),
+                  id: taskId,
+                  title,
                   category: newJourneyCategory,
                   completed: false,
                   assignedRole: 'All Squad',
                 };
                 setJourneyChecklist((prev) => [...prev, newTask]);
                 setNewJourneyTask('');
-                onShowToast(`Added task to shared squad checklist!`);
+
+                const catLower = newJourneyCategory.toLowerCase();
+                const mappedGearCategory: 'navigation' | 'medical' | 'apparel' | 'camp' =
+                  catLower.includes('nav') || catLower.includes('permit')
+                    ? 'navigation'
+                    : catLower.includes('med') || catLower.includes('first aid')
+                    ? 'medical'
+                    : catLower.includes('apparel') || catLower.includes('cloth')
+                    ? 'apparel'
+                    : 'camp';
+
+                await saveSquadChecklistItem(
+                  targetGroupId,
+                  {
+                    id: taskId,
+                    name: title,
+                    category: mappedGearCategory,
+                    isPacked: false,
+                    isMandatory: true,
+                    weightGrams: 250,
+                    spec: newJourneyCategory,
+                    isCustom: true,
+                  },
+                  currentUserId
+                );
+                onShowToast(`Added "${title}" to shared squad & Home Trip Gear checklist!`);
               }}
               className="pt-2 border-t border-slate-100 space-y-2"
             >
@@ -3489,30 +3636,30 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
               <div className="p-3 rounded-2xl bg-sky-50/70 border border-sky-200">
                 <div className="flex items-center gap-1.5 text-sky-950 font-bold text-xs mb-1">
                   <Server className="w-4 h-4 text-sky-700 shrink-0" />
-                  <span>1. Firebase Cloud Firestore (Primary Database)</span>
+                  <span>1. Real-Time Cloud Storage</span>
                 </div>
                 <p className="text-[11px] text-slate-600 leading-relaxed">
-                  Sabhi groups, members, GPS coordinates, roll-call status, aur checklists real-time document schema ke roop mein store hote hain. WebSocket listeners ke through jaise hi Admin ya Scout koi bhi update karta hai, wo instantly (under 150ms) sabhi squad members ke phones mein sync ho jata hai bina refresh kiye!
+                  All groups, members, locations, roll call attendance, and checklists are securely stored in the cloud. When an organizer or member makes an update, changes sync across all squad members' phones instantly.
                 </p>
               </div>
 
               <div className="p-3 rounded-2xl bg-emerald-50/70 border border-emerald-200">
                 <div className="flex items-center gap-1.5 text-emerald-950 font-bold text-xs mb-1">
                   <Smartphone className="w-4 h-4 text-emerald-700 shrink-0" />
-                  <span>2. Offline PWA &amp; IndexedDB Local Cache</span>
+                  <span>2. Offline Storage &amp; Automatic Re-Sync</span>
                 </div>
                 <p className="text-[11px] text-slate-600 leading-relaxed">
-                  Jab trekker high-altitude mountains mein bina network zone (Zero 4G) mein hota hai, app stop nahi hoti. IndexedDB local storage mein offline actions queue hote hain, aur jaise hi phone satellite ya tower range mein aata hai, auto two-way delta sync ho jata hai.
+                  When traveling through remote areas with no cellular reception, the app continues working uninterrupted. Your actions are saved locally and automatically sync as soon as internet connection is restored.
                 </p>
               </div>
 
               <div className="p-3 rounded-2xl bg-indigo-50/70 border border-indigo-200">
                 <div className="flex items-center gap-1.5 text-indigo-950 font-bold text-xs mb-1">
                   <Wifi className="w-4 h-4 text-indigo-700 shrink-0" />
-                  <span>3. Bluetooth Low Energy (BLE) &amp; WebRTC Mesh</span>
+                  <span>3. Device-to-Device Mesh Safety</span>
                 </div>
                 <p className="text-[11px] text-slate-600 leading-relaxed">
-                  Zero-network dead zones mein nearby phones 100 meters range ke andar direct device-to-device peer mesh ke through SOS beacons and presence radar share karte hain.
+                  In zero-network dead zones, nearby devices communicate directly to share emergency alerts, check-ins, and safety radar within range.
                 </p>
               </div>
             </div>
@@ -4107,7 +4254,16 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
               onShowToast(res.error || 'Failed to create squad group.');
               return;
             }
-            onRefreshSquad?.();
+            try {
+              localStorage.setItem('trailoPS_active_squad', JSON.stringify(res.group));
+              localStorage.setItem('trailoPS_active_squad_id', res.group.id);
+              if (currentUserId) {
+                localStorage.setItem(`trailoPS_active_squad_${currentUserId}`, JSON.stringify(res.group));
+                localStorage.setItem(`trailoPS_active_squad_id_${currentUserId}`, res.group.id);
+                localStorage.setItem(`trailoPS_hasJoinedGroup_${currentUserId}`, 'true');
+              }
+            } catch {}
+            onSquadJoined?.(res.group, 'super_admin');
             onSetJoinedGroup(true);
             onShowToast(`Squad route "${res.group.name}" created! Unique Code: ${res.group.code}`);
           } catch (err) {
@@ -4188,6 +4344,20 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
           fallbackAvatar={viewingProfileFallback?.avatar}
         />
       )}
+
+      {/* Synchronized Group Briefing Timer Configuration Modal */}
+      <BriefingTimerModal
+        isOpen={isBriefingModalOpen}
+        onClose={() => setIsBriefingModalOpen(false)}
+        groupId={activeSquad?.id || 'default'}
+        groupName={activeSquad?.name || 'Squad'}
+        activeBriefing={activeBriefing}
+        onSaved={(b) => setActiveBriefing(b)}
+        onShowToast={onShowToast}
+        currentUserId={currentUserId}
+        currentUserName={currentUserName}
+        currentUserRole={userRole}
+      />
     </div>
   );
 };

@@ -348,7 +348,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           <section className="bg-white dark:bg-slate-900 rounded-3xl p-4 border border-slate-200 dark:border-slate-800 shadow-xs space-y-3">
             <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
               <h3 className="text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider">
-                Group Hierarchy &amp; Role Security
+                GROUP ROLES &amp; PERMISSIONS
               </h3>
               <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">
                 Anti Self-Promotion Active
@@ -377,7 +377,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                 </div>
                 <div>
                   <span className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-bold tracking-wide block">
-                    Your Assigned Rank
+                    YOUR ROLE
                   </span>
                   <h4 className="text-xs font-extrabold text-slate-900 dark:text-white">
                     {userRole === 'super_admin'
@@ -397,7 +397,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
             {/* Role Security Enforced Switcher */}
             <div className="pt-1">
               <label className="text-[11px] font-semibold text-slate-600 dark:text-slate-400 block mb-1.5">
-                Role Permission Level:
+                Account Role:
               </label>
               <div className="grid grid-cols-3 gap-1.5">
                 {(['member', 'subgroup_admin', 'super_admin'] as const).map((r) => {
@@ -424,7 +424,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
               {userRole === 'member' && (
                 <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-1.5 flex items-center gap-1">
                   <Lock className="w-3 h-3 text-amber-500 shrink-0" />
-                  <span>Ordinary members cannot elevate their own role (enforced by RLS trigger).</span>
+                  <span>Only Super Admins can assign group roles.</span>
                 </p>
               )}
             </div>
@@ -435,7 +435,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
         <section className="bg-white dark:bg-slate-900 rounded-3xl p-4 border border-slate-200 dark:border-slate-800 shadow-xs space-y-3">
           <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
             <h3 className="text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider">
-              Emergency &amp; Medical Record
+              EMERGENCY INFORMATION
             </h3>
             <span className="text-[10px] font-bold text-emerald-800 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950 px-2 py-0.5 rounded-full border border-emerald-200 dark:border-emerald-800">
               Encrypted
@@ -457,7 +457,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
               <Pill className="w-4 h-4 text-amber-600 mt-0.5 shrink-0" />
               <div className="flex-1">
                 <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase">
-                  Medications &amp; Allergies
+                  Medicines &amp; Allergies
                 </span>
                 <p className="text-xs font-extrabold text-slate-900 dark:text-slate-100">
                   {profileData.medications || 'No critical medications recorded'}
@@ -483,7 +483,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
         <section className="bg-white dark:bg-slate-900 rounded-3xl p-4 border border-slate-200 dark:border-slate-800 shadow-xs space-y-3">
           <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
             <h3 className="text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider">
-              Telemetry &amp; Hardware
+              DEVICE SETTINGS
             </h3>
             <span className="text-[10px] font-bold text-emerald-800 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950 px-2 py-0.5 rounded-full border border-emerald-200 dark:border-emerald-800">
               Mesh Active
@@ -517,9 +517,9 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
 
           <div className="flex items-center justify-between py-1 border-t border-slate-100 dark:border-slate-800 pt-2.5">
             <div className="space-y-0.5">
-              <span className="text-xs font-bold text-slate-900 dark:text-white block">Alpine Battery Conservation</span>
+              <span className="text-xs font-bold text-slate-900 dark:text-white block">Battery Saver</span>
               <span className="text-[11px] text-slate-500 dark:text-slate-400 block">
-                Optimizes GPS polling intervals from 1s to 5s in sub-zero ridge conditions.
+                Reduces GPS updates to save battery in cold conditions.
               </span>
             </div>
             <button
@@ -550,7 +550,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
             <h3 className="text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider flex items-center gap-1.5">
               <Sun className="w-4 h-4 text-amber-500" />
-              <span>Display Theme Mode</span>
+              <span>THEME</span>
             </h3>
             <span className="text-[10px] font-bold text-emerald-800 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950 px-2 py-0.5 rounded-full border border-emerald-200 dark:border-emerald-800">
               {theme === 'dark' ? 'Dark Theme' : theme === 'light' ? 'Light Theme' : 'System Theme'}
@@ -561,7 +561,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
             {[
               { id: 'light', label: 'Light Mode', icon: Sun, color: 'text-amber-500' },
               { id: 'dark', label: 'Dark Mode', icon: Moon, color: 'text-indigo-400' },
-              { id: 'system', label: 'Auto System', icon: Monitor, color: 'text-slate-500' },
+              { id: 'system', label: 'System Default', icon: Monitor, color: 'text-slate-500' },
             ].map((t) => {
               const Icon = t.icon;
               const isSelected = theme === t.id;
@@ -626,7 +626,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                 >
                   <span className="flex items-center gap-2">
                     <Crown className="w-4 h-4 text-amber-600" />
-                    <span>Transfer Squad Leadership to Another Member</span>
+                    <span>Transfer Group Ownership</span>
                   </span>
                   <ArrowRight className="w-3.5 h-3.5" />
                 </button>
@@ -637,7 +637,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                 onClick={handleLeaveSquadClick}
                 className="w-full py-2.5 px-3.5 rounded-2xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-700 dark:text-slate-300 font-bold text-xs flex items-center justify-between transition-all cursor-pointer"
               >
-                <span>Leave Expedition Squad</span>
+                <span>Leave Group</span>
                 <span className="text-[10px] text-slate-400 font-normal">
                   {userRole === 'super_admin' && superAdminCount <= 1 ? '(Requires successor transfer)' : ''}
                 </span>
@@ -649,10 +649,10 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
               <div className="p-4 bg-rose-50/70 dark:bg-rose-950/30 rounded-2xl border border-rose-200 dark:border-rose-900/60 space-y-2.5 mt-2">
                 <div className="flex items-center gap-2 text-rose-700 dark:text-rose-300">
                   <AlertOctagon className="w-4 h-4 shrink-0" />
-                  <span className="text-xs font-black uppercase tracking-wider">Super Admin Danger Zone</span>
+                  <span className="text-xs font-black uppercase tracking-wider">DANGER ZONE</span>
                 </div>
                 <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
-                  Permanently deletes this squad group, including railway journeys, seat assignments, and media vault records for all members.
+                  Permanently delete this group and its shared data for all members.
                 </p>
                 <button
                   type="button"
@@ -680,10 +680,10 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
               </div>
               <div>
                 <h3 className="text-xs font-extrabold text-slate-900 dark:text-white">
-                  Platform Emergency Recovery Console
+                  Admin Recovery
                 </h3>
                 <p className="text-[10px] text-slate-500">
-                  Restore Super Admin authority for orphaned squads
+                  Restore admin access to groups without an admin
                 </p>
               </div>
             </div>
@@ -717,7 +717,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                 </label>
                 <input
                   type="text"
-                  placeholder="e.g. Member ID or user UUID"
+                  placeholder="e.g. Member ID or Name"
                   value={recoveryMemberId}
                   onChange={(e) => setRecoveryMemberId(e.target.value)}
                   className="w-full h-10 px-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs text-slate-900 dark:text-white"
@@ -766,7 +766,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
               <div className="flex items-center gap-1.5 text-xs text-emerald-200/90 font-semibold pt-0.5">
                 <GraduationCap className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
                 <span>CS Student,</span>
-                <span className="text-white font-bold">Srikrishna College, Bagula</span>
+                <span className="text-white font-bold">Sri Krishna College, Nadia</span>
               </div>
               <p className="text-xs text-slate-300 leading-relaxed mt-1">
                 Expedition management platform with secure group authentication, live attendance roll call, private 4K media vault, and real-time offline sync.
@@ -782,7 +782,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           className="w-full py-3.5 rounded-2xl bg-rose-50 dark:bg-rose-950/40 hover:bg-rose-100 dark:hover:bg-rose-950/70 border border-rose-200 dark:border-rose-900/60 text-rose-700 dark:text-rose-300 font-bold text-xs flex items-center justify-center gap-2 transition-all active:scale-[0.98] cursor-pointer shadow-xs"
         >
           <LogOut className="w-4 h-4" />
-          <span>Sign Out of TRAIL OPS</span>
+          <span>Sign Out</span>
         </button>
       </main>
 

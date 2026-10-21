@@ -541,12 +541,16 @@ export const SignInScreen: React.FC<SignInScreenProps> = ({
           </div>
 
           <div className="relative z-10 space-y-1">
-            <h1 className="text-2xl sm:text-3xl font-black text-emerald-950 tracking-tight leading-tight">
-              {isSignUp ? 'Create Expedition Account' : 'Tactical Expedition Login'}
-            </h1>
-            <p className="text-xs sm:text-sm font-semibold text-emerald-900/80">
-              {isSignUp ? 'Register to join alpine squads and track telemetry' : 'Real-time telemetry, squad roll call & railway logs'}
-            </p>
+            {isSignUp && (
+              <>
+                <h1 className="text-2xl sm:text-3xl font-black text-emerald-950 tracking-tight leading-tight">
+                  Create Expedition Account
+                </h1>
+                <p className="text-xs sm:text-sm font-semibold text-emerald-900/80">
+                  Register to join alpine squads and track telemetry
+                </p>
+              </>
+            )}
           </div>
         </header>
 
@@ -701,11 +705,11 @@ export const SignInScreen: React.FC<SignInScreenProps> = ({
                 {isLoading ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Verifying with Supabase...</span>
+                    <span>Verifying...</span>
                   </>
                 ) : (
                   <>
-                    <span>{isSignUp ? 'Register Expedition Account' : 'Sign In with Supabase'}</span>
+                    <span>{isSignUp ? 'Create Account' : 'Sign In'}</span>
                     <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform duration-200" />
                   </>
                 )}
@@ -796,7 +800,7 @@ export const SignInScreen: React.FC<SignInScreenProps> = ({
               </button>
             </p>
             <p className="text-slate-400 text-[10px] tracking-wide">
-              Secure Supabase PostgreSQL &amp; Cloud Storage Protection
+              Secure Cloud Storage &amp; Data Protection
             </p>
 
             {/* Developer Credit & College Attribution */}
@@ -804,7 +808,7 @@ export const SignInScreen: React.FC<SignInScreenProps> = ({
               <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-50 border border-emerald-300/80 shadow-2xs">
                 <Code2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
                 <span className="text-[11px] font-medium text-slate-700">
-                  Developed &amp; Maintained by
+                  Developed &amp; Maintained by:
                 </span>
                 <span className="text-[11px] font-extrabold text-emerald-950">
                   Pratap Paul
@@ -813,7 +817,7 @@ export const SignInScreen: React.FC<SignInScreenProps> = ({
               <div className="inline-flex items-center gap-1.5 text-[11px] text-slate-600 font-medium">
                 <GraduationCap className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
                 <span>CS Student,</span>
-                <span className="font-bold text-slate-800">Srikrishna College, Bagula</span>
+                <span className="font-bold text-slate-800">Sri Krishna College, Nadia</span>
               </div>
             </div>
           </div>

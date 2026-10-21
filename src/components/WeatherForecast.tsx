@@ -133,9 +133,11 @@ export const WeatherForecast: React.FC<WeatherForecastProps> = ({
   useEffect(() => {
     if (!hasAutoDetectedRef.current) {
       hasAutoDetectedRef.current = true;
-      detectLiveGpsWeather(false);
+      if (!destinationName || destinationName === 'Expedition Destination') {
+        detectLiveGpsWeather(false);
+      }
     }
-  }, [detectLiveGpsWeather]);
+  }, [detectLiveGpsWeather, destinationName]);
 
   // Debounced live geocoded search
   useEffect(() => {

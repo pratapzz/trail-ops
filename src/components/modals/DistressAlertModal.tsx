@@ -5,15 +5,19 @@ interface DistressAlertModalProps {
   isOpen: boolean;
   onClose: () => void;
   coordinates: string;
+  locationLabel?: string;
 }
 
 export const DistressAlertModal: React.FC<DistressAlertModalProps> = ({
   isOpen,
   onClose,
   coordinates,
+  locationLabel,
 }) => {
   const [countdown, setCountdown] = useState(10);
   const [isDispatched, setIsDispatched] = useState(false);
+  const [detectedCoords, setDetectedCoords] = useState<string>('');
+  const [detectedLocationLabel, setDetectedLocationLabel] = useState<string>('Detecting GPS location...');
 
   useEffect(() => {
     if (!isOpen) {
@@ -32,7 +36,86 @@ export const DistressAlertModal: React.FC<DistressAlertModalProps> = ({
     }
   }, [isOpen, countdown, isDispatched]);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    if (!navigator.geolocation) {
+      setDetectedLocationLabel('Location Unavailable');
+      return;
+    }
+
+    let isMounted = true;
+    const handlePos = async (pos: GeolocationPosition) => {
+      if (!isMounted) return;
+      const lat = pos.coords.latitude;
+      const lng = pos.coords.longitude;
+      const alt = pos.coords.altitude;
+      const coordStr = `${Math.abs(lat).toFixed(4)}° ${lat >= 0 ? 'N' : 'S'}, ${Math.abs(lng).toFixed(4)}° ${lng >= 0 ? 'E' : 'W'}`;
+      setDetectedCoords(coordStr);
+
+      try {
+        const res = await fetch(
+          `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=14&addressdetails=1`,
+          { headers: { 'Accept-Language': 'en' } }
+        );
+        if (!res.ok) throw new Error('Reverse geocode failed');
+        const data = await res.json();
+        if (!isMounted) return;
+        const addr = data?.address || {};
+        const locality =
+          addr.town ||
+          addr.city ||
+          addr.village ||
+          addr.suburb ||
+          addr.county ||
+          addr.state_district ||
+          data?.name ||
+          '';
+        const region = addr.state || addr.country || '';
+        const altSuffix =
+          typeof alt === 'number' && !Number.isNaN(alt) ? ` (${Math.round(alt)}m ASL)` : '';
+        const formatted = [locality, region].filter(Boolean).join(', ');
+        setDetectedLocationLabel(
+          formatted ? `${formatted}${altSuffix}` : data?.display_name?.split(',').slice(0, 3).join(',') || `Live GPS Fix${altSuffix}`
+        );
+      } catch {
+        if (isMounted) {
+          const altSuffix =
+            typeof alt === 'number' && !Number.isNaN(alt) ? ` (${Math.round(alt)}m ASL)` : '';
+          setDetectedLocationLabel(`Live Device GPS Active${altSuffix}`);
+        }
+      }
+    };
+
+    navigator.geolocation.getCurrentPosition(
+      handlePos,
+      () => {
+        navigator.geolocation.getCurrentPosition(
+          handlePos,
+          () => {
+            if (isMounted) setDetectedLocationLabel('Location Unavailable');
+          },
+          { enableHighAccuracy: false, timeout: 10000, maximumAge: 30000 }
+        );
+      },
+      { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
+    );
+
+    return () => {
+      isMounted = false;
+    };
+  }, [isOpen]);
+
   if (!isOpen) return null;
+
+  const effectiveCoordinates =
+    coordinates && coordinates !== 'Location Unavailable'
+      ? coordinates
+      : detectedCoords || 'Location Unavailable';
+
+  const effectiveLocationLabel =
+    locationLabel && !locationLabel.startsWith('Detecting')
+      ? locationLabel
+      : detectedLocationLabel;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-rose-950/80 backdrop-blur-md animate-in fade-in duration-200">
@@ -70,18 +153,18 @@ export const DistressAlertModal: React.FC<DistressAlertModalProps> = ({
         <p className="text-xs text-rose-200/90 leading-relaxed mb-4 max-w-xs mx-auto">
           {isDispatched
             ? 'Rescue beacons locked onto your GPS coordinates. Stay in position and keep your device battery saved.'
-            : 'Live GPS telemetry and health profile are being transmitted to Sikkim SDRF, basecamp command, and nearby mesh peers.'}
+            : 'Live GPS telemetry and health profile are being transmitted to rescue command and nearby mesh peers.'}
         </p>
 
         {/* Telemetry Box */}
         <div className="bg-black/40 rounded-2xl p-3 border border-rose-500/30 text-left mb-4 font-mono text-xs space-y-1.5">
           <div className="flex justify-between text-slate-300">
             <span>Coordinates:</span>
-            <span className="text-emerald-400 font-bold">{coordinates}</span>
+            <span className="text-emerald-400 font-bold">{effectiveCoordinates}</span>
           </div>
-          <div className="flex justify-between text-slate-300">
-            <span>Altitude:</span>
-            <span className="text-white">2,150m ASL (Pelling Sector 4)</span>
+          <div className="flex justify-between text-slate-300 gap-2">
+            <span>Location:</span>
+            <span className="text-white text-right truncate">{effectiveLocationLabel}</span>
           </div>
           <div className="flex justify-between text-slate-300">
             <span>Channel Relay:</span>

@@ -41,6 +41,8 @@ import { PermissionModal } from './modals/PermissionModal';
 import { TripGearChecklist } from './TripGearChecklist';
 import { PersonalPackingNotes } from './PersonalPackingNotes';
 import { WeatherForecast } from './WeatherForecast';
+import { BriefingCountdownBanner } from './BriefingCountdownBanner';
+import { BriefingTimerModal } from './modals/BriefingTimerModal';
 import {
   getSupabase,
   isSupabaseConfigured,
@@ -51,9 +53,12 @@ import {
   submitSquadJoinRequest,
   fetchUserJoinRequestsAndNotifications,
   markNotificationRead,
+  subscribeToGroupBriefing,
+  cancelGroupBriefing,
   SquadGroupRecord,
   SquadJoinRequestRecord,
   UserNotificationRecord,
+  SquadBriefingRecord,
 } from '../lib/supabase';
 
 interface GatewayScreenProps {
@@ -84,6 +89,7 @@ interface GatewayScreenProps {
   currentUserEmail?: string;
   activeSquadId?: string;
   activeSquad?: any;
+  userRole?: UserRole;
   onSquadJoined?: (group: SquadGroupRecord, role?: UserRole) => void;
 }
 
@@ -91,6 +97,7 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
   userName = 'Explorer',
   currentUserId,
   currentUserEmail,
+  userRole = 'member',
   onNavigate,
   onShowToast,
   hasJoinedGroup,
@@ -235,14 +242,27 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
     }
   }, [departureDate]);
 
-  // Live countdown timer synced with squad
-  const [countdownSecs, setCountdownSecs] = useState(165); // 02:45
+  const isSuperAdminOrAdmin =
+    userRole === 'super_admin' ||
+    userRole === 'admin' ||
+    userRole === 'subgroup_admin' ||
+    activeSquad?.created_by === currentUserId;
+
+  // Synchronized Group Briefing Timer across all member devices
+  const [activeBriefing, setActiveBriefing] = useState<SquadBriefingRecord | null>(null);
+  const [isBriefingModalOpen, setIsBriefingModalOpen] = useState(false);
+
   useEffect(() => {
-    const timer = setInterval(() => {
-      setCountdownSecs((prev) => (prev > 0 ? prev - 1 : 180));
-    }, 1000);
-    return () => clearInterval(timer);
-  }, []);
+    const targetGroupId = activeSquad?.id || activeSquadId;
+    if (!targetGroupId) {
+      setActiveBriefing(null);
+      return;
+    }
+    const unsubscribe = subscribeToGroupBriefing(targetGroupId, (b) => {
+      setActiveBriefing(b);
+    });
+    return () => unsubscribe();
+  }, [activeSquad?.id, activeSquadId]);
 
   // Days until Expedition Departure Countdown (Live calculation against activeDepartureDate)
   const [departureDaysLeft, setDepartureDaysLeft] = useState({
@@ -330,6 +350,19 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
                 onSquadJoined?.(acceptedGroup, 'member');
                 onSetJoinedGroup(true);
               }
+            } else if (notif.type === 'notice_broadcast') {
+              window.dispatchEvent(
+                new CustomEvent('trailoPS_new_announcement', {
+                  detail: {
+                    id: notif.notice_id || notif.id,
+                    title: (notif.title || 'Squad Broadcast').replace(/^📢\s*\[[^\]]+\]\s*/, ''),
+                    text: notif.message,
+                    priority: notif.priority || 'critical',
+                    author: notif.author_name || 'Squad Member',
+                    timestamp: 'Just now',
+                  },
+                })
+              );
             }
           }
         }
@@ -361,12 +394,24 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
 
     setIsVerifyingCode(true);
     try {
-      const foundSquad = await lookupSquadByCode(clean, currentUserId);
+      const foundSquad = await lookupSquadByCode(clean, currentUserId || 'user_self');
       if (foundSquad) {
         setVerifiedSquad(foundSquad);
         setCodeLookupError(null);
-        if (foundSquad.userRequestStatus === 'member' || foundSquad.userRequestStatus === 'accepted') {
-          onShowToast(`Verified group "${foundSquad.name}" — You are an approved member!`);
+        const resolvedRole = ((foundSquad as any).myRole as UserRole) || 'super_admin';
+        if (
+          (foundSquad as any).autoJoined ||
+          foundSquad.userRequestStatus === 'member' ||
+          foundSquad.userRequestStatus === 'accepted'
+        ) {
+          onSquadJoined?.(foundSquad, resolvedRole);
+          onSetJoinedGroup(true);
+          onShowToast(
+            (foundSquad as any).autoJoined
+              ? `Joined empty group "${foundSquad.name}" (${foundSquad.code}) automatically as Super Admin!`
+              : `Entered group "${foundSquad.name}" (${foundSquad.code})!`
+          );
+          return;
         } else if (foundSquad.userRequestStatus === 'pending') {
           onShowToast(`Group "${foundSquad.name}" verified — Your join request is awaiting Super Admin approval.`);
         } else {
@@ -394,14 +439,12 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
       await verifyCodeLookup(passcode.join(''));
       return;
     }
-    if (!currentUserId) {
-      onShowToast('Please sign in first to submit a join request.');
-      return;
-    }
+    const effectiveUserId = currentUserId || 'user_self';
 
-    // If already an approved member, enter the group directly
+    // If already an approved member or auto-joined empty group, enter the group directly
     if (group.userRequestStatus === 'member' || group.userRequestStatus === 'accepted') {
-      onSquadJoined?.(group, 'member');
+      const resolvedRole = ((group as any).myRole as UserRole) || 'super_admin';
+      onSquadJoined?.(group, resolvedRole);
       onSetJoinedGroup(true);
       onShowToast(`Entered expedition group "${group.name}" (${group.code})!`);
       onNavigate('squad');
@@ -421,7 +464,7 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
     try {
       const res = await submitSquadJoinRequest(
         group.id,
-        currentUserId,
+        effectiveUserId,
         userName,
         currentUserEmail,
         avatarUrl
@@ -429,10 +472,15 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
 
       if (res.alreadyMember) {
         const updated = { ...group, userRequestStatus: 'member' as const };
+        const resolvedRole = ((res as any).role as UserRole) || 'super_admin';
         setVerifiedSquad(updated);
-        onSquadJoined?.(updated, 'member');
+        onSquadJoined?.(updated, resolvedRole);
         onSetJoinedGroup(true);
-        onShowToast(`You are already an active member of "${group.name}"!`);
+        onShowToast(
+          (res as any).autoJoined
+            ? `Joined empty group "${group.name}" automatically as Super Admin!`
+            : `Entered group "${group.name}"!`
+        );
         onNavigate('squad');
         return;
       }
@@ -662,7 +710,7 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
               <div className="w-5 h-5 rounded-md bg-emerald-500/15 flex items-center justify-center text-emerald-700">
                 <Compass className="w-3.5 h-3.5 animate-spin" style={{ animationDuration: '12s' }} />
               </div>
-              <span className="font-bold">Home Base • Expedition Hub</span>
+              <span className="font-bold">Home</span>
             </div>
             <span className="px-2 py-0.5 rounded-full bg-emerald-100/80 text-[#0f5238] text-[10px] font-bold flex items-center gap-1 border border-emerald-300/60 shadow-2xs">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" />
@@ -684,14 +732,14 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
             <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-gradient-to-r from-emerald-500/15 via-teal-500/20 to-amber-500/15 border border-emerald-500/30 text-emerald-900 shadow-2xs">
               <Sparkles className="w-3 h-3 text-emerald-600 animate-spin" style={{ animationDuration: '4s' }} />
               <span className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-800">
-                Expedition Ready
+                TRIP READY
               </span>
             </div>
           </div>
 
           <p className="text-xs text-slate-600 leading-relaxed">
             {hasJoinedGroup
-              ? `Your squad "${activeSquad?.name || 'Squad'}" is active and ready for ${activeDestination.name ? activeDestination.name.split('(')[0].trim() : 'the trip'}.`
+              ? `Your group '${activeSquad?.name || 'group'}' is ready for the trip.`
               : 'Join an existing squad route or create a new one for your group.'}
           </p>
         </section>
@@ -699,6 +747,22 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
         {/* CONDITION 1: IF GROUP IS JOINED -> SQUAD LIVE COUNTDOWN, TRIP BUDGET BAR, & DRIVE */}
         {hasJoinedGroup ? (
           <section className="space-y-3.5 animate-in fade-in duration-300">
+            {/* SYNCHRONIZED GROUP BRIEFING TIMER (Auto-removes immediately when countdown reaches zero) */}
+            <BriefingCountdownBanner
+              briefing={activeBriefing}
+              isSuperAdminOrAdmin={isSuperAdminOrAdmin}
+              onOpenManageModal={() => setIsBriefingModalOpen(true)}
+              onCancelBriefing={async () => {
+                const targetGroupId = activeSquad?.id || activeSquadId;
+                if (targetGroupId) {
+                  await cancelGroupBriefing(targetGroupId);
+                  setActiveBriefing(null);
+                  onShowToast('Group briefing timer ended.');
+                }
+              }}
+              variant="card"
+            />
+
             {/* Live Squad Countdown & Status Card */}
             <div className="rounded-3xl p-5 bg-gradient-to-br from-[#0f5238] via-[#1b5e40] to-emerald-900 text-white shadow-xl shadow-emerald-950/20 relative overflow-hidden">
               <div className="absolute -top-12 -right-12 w-40 h-40 bg-emerald-400/20 rounded-full blur-2xl pointer-events-none" />
@@ -710,7 +774,7 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
                   </div>
                   <div>
                     <span className="text-[10px] text-emerald-300 uppercase font-extrabold tracking-wider">
-                      Connected Squad
+                      YOUR GROUP
                     </span>
                     <h3 className="text-base font-extrabold leading-tight text-white">
                       {activeSquad?.name || 'Squad Expedition'}
@@ -733,7 +797,7 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
                 <div className="flex items-center justify-between text-xs font-bold">
                   <span className="text-amber-300 flex items-center gap-1.5">
                     <Calendar className="w-3.5 h-3.5" />
-                    <span>Trip Departure Countdown</span>
+                    <span>Trip Countdown</span>
                   </span>
                   
                   {/* Edit Date Action Button */}
@@ -781,7 +845,7 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
                   </div>
                 ) : (
                   <div className="flex items-center justify-between text-[10px] text-slate-300 font-medium px-0.5">
-                    <span>Target Date: <strong className="text-white font-mono">{activeDepartureDate}</strong></span>
+                    <span>Departure Date: <strong className="text-white font-mono">{activeDepartureDate}</strong></span>
                     <span className="text-emerald-300 font-bold">
                       {departureDaysLeft.days > 0
                         ? `${departureDaysLeft.days} Days Remaining`
@@ -815,7 +879,7 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
               {/* Progress & Quick Stats - 100% Real Member Count */}
               <div className="grid grid-cols-2 gap-3 py-2 bg-black/20 rounded-2xl p-3 border border-white/10 mb-3 relative z-10">
                 <div>
-                  <span className="text-[10px] text-emerald-200 block font-medium">Checked In / Present</span>
+                  <span className="text-[10px] text-emerald-200 block font-medium">Present Members</span>
                   <div className="flex items-baseline gap-1.5">
                     <span className="text-xl font-black text-white">
                       {squadMemberStats.present} / {squadMemberStats.total}
@@ -826,10 +890,10 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
                   </div>
                 </div>
                 <div>
-                  <span className="text-[10px] text-emerald-200 block font-medium">Squad Status</span>
+                  <span className="text-[10px] text-emerald-200 block font-medium">Group Status</span>
                   <span className="text-xs font-bold text-white flex items-center gap-1 mt-1">
                     <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
-                    {squadMemberStats.present === squadMemberStats.total ? 'All Present' : `${squadMemberStats.total - squadMemberStats.present} Awaiting Check-In`}
+                    {squadMemberStats.present === squadMemberStats.total ? 'Everyone Is Present' : `${squadMemberStats.total - squadMemberStats.present} Awaiting Check-In`}
                   </span>
                 </div>
               </div>
@@ -1011,7 +1075,12 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
             </div>
 
             {/* PRE-EXPEDITION ESSENTIALS: TRIP GEAR CHECKLIST */}
-            <TripGearChecklist onShowToast={onShowToast} />
+            <TripGearChecklist
+              onShowToast={onShowToast}
+              groupId={activeSquad?.id || activeSquadId || localStorage.getItem('trailoPS_active_squad_id') || 'default'}
+              currentUserId={currentUserId}
+              userRole={userRole}
+            />
 
             {/* PERSONAL TRAIL PACKING TO-DO & NOTES */}
             <PersonalPackingNotes onShowToast={onShowToast} />
@@ -1023,8 +1092,8 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
                   <AlertOctagon className="w-5 h-5 animate-pulse" />
                 </div>
                 <div>
-                  <h4 className="text-xs font-bold text-slate-900">Emergency Distress Beacon</h4>
-                  <p className="text-[11px] text-slate-500">One-tap emergency help &amp; contacts</p>
+                  <h4 className="text-xs font-bold text-slate-900">Emergency SOS</h4>
+                  <p className="text-[11px] text-slate-500">Get emergency help</p>
                 </div>
               </div>
 
@@ -1033,7 +1102,7 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
                 onClick={() => onNavigate('sos')}
                 className="py-2 px-3.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow-xs active:scale-95 transition-all cursor-pointer"
               >
-                Open SOS Hub
+                Open SOS
               </button>
             </div>
           </section>
@@ -1404,7 +1473,7 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
           <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300/80 dark:border-emerald-800/60 shadow-2xs">
             <Code2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
             <span className="text-[11px] font-semibold text-slate-700 dark:text-slate-300">
-              Developed &amp; Maintained by
+              Developed &amp; Maintained by:
             </span>
             <span className="text-[11px] font-black text-emerald-950 dark:text-emerald-300">
               Pratap Paul
@@ -1413,7 +1482,7 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
           <div className="flex items-center justify-center gap-1.5 text-[11px] text-slate-600 dark:text-slate-400 font-medium mt-1.5">
             <GraduationCap className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
             <span>CS Student,</span>
-            <span className="font-bold text-slate-800 dark:text-slate-200">Srikrishna College, Bagula</span>
+            <span className="font-bold text-slate-800 dark:text-slate-200">Sri Krishna College, Nadia</span>
           </div>
         </footer>
       </main>
@@ -1474,6 +1543,20 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
           localStorage.setItem('trailoPS_userRole', 'super_admin');
           onSetJoinedGroup(true);
         }}
+      />
+
+      {/* Synchronized Group Briefing Timer Modal */}
+      <BriefingTimerModal
+        isOpen={isBriefingModalOpen}
+        onClose={() => setIsBriefingModalOpen(false)}
+        groupId={activeSquad?.id || activeSquadId || 'default'}
+        groupName={activeSquad?.name || 'Squad'}
+        activeBriefing={activeBriefing}
+        onSaved={(b) => setActiveBriefing(b)}
+        onShowToast={onShowToast}
+        currentUserId={currentUserId}
+        currentUserName={userName}
+        currentUserRole={userRole}
       />
     </div>
   );

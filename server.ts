@@ -72,9 +72,12 @@ interface NotificationRow {
   id: string;
   user_id: string;
   group_id?: string;
+  notice_id?: string;
   type: 'join_accepted' | 'join_rejected' | 'join_requested' | 'notice_broadcast' | 'info';
   title: string;
   message: string;
+  priority?: 'critical' | 'advisory' | 'info';
+  author_name?: string;
   is_read: boolean;
   created_at: string;
 }
@@ -107,6 +110,16 @@ interface MediaVaultRow {
   created_at: string;
 }
 
+interface BriefingRow {
+  id: string;
+  group_id: string;
+  title: string;
+  target_iso_time: string;
+  duration_minutes: number;
+  created_by: string;
+  created_at: string;
+}
+
 interface PersistentDatabase {
   profiles: Record<string, ProfileRow>;
   squad_groups: Record<string, GroupRow>;
@@ -115,23 +128,30 @@ interface PersistentDatabase {
   user_notifications: NotificationRow[];
   squad_notices: NoticeRow[];
   squad_media_vault: MediaVaultRow[];
+  squad_briefings: Record<string, BriefingRow>;
+  squad_checklists: Record<string, any[]>;
 }
 
 function sanitizeDb(raw: any): PersistentDatabase {
   const cleanProfiles: Record<string, ProfileRow> = {};
   if (raw?.profiles && typeof raw.profiles === 'object') {
-    for (const [k, v] of Object.entries(raw.profiles)) {
+    for (const v of Object.values(raw.profiles)) {
       if (v && typeof v === 'object' && (v as any).id) {
-        cleanProfiles[k] = v as ProfileRow;
+        cleanProfiles[(v as ProfileRow).id] = v as ProfileRow;
       }
     }
   }
 
   const cleanGroups: Record<string, GroupRow> = {};
   if (raw?.squad_groups && typeof raw.squad_groups === 'object') {
-    for (const [k, v] of Object.entries(raw.squad_groups)) {
+    for (const v of Object.values(raw.squad_groups)) {
       if (v && typeof v === 'object' && (v as any).id && (v as any).code) {
-        cleanGroups[k] = v as GroupRow;
+        const grp = v as GroupRow;
+        const normalizedIdAsName = grp.id.replace(/[_-]/g, ' ').trim().toLowerCase();
+        if (grp.name && grp.name.trim().toLowerCase() === normalizedIdAsName) {
+          continue;
+        }
+        cleanGroups[grp.id] = grp;
       }
     }
   }
@@ -154,6 +174,8 @@ function sanitizeDb(raw: any): PersistentDatabase {
     squad_media_vault: Array.isArray(raw?.squad_media_vault)
       ? raw.squad_media_vault.filter((m: any): m is MediaVaultRow => Boolean(m && typeof m === 'object' && m.id && m.group_id))
       : [],
+    squad_briefings: raw?.squad_briefings && typeof raw.squad_briefings === 'object' ? raw.squad_briefings : {},
+    squad_checklists: raw?.squad_checklists && typeof raw.squad_checklists === 'object' ? raw.squad_checklists : {},
   };
 }
 
@@ -190,6 +212,8 @@ function loadDb(): PersistentDatabase {
     user_notifications: [],
     squad_notices: [],
     squad_media_vault: [],
+    squad_briefings: {},
+    squad_checklists: {},
   };
 }
 
@@ -701,6 +725,24 @@ async function startServer() {
       }
     }
 
+    // Persist creator's profile name if provided so squad member list always shows their real name
+    const creatorName = (body.creatorName || authUser?.fullName || '').trim();
+    const creatorEmail = (body.creatorEmail || authUser?.email || '').trim().toLowerCase();
+    const creatorAvatar = body.creatorAvatar || authUser?.avatarUrl || '';
+    if (creatorName) {
+      const existingProf = db.profiles[creatorId];
+      db.profiles[creatorId] = {
+        ...existingProf,
+        id: creatorId,
+        email: creatorEmail || existingProf?.email || '',
+        full_name: creatorName,
+        avatar_url: creatorAvatar || existingProf?.avatar_url || '',
+        is_profile_complete: true,
+        created_at: existingProf?.created_at || now,
+        updated_at: now,
+      };
+    }
+
     // Persist group and Super Admin membership in server DB
     db.squad_groups[groupRecord.id] = groupRecord;
 
@@ -799,15 +841,42 @@ async function startServer() {
     const creatorProfile = db.profiles[foundGroup.created_by];
     const creatorName = creatorProfile?.full_name || creatorProfile?.email?.split('@')[0] || 'Squad Super Admin';
     const groupMembers = db.squad_members.filter((m) => m && m.group_id === foundGroup!.id);
-    const memberCount = Math.max(groupMembers.length, 1);
+    const realMembers = groupMembers.filter((m) => m && m.user_id && m.user_id !== 'user_self');
 
     let isMember = false;
     let myRole: string | null = null;
     let pendingRequest: JoinRequestRow | null = null;
     let latestRequestStatus: string | null = null;
+    let autoJoined = false;
 
-    if (callerUserId) {
-      const memberRecord = groupMembers.find((m) => m && m.user_id === callerUserId);
+    if (callerUserId || realMembers.length === 0) {
+      const targetUserId = callerUserId || 'user_self';
+      let memberRecord = groupMembers.find((m) => m && m.user_id === targetUserId);
+
+      // If the group has 0 real members left and someone enters its valid code, automatically join them as super_admin without approval
+      if (!memberRecord && realMembers.length === 0) {
+        db.squad_members = db.squad_members.filter(
+          (m) => !(m && m.group_id === foundGroup!.id && m.user_id === 'user_self')
+        );
+        const newMember: MemberRow = {
+          id: crypto.randomUUID(),
+          group_id: foundGroup.id,
+          user_id: targetUserId,
+          role: 'super_admin',
+          status: 'active',
+          joined_at: new Date().toISOString(),
+        };
+        db.squad_members.push(newMember);
+        foundGroup.created_by = targetUserId;
+        // Clear any old join requests for this user in this group
+        db.squad_join_requests = db.squad_join_requests.filter(
+          (r) => !(r && r.group_id === foundGroup!.id && r.user_id === targetUserId)
+        );
+        saveDb(db);
+        memberRecord = newMember;
+        autoJoined = true;
+      }
+
       if (memberRecord) {
         isMember = true;
         myRole = memberRecord.role;
@@ -817,13 +886,16 @@ async function startServer() {
         .filter((r) => r && r.group_id === foundGroup!.id && r.user_id === callerUserId)
         .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 
-      if (userRequests.length > 0) {
+      if (userRequests.length > 0 && !isMember) {
         latestRequestStatus = userRequests[0].status;
         if (userRequests[0].status === 'pending') {
           pendingRequest = userRequests[0];
         }
       }
     }
+
+    const updatedGroupMembers = db.squad_members.filter((m) => m && m.group_id === foundGroup!.id);
+    const memberCount = Math.max(updatedGroupMembers.length, 1);
 
     res.json({
       found: true,
@@ -842,6 +914,7 @@ async function startServer() {
       membership: {
         is_member: isMember,
         role: myRole,
+        auto_joined: autoJoined,
         pending_request: pendingRequest,
         latest_request_status: latestRequestStatus,
       },
@@ -849,7 +922,7 @@ async function startServer() {
   });
 
   // ============================================================================
-  // 6. SUBMIT PENDING JOIN REQUEST (Prevents Duplicates & Blocks Immediate Join)
+  // 6. SUBMIT PENDING JOIN REQUEST (Prevents Duplicates & Auto-Joins Empty Groups)
   // ============================================================================
   app.post('/api/groups/:groupId/join-requests', async (req, res) => {
     const { groupId } = req.params;
@@ -862,28 +935,63 @@ async function startServer() {
       return;
     }
 
-    const group = db.squad_groups[groupId];
+    const group = await findGroupByIdOrCode(groupId, req);
     if (!group) {
       res.status(404).json({ error: 'Target group not found.' });
       return;
     }
+    const resolvedGroupId = group.id;
 
     // 1. Check if user is already an active member of this group
-    const existingMember = db.squad_members.find(
-      (m) => m && m.group_id === groupId && m.user_id === requesterId
+    const groupMembers = db.squad_members.filter(
+      (m) => m && (m.group_id === resolvedGroupId || m.group_id === groupId)
     );
+    const realMembers = groupMembers.filter((m) => m && m.user_id && m.user_id !== 'user_self');
+    const existingMember = groupMembers.find((m) => m && m.user_id === requesterId);
     if (existingMember) {
-      res.status(400).json({
-        success: false,
+      res.status(200).json({
+        success: true,
         already_member: true,
-        error: 'You are already an approved member of this group.',
+        role: existingMember.role,
+        group,
+        message: 'You are already an approved member of this group.',
+      });
+      return;
+    }
+
+    // 1B. If the group has 0 real members left, automatically join without approval as Super Admin
+    if (realMembers.length === 0) {
+      db.squad_members = db.squad_members.filter(
+        (m) => !(m && (m.group_id === resolvedGroupId || m.group_id === groupId) && m.user_id === 'user_self')
+      );
+      const autoMember: MemberRow = {
+        id: crypto.randomUUID(),
+        group_id: resolvedGroupId,
+        user_id: requesterId,
+        role: 'super_admin',
+        status: 'active',
+        joined_at: new Date().toISOString(),
+      };
+      db.squad_members.push(autoMember);
+      group.created_by = requesterId;
+      db.squad_join_requests = db.squad_join_requests.filter(
+        (r) => !(r && (r.group_id === resolvedGroupId || r.group_id === groupId) && r.user_id === requesterId)
+      );
+      saveDb(db);
+      res.status(200).json({
+        success: true,
+        already_member: true,
+        auto_joined: true,
+        role: 'super_admin',
+        group,
+        message: 'Joined empty group automatically as Super Admin!',
       });
       return;
     }
 
     // 2. Check for existing pending join request (Prevent duplicate pending requests)
     const existingPending = db.squad_join_requests.find(
-      (r) => r && r.group_id === groupId && r.user_id === requesterId && r.status === 'pending'
+      (r) => r && (r.group_id === resolvedGroupId || r.group_id === groupId) && r.user_id === requesterId && r.status === 'pending'
     );
     if (existingPending) {
       res.json({
@@ -977,6 +1085,20 @@ async function startServer() {
     const { userId } = req.params;
     const preferredGroupId = (req.query.preferredGroupId as string) || '';
 
+    // If user created a group while their client ID was still 'user_self' and preferredGroupId matches, migrate 'user_self' to their real userId
+    if (preferredGroupId && userId && userId !== 'user_self') {
+      const selfMember = db.squad_members.find(
+        (m) => m && m.group_id === preferredGroupId && m.user_id === 'user_self'
+      );
+      if (selfMember) {
+        selfMember.user_id = userId;
+        if (db.squad_groups[preferredGroupId]?.created_by === 'user_self') {
+          db.squad_groups[preferredGroupId].created_by = userId;
+        }
+        saveDb(db);
+      }
+    }
+
     // Find user's memberships
     const memberships = db.squad_members
       .filter((m) => m && m.user_id === userId)
@@ -1032,6 +1154,126 @@ async function startServer() {
   });
 
   // ============================================================================
+  // 7B. RESTORE ACTIVE GROUP SESSION (Prevents Auto-Leave on App Refresh / Server Restart)
+  // ============================================================================
+  app.post('/api/groups/restore', async (req, res) => {
+    const authUser = await resolveAuthenticatedUser(req);
+    const body = req.body || {};
+    const userId = authUser?.id || (body.userId as string) || '';
+    const rawGroup = body.group;
+    const role = (body.role as MemberRow['role']) || 'super_admin';
+
+    if (!userId || !rawGroup || !rawGroup.id || !rawGroup.name) {
+      res.status(400).json({ success: false, error: 'Missing userId or group payload.' });
+      return;
+    }
+
+    const groupId = String(rawGroup.id).trim();
+    const normalizedIdAsName = groupId.replace(/[_-]/g, ' ').trim().toLowerCase();
+    if (String(rawGroup.name).trim().toLowerCase() === normalizedIdAsName) {
+      res.status(400).json({ success: false, error: 'Invalid corrupted group name.' });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    let group = db.squad_groups[groupId];
+    if (!group) {
+      group = {
+        id: groupId,
+        name: String(rawGroup.name).trim(),
+        code: normalizeCode(rawGroup.code || generateUniqueDatabaseCode(db.squad_groups)),
+        destination: String(rawGroup.destination || 'Expedition Base').trim(),
+        start_date: rawGroup.start_date || rawGroup.startDate || rawGroup.departureDate,
+        end_date: rawGroup.end_date || rawGroup.endDate || rawGroup.returnDate,
+        created_by: rawGroup.created_by || rawGroup.creator_id || userId,
+        created_at: rawGroup.created_at || now,
+      };
+      db.squad_groups[groupId] = group;
+    }
+
+    let member = db.squad_members.find((m) => m && m.group_id === groupId && m.user_id === userId);
+    if (!member) {
+      const existingGroupMembers = db.squad_members.filter((m) => m && m.group_id === groupId);
+      const effectiveRole: MemberRow['role'] =
+        existingGroupMembers.length === 0 || group.created_by === userId ? 'super_admin' : role;
+      member = {
+        id: crypto.randomUUID(),
+        group_id: groupId,
+        user_id: userId,
+        role: effectiveRole,
+        status: 'active',
+        joined_at: now,
+      };
+      db.squad_members.push(member);
+    }
+
+    saveDb(db);
+    res.json({
+      success: true,
+      activeSquad: {
+        group,
+        role: member.role,
+        status: member.status,
+      },
+    });
+  });
+
+  async function findGroupByIdOrCode(groupId: string, req?: any): Promise<GroupRow | null> {
+    if (!groupId) return null;
+    const cleanId = String(groupId).trim();
+    if (!cleanId || cleanId === 'undefined' || cleanId === 'null') return null;
+    if (db.squad_groups[cleanId]) return db.squad_groups[cleanId];
+
+    // 1. Direct or normalized code match in server DB
+    const norm = cleanId.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
+    const byCode = Object.values(db.squad_groups).find(
+      (g) => g && (g.id === cleanId || normalizeCode(g.code) === norm)
+    );
+    if (byCode) return byCode;
+
+    // 2. Query Supabase PostgreSQL if table migrated or group was created in Supabase
+    if (req) {
+      const sb = getSupabaseServerClient(req);
+      if (sb) {
+        try {
+          const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanId);
+          let sbQuery = sb.from('squad_groups').select('*');
+          if (isUuid) {
+            sbQuery = sbQuery.or(`id.eq.${cleanId},code.ilike.${cleanId}`);
+          } else {
+            sbQuery = sbQuery.ilike('code', cleanId.slice(0, 10));
+          }
+          const { data: sbGroup } = await sbQuery.maybeSingle();
+
+          if (sbGroup) {
+            const row: GroupRow = {
+              id: sbGroup.id,
+              name: sbGroup.name,
+              code: normalizeCode(sbGroup.code),
+              destination: sbGroup.destination || 'Expedition Base',
+              start_date: sbGroup.start_date,
+              end_date: sbGroup.end_date,
+              created_by: sbGroup.created_by,
+              created_at: sbGroup.created_at,
+            };
+            db.squad_groups[row.id] = row;
+            saveDb(db);
+            return row;
+          }
+        } catch {}
+      }
+    }
+
+    // 3. Fallback for single existing group in DB when 'default' or 'grp_current' is passed
+    const allGroups = Object.values(db.squad_groups).filter(Boolean);
+    if (cleanId === 'default' || cleanId === 'grp_current') {
+      if (allGroups.length > 0) return allGroups[0];
+    }
+
+    return null;
+  }
+
+  // ============================================================================
   // 8. GET GROUP MEMBERS & PENDING JOIN REQUESTS (Protected for Group Members)
   // ============================================================================
   app.get('/api/groups/:groupId/members', async (req, res) => {
@@ -1039,16 +1281,33 @@ async function startServer() {
     const authUser = await resolveAuthenticatedUser(req);
     const callerId = authUser?.id || ((req.query.userId as string) || '').trim();
 
-    const group = db.squad_groups[groupId];
+    const group = await findGroupByIdOrCode(groupId, req);
     if (!group) {
       res.status(404).json({ error: 'Group not found.' });
       return;
     }
+    const resolvedGroupId = group.id;
 
-    const groupMembers = db.squad_members.filter((m) => m && m.group_id === groupId);
+    const groupMembers = db.squad_members.filter(
+      (m) => m && (m.group_id === resolvedGroupId || m.group_id === groupId)
+    );
 
     // Prevent unauthorized access to private group member list before approval
-    const callerMembership = groupMembers.find((m) => m && m.user_id === callerId);
+    let callerMembership = groupMembers.find((m) => m && m.user_id === callerId);
+    if (!callerMembership && callerId && (group.created_by === callerId || groupMembers.length === 0)) {
+      callerMembership = {
+        id: crypto.randomUUID(),
+        group_id: resolvedGroupId,
+        user_id: callerId,
+        role: 'super_admin',
+        status: 'active',
+        joined_at: new Date().toISOString(),
+      };
+      db.squad_members.push(callerMembership);
+      groupMembers.push(callerMembership);
+      saveDb(db);
+    }
+
     if (!callerMembership) {
       res.status(403).json({
         error: 'Access Denied: You must be an approved member of this group to view private squad data.',
@@ -1063,17 +1322,202 @@ async function startServer() {
       saveDb(db);
     }
 
-    const enrichedMembers = groupMembers.map((m) => ({
-      ...m,
-      profile: db.profiles[m.user_id] || {
-        id: m.user_id,
-        email: '',
-        full_name: 'Squad Member',
-        is_profile_complete: true,
-      },
-    }));
+    // Update caller's profile if caller passed their real name
+    const callerNameParam = ((req.query.userName as string) || authUser?.fullName || '').trim();
+    const callerAvatarParam = ((req.query.userAvatar as string) || authUser?.avatarUrl || '').trim();
+    const isPlaceholder = (n?: string | null) =>
+      !n ||
+      n === 'Squad Member' ||
+      n === 'Expedition Member' ||
+      n === 'Trekker' ||
+      /^Trekker\s+[0-9a-f-]{4,}/i.test(n);
+
+    let dbUpdated = false;
+    if (callerId && callerNameParam && !isPlaceholder(callerNameParam)) {
+      const existing = db.profiles[callerId];
+      if (!existing || isPlaceholder(existing.full_name) || existing.full_name !== callerNameParam) {
+        db.profiles[callerId] = {
+          ...existing,
+          id: callerId,
+          email: existing?.email || authUser?.email || '',
+          full_name: callerNameParam,
+          avatar_url: callerAvatarParam || existing?.avatar_url || '',
+          is_profile_complete: true,
+          created_at: existing?.created_at || new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        };
+        dbUpdated = true;
+      }
+    }
+
+    // Resolve any missing member profiles from join requests or Supabase profiles table
+    const sb = getSupabaseServerClient(req);
+    for (const m of groupMembers) {
+      const prof = db.profiles[m.user_id];
+      if (!prof || isPlaceholder(prof.full_name)) {
+        // 1. Check join requests for this user's submitted name
+        const matchingReq = db.squad_join_requests.find(
+          (r) => r && r.user_id === m.user_id && !isPlaceholder((r as any).user_name || r.requester_name)
+        );
+        if (matchingReq) {
+          const reqName = ((matchingReq as any).user_name || matchingReq.requester_name || '').trim();
+          db.profiles[m.user_id] = {
+            ...prof,
+            id: m.user_id,
+            email: prof?.email || (matchingReq as any).user_email || matchingReq.requester_email || '',
+            full_name: reqName,
+            avatar_url: prof?.avatar_url || (matchingReq as any).user_avatar || matchingReq.requester_avatar || '',
+            is_profile_complete: true,
+            created_at: prof?.created_at || matchingReq.created_at,
+            updated_at: new Date().toISOString(),
+          };
+          dbUpdated = true;
+          continue;
+        }
+
+        // 2. Check Supabase profiles table if configured
+        if (sb) {
+          try {
+            const { data: sbProf } = await sb
+              .from('profiles')
+              .select('*')
+              .eq('id', m.user_id)
+              .maybeSingle();
+            if (sbProf && sbProf.full_name && !isPlaceholder(sbProf.full_name)) {
+              db.profiles[m.user_id] = {
+                ...prof,
+                ...sbProf,
+                id: m.user_id,
+                full_name: sbProf.full_name,
+              };
+              dbUpdated = true;
+            }
+          } catch {}
+        }
+      }
+    }
+
+    if (dbUpdated) {
+      saveDb(db);
+    }
+
+    const enrichedMembers = groupMembers.map((m) => {
+      const prof = db.profiles[m.user_id];
+      const realName =
+        prof?.full_name && !isPlaceholder(prof.full_name)
+          ? prof.full_name
+          : prof?.email
+          ? prof.email.split('@')[0]
+          : 'Member';
+      return {
+        ...m,
+        profile: {
+          ...(prof || {}),
+          id: m.user_id,
+          email: prof?.email || '',
+          full_name: realName,
+          avatar_url: prof?.avatar_url || '',
+          phone: prof?.phone || '',
+          is_profile_complete: true,
+        },
+      };
+    });
 
     res.json({ members: enrichedMembers });
+  });
+
+  // ============================================================================
+  // 8B. SHARED GROUP CHECKLIST ENDPOINTS (Synced to Home Trip Gear & Squad Checklist)
+  // ============================================================================
+  app.get('/api/groups/:groupId/checklist', async (req, res) => {
+    const { groupId } = req.params;
+    const group = await findGroupByIdOrCode(groupId, req);
+    const resolvedGroupId = group?.id || groupId;
+    if (!db.squad_checklists) db.squad_checklists = {};
+    const items = Array.isArray(db.squad_checklists[resolvedGroupId])
+      ? db.squad_checklists[resolvedGroupId]
+      : [];
+    res.json({ success: true, items });
+  });
+
+  app.post('/api/groups/:groupId/checklist', async (req, res) => {
+    const { groupId } = req.params;
+    const group = await findGroupByIdOrCode(groupId, req);
+    const resolvedGroupId = group?.id || groupId;
+    const body = req.body || {};
+    const item = body.item || body;
+    if (!item || !item.name) {
+      res.status(400).json({ success: false, error: 'Checklist item name is required.' });
+      return;
+    }
+
+    if (!db.squad_checklists) db.squad_checklists = {};
+    const currentList = Array.isArray(db.squad_checklists[resolvedGroupId])
+      ? db.squad_checklists[resolvedGroupId]
+      : [];
+
+    const record = {
+      id: item.id || `chk-${Date.now()}`,
+      group_id: resolvedGroupId,
+      user_id: item.user_id || body.userId || 'user_self',
+      name: String(item.name).trim(),
+      category: item.category || 'camp',
+      is_packed: Boolean(item.is_packed ?? item.isPacked ?? false),
+      is_mandatory: Boolean(item.is_mandatory ?? item.isMandatory ?? true),
+      weight_grams: Number(item.weight_grams ?? item.weightGrams) || 250,
+      spec: item.spec || null,
+      is_custom: Boolean(item.is_custom ?? item.isCustom ?? true),
+      created_at: item.created_at || new Date().toISOString(),
+    };
+
+    const existingIdx = currentList.findIndex((i) => i && i.id === record.id);
+    if (existingIdx >= 0) {
+      currentList[existingIdx] = record;
+    } else {
+      currentList.push(record);
+    }
+    db.squad_checklists[resolvedGroupId] = currentList;
+    saveDb(db);
+
+    res.json({ success: true, item: record, items: currentList });
+  });
+
+  app.patch('/api/groups/:groupId/checklist/:itemId', async (req, res) => {
+    const { groupId, itemId } = req.params;
+    const group = await findGroupByIdOrCode(groupId, req);
+    const resolvedGroupId = group?.id || groupId;
+    const { is_packed, isPacked } = req.body || {};
+    const nextPacked = Boolean(is_packed ?? isPacked);
+
+    if (!db.squad_checklists) db.squad_checklists = {};
+    const currentList = Array.isArray(db.squad_checklists[resolvedGroupId])
+      ? db.squad_checklists[resolvedGroupId]
+      : [];
+
+    const updated = currentList.map((i) =>
+      i && i.id === itemId ? { ...i, is_packed: nextPacked } : i
+    );
+    db.squad_checklists[resolvedGroupId] = updated;
+    saveDb(db);
+
+    res.json({ success: true, items: updated });
+  });
+
+  app.delete('/api/groups/:groupId/checklist/:itemId', async (req, res) => {
+    const { groupId, itemId } = req.params;
+    const group = await findGroupByIdOrCode(groupId, req);
+    const resolvedGroupId = group?.id || groupId;
+
+    if (!db.squad_checklists) db.squad_checklists = {};
+    const currentList = Array.isArray(db.squad_checklists[resolvedGroupId])
+      ? db.squad_checklists[resolvedGroupId]
+      : [];
+
+    const updated = currentList.filter((i) => i && i.id !== itemId);
+    db.squad_checklists[resolvedGroupId] = updated;
+    saveDb(db);
+
+    res.json({ success: true, items: updated });
   });
 
   app.get('/api/groups/:groupId/join-requests', async (req, res) => {
@@ -1259,16 +1703,20 @@ async function startServer() {
   app.post('/api/groups/:groupId/leave', async (req, res) => {
     const { groupId } = req.params;
     const authUser = await resolveAuthenticatedUser(req);
-    const userId = authUser?.id || (req.body?.userId as string) || '';
+    const userId = authUser?.id || (req.body?.userId as string) || 'user_self';
     const successorUserId = (req.body?.successorUserId as string) || '';
 
-    if (!userId) {
-      res.status(400).json({ error: 'userId is required to leave group.' });
-      return;
-    }
+    const group = await findGroupByIdOrCode(groupId, req);
+    const resolvedGroupId = group?.id || groupId;
+    const groupCode = group?.code || '';
 
-    const groupMembers = db.squad_members.filter((m) => m && m.group_id === groupId);
-    const remainingMembers = groupMembers.filter((m) => m.user_id !== userId);
+    const isMatchingGroup = (gid: string) =>
+      gid === resolvedGroupId || gid === groupId || (groupCode && gid === groupCode);
+
+    const groupMembers = db.squad_members.filter((m) => m && isMatchingGroup(m.group_id));
+    const remainingMembers = groupMembers.filter(
+      (m) => m.user_id !== userId && m.user_id !== 'user_self'
+    );
 
     // If there are remaining members, ensure at least one Super Admin remains
     if (remainingMembers.length > 0) {
@@ -1283,19 +1731,23 @@ async function startServer() {
       }
     }
 
-    // Remove membership for this user in this group
-    db.squad_members = db.squad_members.filter(
-      (m) => !(m && m.group_id === groupId && m.user_id === userId)
-    );
+    // Remove membership for this user in this group (and user_self fallback if no other members remain)
+    db.squad_members = db.squad_members.filter((m) => {
+      if (!m || !isMatchingGroup(m.group_id)) return true;
+      if (m.user_id === userId) return false;
+      if (remainingMembers.length === 0 && m.user_id === 'user_self') return false;
+      return true;
+    });
 
     // Remove previous join_requests for this user & group so they can cleanly rejoin later
     db.squad_join_requests = db.squad_join_requests.filter(
-      (r) => !(r && r.group_id === groupId && r.user_id === userId)
+      (r) => !(r && isMatchingGroup(r.group_id) && (r.user_id === userId || r.user_id === 'user_self'))
     );
 
     saveDb(db);
     res.json({
       success: true,
+      remainingCount: remainingMembers.length,
       message: 'Left expedition group. Group notices and resources are now hidden until you rejoin.',
     });
   });
@@ -1308,17 +1760,20 @@ async function startServer() {
     const authUser = await resolveAuthenticatedUser(req);
     const callerId = authUser?.id || ((req.query.userId as string) || '').trim();
 
-    const group = db.squad_groups[groupId];
+    const group = await findGroupByIdOrCode(groupId, req);
     if (!group) {
       res.status(404).json({ error: 'Group not found.', notices: [], isMember: false });
       return;
     }
+    const resolvedGroupId = group.id;
 
     // Check active membership if callerId is provided
     if (callerId) {
-      const groupMembers = db.squad_members.filter((m) => m && m.group_id === groupId);
-      const isMember = groupMembers.some((m) => m && m.user_id === callerId);
-      if (!isMember) {
+      const groupMembers = db.squad_members.filter(
+        (m) => m && (m.group_id === resolvedGroupId || m.group_id === group.code || m.group_id === groupId)
+      );
+      const isMember = groupMembers.some((m) => m && m.user_id === callerId) || group.created_by === callerId;
+      if (!isMember && groupMembers.length > 0) {
         res.status(403).json({
           error: 'You are not currently a member of this group. Join or rejoin the group to view its broadcast notices.',
           notices: [],
@@ -1329,7 +1784,7 @@ async function startServer() {
     }
 
     const notices = (db.squad_notices || [])
-      .filter((n) => n && n.group_id === groupId)
+      .filter((n) => n && (n.group_id === resolvedGroupId || n.group_id === group.code || n.group_id === groupId))
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 
     res.json({
@@ -1348,23 +1803,58 @@ async function startServer() {
     const { groupId } = req.params;
     const body = req.body || {};
     const authUser = await resolveAuthenticatedUser(req);
-    const authorId = authUser?.id || (body.authorId as string) || 'user_self';
+    const authorId = authUser?.id || (body.authorId as string) || (body.userId as string) || 'user_self';
 
-    const group = db.squad_groups[groupId];
+    let group = await findGroupByIdOrCode(groupId, req);
+    if (!group && (body.groupName || body.name || groupId)) {
+      const fallbackName = String(body.groupName || body.name || (groupId === 'default' ? 'Pelling trip' : 'Expedition Squad')).trim();
+      const fallbackCode = normalizeCode(body.groupCode || body.code || 'SQUAD1');
+      const fallbackDest = String(body.groupDestination || body.destination || 'Expedition Base').trim();
+      const createdGrp: GroupRow = {
+        id: groupId,
+        name: fallbackName,
+        code: fallbackCode,
+        destination: fallbackDest,
+        created_by: authorId,
+        created_at: new Date().toISOString(),
+      };
+      db.squad_groups[groupId] = createdGrp;
+      saveDb(db);
+      group = createdGrp;
+    }
+
     if (!group) {
       res.status(404).json({ error: 'Group not found.' });
       return;
     }
+    const resolvedGroupId = group.id;
 
     // Verify caller is in the group (or auto-register creator if missing)
-    const groupMembers = db.squad_members.filter((m) => m && m.group_id === groupId);
+    let groupMembers = db.squad_members.filter(
+      (m) => m && (m.group_id === resolvedGroupId || m.group_id === group.code || m.group_id === groupId)
+    );
     const isMember =
       groupMembers.some((m) => m && m.user_id === authorId) || group.created_by === authorId;
+
     if (!isMember && groupMembers.length > 0) {
       res.status(403).json({
         error: 'Only active members of this group can broadcast notices to it.',
       });
       return;
+    }
+
+    // Auto-register author as member if missing
+    if (groupMembers.length === 0 || !groupMembers.some((m) => m.user_id === authorId)) {
+      const creatorMember: MemberRow = {
+        id: crypto.randomUUID(),
+        group_id: resolvedGroupId,
+        user_id: authorId,
+        role: group.created_by === authorId ? 'super_admin' : 'member',
+        status: 'active',
+        joined_at: new Date().toISOString(),
+      };
+      db.squad_members.push(creatorMember);
+      groupMembers.push(creatorMember);
     }
 
     const title = String(body.title || 'Squad Directive').trim();
@@ -1377,7 +1867,7 @@ async function startServer() {
     const now = new Date().toISOString();
     const notice: NoticeRow = {
       id: body.id || `notice_${crypto.randomUUID()}`,
-      group_id: groupId,
+      group_id: resolvedGroupId,
       title,
       text,
       image_url: body.imageUrl || body.image_url || undefined,
@@ -1396,32 +1886,212 @@ async function startServer() {
 
     db.squad_notices.unshift(notice);
 
-    // Notify all active members of ONLY this group
+    // Notify ALL active members of this group across devices
+    const notifiedUserIds = new Set<string>();
     for (const m of groupMembers) {
-      if (m && m.user_id && m.user_id !== authorId) {
+      if (m && m.user_id && m.user_id !== authorId && !notifiedUserIds.has(m.user_id)) {
+        notifiedUserIds.add(m.user_id);
         db.user_notifications.push({
           id: crypto.randomUUID(),
           user_id: m.user_id,
-          group_id: groupId,
+          group_id: resolvedGroupId,
           type: 'notice_broadcast',
           title: `📢 [${group.name}] ${notice.title}`,
           message: notice.text,
+          priority: notice.priority,
           is_read: false,
           created_at: now,
         });
       }
     }
 
+    // If squad_members has only author, also deliver notice to all active app user profiles
+    if (notifiedUserIds.size === 0) {
+      for (const profileUserId of Object.keys(db.profiles || {})) {
+        if (profileUserId && profileUserId !== authorId && !notifiedUserIds.has(profileUserId)) {
+          notifiedUserIds.add(profileUserId);
+          db.user_notifications.push({
+            id: crypto.randomUUID(),
+            user_id: profileUserId,
+            group_id: resolvedGroupId,
+            type: 'notice_broadcast',
+            title: `📢 [${group.name}] ${notice.title}`,
+            message: notice.text,
+            priority: notice.priority,
+            is_read: false,
+            created_at: now,
+          });
+        }
+      }
+    }
+
     saveDb(db);
+
+    // Broadcast across Supabase Realtime for instant push
+    const sb = getSupabaseServerClient(req);
+    if (sb) {
+      try {
+        const channelsToNotify = Array.from(new Set([resolvedGroupId, groupId].filter(Boolean)));
+        for (const cId of channelsToNotify) {
+          const channel = sb.channel(`squad_realtime_${cId}`);
+          channel.subscribe((status) => {
+            if (status === 'SUBSCRIBED') {
+              channel.send({
+                type: 'broadcast',
+                event: 'notice_broadcast',
+                payload: { groupId: resolvedGroupId, notice },
+              });
+            }
+          });
+        }
+      } catch {}
+    }
+
     res.json({ success: true, notice });
   });
 
   app.delete('/api/groups/:groupId/notices/:noticeId', async (req, res) => {
     const { groupId, noticeId } = req.params;
+    const group = await findGroupByIdOrCode(groupId, req);
+    const resolvedGroupId = group ? group.id : groupId;
     db.squad_notices = (db.squad_notices || []).filter(
-      (n) => !(n && n.group_id === groupId && n.id === noticeId)
+      (n) => !(n && (n.group_id === resolvedGroupId || n.group_id === groupId) && n.id === noticeId)
     );
     saveDb(db);
+    res.json({ success: true });
+  });
+
+  // ============================================================================
+  // SYNCHRONIZED GROUP BRIEFING TIMER (Supabase & Backend Realtime Sync)
+  // ============================================================================
+  app.get('/api/groups/:groupId/briefing', async (req, res) => {
+    const { groupId } = req.params;
+    const briefing = db.squad_briefings?.[groupId];
+    if (!briefing) {
+      res.json({ briefing: null });
+      return;
+    }
+
+    // Auto-remove immediately when countdown reaches zero
+    if (new Date(briefing.target_iso_time).getTime() <= Date.now()) {
+      delete db.squad_briefings[groupId];
+      saveDb(db);
+      res.json({ briefing: null });
+      return;
+    }
+
+    res.json({ briefing });
+  });
+
+  app.post('/api/groups/:groupId/briefing', async (req, res) => {
+    const { groupId } = req.params;
+    const body = req.body || {};
+    const authUser = await resolveAuthenticatedUser(req);
+    const callerId = authUser?.id || (body.userId as string) || 'user_self';
+
+    const group = db.squad_groups[groupId] || (groupId === 'default' ? {
+      id: 'default',
+      name: 'Expedition Squad',
+      code: 'DEFAULT',
+      destination: 'Expedition Route',
+      created_by: callerId,
+      created_at: new Date().toISOString(),
+    } : null);
+
+    if (!group) {
+      res.status(404).json({ error: 'Group not found.' });
+      return;
+    }
+
+    // Authorization: Super Admin, Admin, or Group Creator
+    const groupMembers = db.squad_members.filter((m) => m && m.group_id === groupId);
+    const member = groupMembers.find((m) => m && m.user_id === callerId);
+    const isSuperOrAdmin =
+      groupId === 'default' ||
+      group.created_by === callerId ||
+      member?.role === 'super_admin' ||
+      member?.role === 'admin' ||
+      member?.role === ('subgroup_admin' as any);
+
+    if (!isSuperOrAdmin && groupMembers.length > 0) {
+      res.status(403).json({ error: 'Only Super Admin or Admin can configure the group briefing timer.' });
+      return;
+    }
+
+    const title = String(body.title || 'Squad Dusk Briefing').trim();
+    const durationMinutes = Math.max(1, Number(body.durationMinutes) || 15);
+    const targetIsoTime = body.targetIsoTime || new Date(Date.now() + durationMinutes * 60 * 1000).toISOString();
+
+    if (new Date(targetIsoTime).getTime() <= Date.now()) {
+      res.status(400).json({ error: 'Scheduled briefing time must be in the future.' });
+      return;
+    }
+
+    const briefing: BriefingRow = {
+      id: body.id || `brf_${Date.now()}`,
+      group_id: groupId,
+      title,
+      target_iso_time: targetIsoTime,
+      duration_minutes: durationMinutes,
+      created_by: callerId,
+      created_at: new Date().toISOString(),
+    };
+
+    if (!db.squad_briefings) db.squad_briefings = {};
+    db.squad_briefings[groupId] = briefing;
+
+    // Routine notification broadcast if requested
+    if (body.announceInNotices) {
+      const now = new Date().toISOString();
+      const targetTimeStr = new Date(targetIsoTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const remainingMins = Math.max(1, Math.round((new Date(targetIsoTime).getTime() - Date.now()) / 60000));
+      const noticeTitle = title;
+      const noticeText = `${title} is scheduled for ${targetTimeStr} (${remainingMins} min remaining). All members please prepare and assemble.`;
+
+      const notice: NoticeRow = {
+        id: `notice_${crypto.randomUUID()}`,
+        group_id: groupId,
+        title: noticeTitle,
+        text: noticeText,
+        priority: 'info', // Routine priority
+        author_id: callerId,
+        author_name: String(body.authorName || authUser?.fullName || 'Squad Command'),
+        author_role: String(body.authorRole || 'Super Admin'),
+        author_avatar:
+          body.authorAvatar ||
+          authUser?.avatarUrl ||
+          'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=150&q=80',
+        created_at: now,
+      };
+
+      db.squad_notices.unshift(notice);
+
+      for (const m of groupMembers) {
+        if (m && m.user_id && m.user_id !== callerId) {
+          db.user_notifications.push({
+            id: crypto.randomUUID(),
+            user_id: m.user_id,
+            group_id: groupId,
+            type: 'notice_broadcast',
+            title: `📢 [${group.name}] ${notice.title}`,
+            message: notice.text,
+            is_read: false,
+            created_at: now,
+          });
+        }
+      }
+    }
+
+    saveDb(db);
+    res.json({ success: true, briefing });
+  });
+
+  app.delete('/api/groups/:groupId/briefing', async (req, res) => {
+    const { groupId } = req.params;
+    if (db.squad_briefings && db.squad_briefings[groupId]) {
+      delete db.squad_briefings[groupId];
+      saveDb(db);
+    }
     res.json({ success: true });
   });
 
