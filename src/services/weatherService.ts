@@ -167,63 +167,52 @@ export const weatherService = {
   },
 
   /**
-   * Auto-detects user's live location via Hardware GPS first, then falls back to IP Geolocation
-   * when browser/iframe GPS permission is blocked or denied, so weather always matches Google Weather on user's phone.
+   * Auto-detects user's real live location via Hardware GPS.
+   * If permission is denied or location is turned off on the device, returns null
+   * so the app prompts the user to enable location rather than showing wrong ISP city.
    */
-  async detectLiveLocation(): Promise<GeocodedLocation | null> {
-    // 1. Try browser/phone hardware GPS first
+  async detectLiveLocation(options?: { allowIpFallback?: boolean }): Promise<GeocodedLocation | null> {
+    // 1. Try browser/phone hardware GPS
     if (typeof navigator !== 'undefined' && navigator.geolocation) {
       try {
         const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
           navigator.geolocation.getCurrentPosition(resolve, reject, {
             enableHighAccuracy: true,
-            timeout: 4500,
-            maximumAge: 60000,
+            timeout: 10000,
+            maximumAge: 0,
           });
         });
         const lat = Number(pos.coords.latitude.toFixed(4));
         const lng = Number(pos.coords.longitude.toFixed(4));
         return await this.reverseGeocode(lat, lng);
-      } catch {
-        // Proceed to IP geolocation fallback below
+      } catch (err: any) {
+        // Location permission denied (code 1) or device GPS is OFF
+        if (err && (err.code === 1 || err.code === 2)) {
+          console.warn('Geolocation permission denied or device GPS turned off:', err.message);
+          return null;
+        }
       }
     }
 
-    // 2. Fallback to IP Geolocation (works even when iframe blocks geolocation permission)
-    const ipProviders = [
-      'https://ipwho.is/',
-      'https://get.geojs.io/v1/ip/geo.json',
-      'https://ipapi.co/json/',
-    ];
+    // Only use IP if explicitly requested
+    if (options?.allowIpFallback) {
+      const ipProviders = [
+        'https://ipwho.is/',
+        'https://get.geojs.io/v1/ip/geo.json',
+      ];
 
-    for (const endpoint of ipProviders) {
-      try {
-        const res = await fetch(endpoint, { signal: AbortSignal.timeout(3500) });
-        if (res.ok) {
-          const data = await res.json();
-          const lat = parseFloat(data.latitude ?? data.lat);
-          const lng = parseFloat(data.longitude ?? data.lon);
-          if (!Number.isNaN(lat) && !Number.isNaN(lng)) {
-            const geo = await this.reverseGeocode(lat, lng);
-            if (geo && geo.name !== 'Live GPS Location') {
-              return geo;
+      for (const endpoint of ipProviders) {
+        try {
+          const res = await fetch(endpoint, { signal: AbortSignal.timeout(3500) });
+          if (res.ok) {
+            const data = await res.json();
+            const lat = parseFloat(data.latitude ?? data.lat);
+            const lng = parseFloat(data.longitude ?? data.lon);
+            if (!Number.isNaN(lat) && !Number.isNaN(lng)) {
+              return await this.reverseGeocode(lat, lng);
             }
-            const city = data.city || data.region || 'Current Location';
-            const region = data.region || data.region_name || '';
-            const country = data.country || data.country_name || '';
-            const parts = [city, region && region !== city ? region : '', country].filter(Boolean);
-            return {
-              name: city,
-              fullName: parts.join(', ') || `${lat.toFixed(3)}°N, ${lng.toFixed(3)}°E`,
-              lat,
-              lng,
-              admin1: region,
-              country,
-            };
           }
-        }
-      } catch {
-        // try next provider
+        } catch {}
       }
     }
 

@@ -1,4 +1,4 @@
-export type ScreenType = 'signin' | 'profile' | 'gateway' | 'feed' | 'squad' | 'sos' | 'settings';
+export type ScreenType = 'onboarding' | 'signin' | 'profile' | 'gateway' | 'feed' | 'squad' | 'sos' | 'settings';
 
 export type UserRole = 'super_admin' | 'subgroup_admin' | 'admin' | 'faculty' | 'member';
 

@@ -40,6 +40,7 @@ import { ProfileFormData, ScreenType, UserRole } from '../types';
 import { TransferSuperAdminModal } from './modals/TransferSuperAdminModal';
 import { DeleteGroupModal } from './modals/DeleteGroupModal';
 import { recoverGroupSuperAdmin } from '../lib/supabase';
+import { usePWAInstall } from '../hooks/usePWAInstall';
 
 interface SettingsScreenProps {
   onNavigate: (screen: ScreenType) => void;
@@ -86,6 +87,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
 }) => {
   const [offlineMeshSync, setOfflineMeshSync] = useState(true);
   const [batteryOptimization, setBatteryOptimization] = useState(true);
+  const { isInstallable, isInstalled, isIOS, promptInstall } = usePWAInstall();
 
   // Super Admin & Group Management Modal States
   const [isTransferModalOpen, setIsTransferModalOpen] = useState(false);
@@ -589,6 +591,66 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
             })}
           </div>
         </section>
+
+        {/* INSTALL TRAILOPS APP (PWA) — SHOWN IN SETTINGS FOR SUPPORTED BROWSERS */}
+        {(isInstallable || isInstalled || isIOS) && (
+          <section className="bg-white dark:bg-slate-900 rounded-3xl p-4 border border-emerald-500/30 dark:border-emerald-800/60 shadow-xs space-y-3">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 flex items-center justify-center">
+                  <Smartphone className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider">
+                    INSTALL TRAILOPS APP
+                  </h3>
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                    Standalone Progressive Web App
+                  </p>
+                </div>
+              </div>
+              <span
+                className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full border ${
+                  isInstalled
+                    ? 'bg-emerald-50 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
+                    : 'bg-amber-50 dark:bg-amber-950 text-amber-800 dark:text-amber-300 border-amber-200 dark:border-amber-800'
+                }`}
+              >
+                {isInstalled ? 'Installed' : 'Ready to Install'}
+              </span>
+            </div>
+
+            {isInstalled ? (
+              <div className="flex items-center gap-2 text-xs text-emerald-800 dark:text-emerald-300 bg-emerald-50/70 dark:bg-emerald-950/50 p-3 rounded-2xl border border-emerald-200/70 dark:border-emerald-800/60">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span>TrailOPS is installed on your device and running as an app.</span>
+              </div>
+            ) : isInstallable ? (
+              <div className="space-y-2.5">
+                <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                  Install TrailOPS on your home screen for quick full-screen access and offline-ready expedition navigation.
+                </p>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const accepted = await promptInstall();
+                    if (accepted) {
+                      onShowToast('TrailOPS installation started!');
+                    }
+                  }}
+                  className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-[#0f5238] to-emerald-700 hover:from-emerald-800 hover:to-emerald-600 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-sm transition-all active:scale-[0.98] cursor-pointer"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>Install TrailOPS App</span>
+                </button>
+              </div>
+            ) : isIOS ? (
+              <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                To install on iOS Safari: tap the <span className="font-bold">Share</span> button in the browser bar and select <span className="font-bold">&ldquo;Add to Home Screen&rdquo;</span>.
+              </div>
+            ) : null}
+          </section>
+        )}
 
         {/* EXPEDITION SQUAD MANAGEMENT & DANGER ZONE */}
         {hasJoinedGroup && (

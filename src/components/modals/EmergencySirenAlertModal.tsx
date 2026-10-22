@@ -1,7 +1,7 @@
 import React, { useEffect } from 'react';
-import { AlertOctagon, PhoneCall, VolumeX, MapPin, Battery, User, ShieldAlert, CheckCircle2 } from 'lucide-react';
+import { AlertOctagon, PhoneCall, VolumeX, MapPin, Battery, CheckCircle2 } from 'lucide-react';
 import { SquadSOSAlarmData } from '../../lib/supabase';
-import { stopEmergencySiren } from '../../lib/emergencyAudio';
+import { startEmergencySiren, stopEmergencySiren } from '../../lib/emergencyAudio';
 
 interface EmergencySirenAlertModalProps {
   isOpen: boolean;
@@ -19,19 +19,56 @@ export const EmergencySirenAlertModal: React.FC<EmergencySirenAlertModalProps> =
   isSuperAdminOrAdmin = false,
 }) => {
   useEffect(() => {
-    // When modal unmounts or closes, ensure sound stops
+    if (isOpen && alarmData) {
+      startEmergencySiren();
+    } else {
+      stopEmergencySiren();
+    }
     return () => {
       stopEmergencySiren();
     };
-  }, []);
+  }, [isOpen, alarmData?.id, alarmData?.timestamp]);
 
   if (!isOpen || !alarmData) return null;
 
   const handleCallMember = () => {
     if (alarmData.phone) {
-      window.location.href = `tel:${alarmData.phone.replace(/\s+/g, '')}`;
+      window.location.href = `tel:${String(alarmData.phone).replace(/\s+/g, '')}`;
     }
   };
+
+  const formattedCoords = (() => {
+    const coords: any = alarmData.coordinates;
+    if (!coords) return alarmData.locationLabel || null;
+    if (typeof coords === 'string') {
+      return coords;
+    }
+    if (
+      typeof coords === 'object' &&
+      typeof coords.lat === 'number' &&
+      typeof coords.lng === 'number' &&
+      !Number.isNaN(coords.lat) &&
+      !Number.isNaN(coords.lng)
+    ) {
+      return `Lat: ${coords.lat.toFixed(4)}, Lng: ${coords.lng.toFixed(4)}`;
+    }
+    return String(coords);
+  })();
+
+  const formattedBattery =
+    alarmData.batteryLevel !== undefined && alarmData.batteryLevel !== null
+      ? `${String(alarmData.batteryLevel).replace(/%$/, '')}%`
+      : null;
+
+  const formattedTime = (() => {
+    const raw = alarmData.timestamp || (alarmData as any).triggeredAt;
+    if (!raw) return 'Just now';
+    const parsed = new Date(raw);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    }
+    return String(raw);
+  })();
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-md animate-in fade-in duration-200">
@@ -68,32 +105,36 @@ export const EmergencySirenAlertModal: React.FC<EmergencySirenAlertModalProps> =
               </div>
               <div>
                 <span className="font-extrabold text-slate-900 dark:text-white block text-sm">
-                  {alarmData.distressedUserName}
+                  {alarmData.distressedUserName || 'Squad Member'}
                 </span>
                 <span className="text-[10px] text-rose-700 dark:text-rose-300 font-semibold uppercase">
                   {alarmData.distressedUserRole || 'Squad Member'}
                 </span>
               </div>
             </div>
-            {alarmData.batteryLevel !== undefined && (
+            {formattedBattery && (
               <span className="inline-flex items-center gap-1 text-[11px] font-bold text-slate-700 dark:text-slate-300">
                 <Battery className="w-3.5 h-3.5 text-rose-600" />
-                {alarmData.batteryLevel}%
+                {formattedBattery}
               </span>
             )}
           </div>
 
-          {alarmData.coordinates && (
+          {formattedCoords && (
             <div className="pt-1.5 border-t border-rose-200/60 dark:border-rose-900/40 flex items-center gap-1.5 text-[11px] text-slate-600 dark:text-slate-400">
               <MapPin className="w-3.5 h-3.5 text-rose-600 shrink-0" />
-              <span>
-                Lat: {alarmData.coordinates.lat.toFixed(4)}, Lng: {alarmData.coordinates.lng.toFixed(4)}
-              </span>
+              <span className="truncate">{formattedCoords}</span>
+            </div>
+          )}
+
+          {alarmData.locationLabel && alarmData.locationLabel !== formattedCoords && (
+            <div className="text-[11px] text-slate-600 dark:text-slate-300 font-medium truncate">
+              📍 {alarmData.locationLabel}
             </div>
           )}
 
           <div className="text-[10px] text-slate-500 dark:text-slate-400">
-            Signal broadcasted at {new Date(alarmData.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+            Signal broadcasted at {formattedTime}
           </div>
         </div>
 

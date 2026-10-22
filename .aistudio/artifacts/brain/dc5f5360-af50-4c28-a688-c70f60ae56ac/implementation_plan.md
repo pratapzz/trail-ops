@@ -1,113 +1,104 @@
-# TRAIL OPS — Production Bug Audit & Implementation Plan
+# TrailOPS Pre-Login Onboarding Flow & UI Refinements
 
-## A. Executive Summary
-TrailoPS is a robust React + TypeScript + Vite expedition operations platform utilizing Supabase for backend database storage, Row Level Security (RLS), authentication, and realtime subscriptions. While core UI components and features (group creation, roll call, HD Vault, Faculty Drive, chat, and SOS) are operational, several cross-device synchronization, authentication redirect, RLS scoping, and realtime event propagation issues require systematic resolution.
+This update introduces a 3-step interactive onboarding experience prior to the sign-in screen based on your three HTML designs (including developer and maintainer attribution for **Pratap Paul** at the end of Step 3), adds a direct calendar icon trigger for changing the trip countdown date on the Home screen, and places the Train Schedule section directly above the Leave Group button in the Squad workspace.
 
-This audit report identifies shared root causes across database RLS policies, Supabase Realtime publication configurations, client state synchronization cycles, and OAuth redirect parameters. We present a rigorous, phased implementation plan designed to ensure 100% data preservation, zero downtime, strict multi-tenant group isolation, and enterprise-grade safety for emergency SOS systems without requiring migration to Firebase.
+## User Review & Critical Decisions
 
----
-
-## B. Feature-by-Feature Findings & Root Causes
-
-1. **Google Login**
-   - *Finding*: Google OAuth redirects occasionally fail or reset session state in preview/production if redirect URLs mismatch or PKCE session tokens are dropped.
-   - *Root Cause*: Missing explicit site URL configuration in Supabase Auth redirect settings, combined with strict third-party cookie restrictions in browser iframes. Email/password authentication remains fully stable as a reliable fallback.
-
-2. **Announcement Pop-ups**
-   - *Finding*: Announcements are stored and appear in history/notifications lists, but active modal pop-ups do not trigger across active users.
-   - *Root Cause*: Client subscriptions rely solely on polling intervals rather than Supabase Realtime broadcast channels (`trailops_squad_bus_*`) coupled with unread notification state flags (`trailoPS_seen_notice_*`).
-
-3. **Shared Checklists**
-   - *Finding*: Super Admin checklist additions do not instantly propagate to member devices.
-   - *Root Cause*: Gear checklists and packing notes have been managed primarily in local storage or un-synced database JSON blobs (`gear_checklist` columns without dedicated broadcast triggers or real-time Postgres changes subscriptions).
-
-4. **HD Vault**
-   - *Finding*: Media uploads succeed for the uploader, but appear empty for other squad members.
-   - *Root Cause*: Supabase Storage bucket policies (`squad-vault`) or metadata table queries (`squad_media`) lack proper RLS SELECT permissions for non-creators in the same group, or file public URLs are not correctly resolved across devices.
-
-5. **Faculty Drive**
-   - *Finding*: Trip documents and permits uploaded by admin are not visible to ordinary members.
-   - *Root Cause*: Metadata records in the backend database or storage bucket are filtered by `created_by = auth.uid()` instead of verifying membership in `squad_members` for the active group.
-
-6. **Base Camp Check-in / Squad Roll Call**
-   - *Finding*: Roll call sessions initiated by organizers do not trigger push prompts for members.
-   - *Root Cause*: Active session states are stored in localStorage rather than persistent Postgres tables (`squad_roll_call_sessions` and `squad_roll_call_responses`), preventing cross-device polling and realtime events.
-
-7. **Profile Persistence**
-   - *Finding*: Profile data occasionally reverts or appears blank after deployments or re-authentication.
-   - *Root Cause*: Fallback to local storage drafts when Supabase profile upsert fails due to schema mismatch or missing `user_id` foreign key constraints.
-
-8. **Leaving a Group**
-   - *Finding*: Departing members remain cached in active squad lists on other users' screens.
-   - *Root Cause*: Lack of a real-time broadcast event (`GROUP_MEMBER_LEFT`) and absence of strict Super Admin succession enforcement before leaving.
-
-9. **Chat Notifications**
-   - *Finding*: Messages send successfully, but recipients do not receive visual alerts.
-   - *Root Cause*: Chat components poll local state or lack Postgres Realtime table change subscriptions on `squad_messages`.
-
-10. **SOS Emergency System**
-    - *Finding*: SOS triggers fail to alert group members instantly, and location radar displays inaccurate GPS coordinates.
-    - *Root Cause*: SOS alarms relied on tab storage events rather than database-backed incident records (`squad_sos_incidents`). Geolocation coordinates suffered from missing lat/lng validation checks and fallback parsing errors.
-
-11. **Missing Items**
-    - *Finding*: Missing item reports lack dedicated real-time synchronization and notification integration.
-    - *Root Cause*: Missing items were treated as transient local UI state rather than persistent group records (`squad_missing_items`).
+> [!IMPORTANT]
+> All requirements from your prompt and the three attached HTML onboarding designs are incorporated:
+> - **Pre-Login 3-Step Onboarding Flow**: Unauthenticated users see the 3 onboarding steps before reaching the Login screen. Logged-in users skip onboarding and Login on app launch, and logging out returns the user to the onboarding flow prior to Login.
+> - **Developer & Maintainer Attribution (Step 3)**: At the bottom of the 3rd onboarding step (*"Your Privacy Matters"*), a refined credit badge displays **"Developed & Maintained by Pratap Paul"**.
+> - **Interactive Navigation**: Every step includes working **Next** (`Explore TrailOPS` / `Continue` / `I Agree & Get Started`), **Back**, and **Skip** controls, plus interactive **Privacy Policy** and **Terms & Conditions** readers on Step 3.
+> - **Home Screen Calendar Icon for Date Change**: The Trip Countdown section on the Home screen features a Calendar icon button on the Change Date control to open and pick a new target departure date.
+> - **Train Schedule Placement**: The Train Schedule card in the Squad screen is positioned immediately above the **Leave Squad Expedition** button.
 
 ---
 
-## C. Confirmed Facts vs. Unverified Hypotheses
+## 1. Overview & Core Concept
 
-| Feature | Status / Finding | Confirmed Fact | Unverified Hypothesis |
-| :--- | :--- | :--- | :--- |
-| **Auth** | Google Login | Email/password works; Supabase client is initialized. | Custom domain redirect mismatch is the sole cause of Google OAuth failure. |
-| **Realtime** | Announcements & Chat | Local state polling works; Broadcast channels are partially wired. | Supabase Realtime postgres_changes is fully enabled on all tables without publication config. |
-| **Storage** | HD Vault & Faculty Drive | Upload API endpoints exist. | Storage buckets have public/authenticated RLS policies correctly configured for group members. |
-| **SOS** | Emergency & Radar | Audio siren works locally. | Geolocation inaccuracies stem from browser permissions vs. coordinate inversion. |
+- **What It Does**: Welcomes logged-out and first-time explorers with a polished 3-screen introduction to TrailOPS before authentication, credits **Pratap Paul** as developer and maintainer on the final onboarding screen, refines the Home countdown date selector with a calendar icon trigger, and positions the Train Schedule right above the Leave Group action in the Squad tab.
+- **Target Audience / Persona**: Expedition leaders, faculty coordinators, and trekkers opening TrailOPS on mobile or desktop.
+- **Key Value**: Gives new and logged-out users a clear, trustworthy overview of TrailOPS features, privacy guarantees, and creator attribution while keeping authenticated sessions fast and friction-free.
 
 ---
 
-## D. Prioritised Phased Implementation Plan
+## 2. User Experience & Visual Design
 
-- **Phase 1**: Backup, Baseline Build & Codebase Audit
-- **Phase 2**: Google Login & Profile Persistence
-- **Phase 3**: Shared Checklists, Membership & Group Synchronisation
-- **Phase 4**: Announcements, Chat Alerts & Missing-Item Workflow
-- **Phase 5**: Roll Call & Real-Time Attendance
-- **Phase 6**: HD Vault & Faculty Drive Visibility/Permissions
-- **Phase 7**: SOS, Responder Permissions & Accurate Location
-- **Phase 8**: Regression, Security & Release Testing
+- **Key User Flows**:
+  1. **Unauthenticated Launch & Post-Logout Flow**:
+     - **Step 1 — "Great Journeys Start Together"**: Features the custom scenic mountain & hiker SVG illustration, feature badges (`Team`, `Expenses`, `Itinerary`), a **SKIP** button in the top header (jumps straight to Login), and the **Explore TrailOPS** primary CTA button (advances to Step 2).
+     - **Step 2 — "Your Journey. Better Organised."**: Showcases the 5 core toolkit cards (*Trip & Team Management*, *Smart Expense Tracking*, *Itinerary & Documents*, *Group Updates & Photos*, *Safety & Emergency Contacts*), header **Back** (returns to Step 1) and **SKIP** (jumps to Login) actions, and the **Continue** primary CTA button (advances to Step 3).
+     - **Step 3 — "Your Privacy Matters"**: Displays the 4 security & privacy pillars (*Secure Authentication*, *Secure Database*, *We Only Use What's Needed*, *We Do Not Share Your Data*), interactive **Read Privacy Policy** and **Terms & Conditions** detail drawers, a header **Back** button (returns to Step 2), the **I Agree & Get Started** CTA button (navigates to the Login screen), and a footer attribution at the end of Step 3 reading **"Developed & Maintained by Pratap Paul"**.
+  2. **Authenticated Launch Flow**:
+     - When a user is already logged in with a completed profile, opening or refreshing TrailOPS bypasses both Onboarding and Login, landing directly on the Home screen.
+     - When the user signs out from Settings, the session clears and the app returns to Step 1 of the onboarding flow before Login.
+  3. **Home Screen Calendar Date Picker**:
+     - On the Home screen's **Trip Countdown** card, the **Change Date** button features a prominent **Calendar** icon alongside an instant date picker trigger so users can tap the calendar icon to pick and save a new departure date.
+  4. **Squad Screen Train Schedule Ordering**:
+     - On the Squad screen, the **Train Schedule** section is placed immediately above the **Leave Squad Expedition** button at the bottom of the workspace.
 
----
-
-## E. Security & Data-Preservation Risks
-
-1. **RLS Bypass Risk**: Ensuring all database queries strictly verify group membership via `squad_members` lookup.
-2. **Data Overwrite Risk**: Preventing client-side profile or gear checklist sync from overwriting newer remote data with stale local cache.
-3. **Storage Exposure Risk**: Ensuring HD Vault and Faculty Drive buckets remain private and restricted to verified group members.
-
----
-
-## F. Test Matrix & Acceptance Criteria
-
-| Test ID | Feature | Scenario | Expected Result | Acceptance Criteria |
-| :--- | :--- | :--- | :--- | :--- |
-| **TST-01** | Google Login | User clicks 'Sign in with Google' | Redirects to Google auth and returns with session | Session persisted in Supabase and localStorage |
-| **TST-02** | Announcements | Super Admin broadcasts critical notice | Instant modal alert on all member devices | Red banner, title, sender, timestamp, dismiss button |
-| **TST-03** | Shared Checklists | Admin adds gear item | Item appears on all member devices | Real-time sync without page refresh |
-| **TST-04** | HD Vault | Member uploads photo | Photo appears in vault for all group members | Visible across distinct devices in same group |
-| **TST-05** | SOS Emergency | Member holds SOS for 3s | Red alert modal triggers on all member devices | Countdown, cancellation, accurate GPS coordinates |
+- **Visual Identity & Theme**:
+  - *Aesthetic Direction*: Matches the exact pastel sunset/rose-lilac wave backdrops, floating white rounded cards (`rounded-[32px]`), and editorial serif headings (`Bodoni Moda` / `Playfair Display` paired with `Plus Jakarta Sans`) from the three provided HTML templates, with a clean, cohesive developer credit signature at the bottom of Step 3.
+  - *Interactive Feedback & Motion*: Smooth step transitions between Steps 1, 2, and 3, clickable pagination indicators, and responsive touch targets ($\ge 44\text{px}$).
 
 ---
 
-## G. Firebase Migration Recommendation
+## 3. Key Product Decisions & Trade-Offs
 
-**Recommendation**: **Do NOT migrate to Firebase.**
-- *Reasoning*: TrailoPS already has a fully functional Supabase backend structure, database tables, and client SDK integration. Migrating to Firebase would require rewriting authentication, database schemas, storage rules, and real-time listeners from scratch, introducing high migration risk and breaking existing production data. Fixing RLS policies, Realtime publication channels, and state synchronisation in Supabase is significantly safer, faster, and preserves all existing working features.
+- **Decision 1: Session-Aware Onboarding Routing**
+  - *Chosen Approach*: Tie onboarding visibility directly to authentication state—logged-in users go straight to Home (`gateway`), while unauthenticated sessions and sign-out events route to the 3-step onboarding screen (`onboarding`) before `signin`.
+  - *Why*: Ensures logged-in users never see onboarding or login screens when reopening the app, while logging out cleanly restores the full pre-login experience as requested.
+- **Decision 2: Native React Onboarding Component Matching Provided HTML + Creator Credit**
+  - *Chosen Approach*: Convert the three attached HTML files into a unified, self-contained multi-step screen component with all SVG artwork, wave gradients, typography, interactive buttons wired to state, and the **"Developed & Maintained by Pratap Paul"** footer at the end of Step 3.
+  - *Why*: Delivers instant step transitions (`Next`, `Back`, `Skip`, and `I Agree & Get Started`) with zero iframe reload flicker while prominently displaying creator attribution on the final step.
 
 ---
 
-## H. Exact Next Steps for Approval
+## 4. Technical Architecture & Data Strategy *(Technical Reference)*
 
-1. **Review**: Review this implementation plan and test matrix.
-2. **Approval**: Provide explicit approval to proceed with **Phase 1** (Backup, baseline build, and source-code audit).
-3. **Execution**: No code changes will be made until explicit approval is received.
+- **Architecture & Component Diagram**:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                       Application Session Router                        │
+│  • Checks active session & profile completion on launch                 │
+│  • Logged In  ──► Home Screen (Gateway)                                 │
+│  • Logged Out ──► Pre-Login Onboarding (Steps 1 → 2 → 3) ──► Sign In   │
+└───────────────┬─────────────────────────────────────────┬───────────────┘
+                │                                         │
+                ▼                                         ▼
+┌───────────────────────────────────────┐ ┌───────────────────────────────┐
+│     Pre-Login Onboarding Screen       │ │   Home & Squad Enhancements   │
+│  ┌─────────────────────────────────┐  │ │  • Home Trip Countdown:       │
+│  │ Step 1: Great Journeys          │  │ │    Calendar icon trigger +    │
+│  │  • Skip ──► Sign In             │  │ │    date picker & Save Date    │
+│  │  • Next (Explore) ──► Step 2    │  │ │  • Squad Workspace Footer:    │
+│  ├─────────────────────────────────┤  │ │    1. Train Schedule Card     │
+│  │ Step 2: Better Organised        │  │ │    2. Leave Squad Button      │
+│  │  • Back ──► Step 1              │  │ └───────────────────────────────┘
+│  │  • Skip ──► Sign In             │  │
+│  │  • Next (Continue) ──► Step 3   │  │
+│  ├─────────────────────────────────┤  │
+│  │ Step 3: Your Privacy Matters    │  │
+│  │  • Back ──► Step 2              │  │
+│  │  • Policy / Terms Modal Viewers │  │
+│  │  • I Agree & Get Started ──►    │  │
+│  │    Sign In Screen               │  │
+│  │  • Footer Attribution:          │  │
+│  │    "Developed & Maintained by   │  │
+│  │     Pratap Paul"                │  │
+│  └─────────────────────────────────┘  │
+└───────────────────────────────────────┘
+```
+
+- **Interactive Component & State Mapping**:
+  - **Onboarding Step State (`step: 1 | 2 | 3`)**:
+    - `Next` increments `step` from `1 → 2` and `2 → 3`; on Step 3, `I Agree & Get Started` transitions `currentScreen` to `'signin'`.
+    - `Back` decrements `step` from `3 → 2` and `2 → 1`.
+    - `Skip` immediately transitions `currentScreen` to `'signin'`.
+    - Clicking **Read Privacy Policy** or **Terms & Conditions** on Step 3 opens an in-card overlay displaying the full privacy and terms details.
+    - Step 3 footer renders the developer credit: **Developed & Maintained by Pratap Paul**.
+  - **Sign-Out Handler**:
+    - Signing out clears the active user credentials from `localStorage` and sets `currentScreen` to `'onboarding'`, ensuring the 3-step onboarding flow appears again before the login screen.
+  - **Home Countdown Calendar Icon**:
+    - Clicking the Calendar icon button in the Trip Countdown header opens the date editor and triggers the native calendar picker (`showPicker()`) so the user can immediately choose and save the new countdown date.

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { ScreenType, ProfileFormData, UserRole } from './types';
 import { ExpeditionProfileScreen } from './components/ExpeditionProfileScreen';
+import { OnboardingScreen } from './components/OnboardingScreen';
 import { SignInScreen } from './components/SignInScreen';
 import { EmergencySOSScreen } from './components/EmergencySOSScreen';
 import { GatewayScreen } from './components/GatewayScreen';
@@ -63,10 +64,13 @@ export default function App() {
   });
 
   const [currentScreen, setCurrentScreen] = useState<ScreenType>(() => {
+    const activeUserId = localStorage.getItem('trailoPS_currentUserId');
     const activeEmail = localStorage.getItem('trailoPS_currentUserEmail');
-    if (!activeEmail) return 'signin';
-    const isDone = localStorage.getItem(`trailoPS_isProfileComplete_${activeEmail}`) === 'true';
-    return isDone ? 'gateway' : 'signin';
+    if (!activeUserId && !activeEmail) return 'onboarding';
+    const byId = activeUserId ? localStorage.getItem(`trailoPS_isProfileComplete_${activeUserId}`) : null;
+    const byEmail = activeEmail ? localStorage.getItem(`trailoPS_isProfileComplete_${activeEmail}`) : null;
+    const isDone = byId === 'true' || byEmail === 'true';
+    return isDone ? 'gateway' : 'onboarding';
   });
 
   // Group membership state - strictly synchronized with activeSquad so refresh never desynchronizes them
@@ -270,6 +274,46 @@ export default function App() {
       } catch {}
     }
 
+    const applyGroupDetails = (details: any) => {
+      if (!details) return;
+      setActiveSquad((prev) => {
+        if (!prev) return prev;
+        const next = {
+          ...prev,
+          name: details.name || prev.name,
+          destination: details.destination || prev.destination,
+          budget: typeof details.budget === 'number' ? details.budget : prev.budget,
+          banner_url: details.bannerUrl || details.banner_url || prev.banner_url,
+          bannerUrl: details.bannerUrl || details.banner_url || prev.bannerUrl,
+          from_location: details.fromLocation || details.from_location || prev.from_location,
+        };
+        try {
+          localStorage.setItem('trailoPS_active_squad', JSON.stringify(next));
+          const uid = currentUserId || localStorage.getItem('trailoPS_currentUserId');
+          if (uid) {
+            localStorage.setItem(`trailoPS_active_squad_${uid}`, JSON.stringify(next));
+          }
+        } catch {}
+        return next;
+      });
+
+      if (details.destination) {
+        setTripDestination((prev) => ({
+          ...prev,
+          destination: details.destination,
+          name: details.name || prev.name,
+        }));
+      }
+
+      if (typeof details.budget === 'number' && details.budget > 0) {
+        setTripBudget(details.budget);
+        const currentPaid = Number(localStorage.getItem('trailoPS_amountPaid')) || 0;
+        setAmountPending(Math.max(0, details.budget - currentPaid));
+      }
+
+      showToast(`📢 Squad details updated: ${details.name || ''} · ${details.destination || ''}`);
+    };
+
     // Set up BroadcastChannel for zero-latency multi-tab/window synchronization
     let squadBus: BroadcastChannel | null = null;
     try {
@@ -284,6 +328,8 @@ export default function App() {
             stopEmergencySiren();
           } else if (event.data?.type === 'GROUP_DELETED') {
             handleGroupDeleted();
+          } else if (event.data?.type === 'GROUP_DETAILS_UPDATED') {
+            applyGroupDetails(event.data.details);
           } else if (event.data?.type === 'GROUP_NOTICE_BROADCAST') {
             const notice = event.data?.notice;
             if (notice && notice.author_id !== currentUserId) {
@@ -325,6 +371,11 @@ export default function App() {
           .on('broadcast', { event: 'group_deleted' }, () => {
             handleGroupDeleted();
           })
+          .on('broadcast', { event: 'group_updated' }, ({ payload }: any) => {
+            if (payload?.details) {
+              applyGroupDetails(payload.details);
+            }
+          })
           .on('broadcast', { event: 'notice_broadcast' }, ({ payload }: any) => {
             const notice = payload?.notice;
             if (notice && notice.author_id !== currentUserId) {
@@ -349,12 +400,19 @@ export default function App() {
       }
     }
 
+    const handleGroupUpdatedEvent = (e: any) => {
+      if (e?.detail) {
+        applyGroupDetails(e.detail);
+      }
+    };
+
     window.addEventListener('storage', handleStorageChange);
     window.addEventListener('trailoPS_rollcall_sync', handleRollCallSync);
     window.addEventListener('trailoPS_new_announcement', handleNewAnnouncement);
     window.addEventListener('trailoPS_squad_sos_alarm', handleSOSAlarm);
     window.addEventListener('trailoPS_squad_sos_alarm_cleared', handleSOSAlarmCleared);
     window.addEventListener('trailoPS_group_deleted', handleGroupDeleted);
+    window.addEventListener('trailoPS_group_updated', handleGroupUpdatedEvent);
 
     return () => {
       if (squadBus) {
@@ -369,8 +427,34 @@ export default function App() {
       window.removeEventListener('trailoPS_squad_sos_alarm', handleSOSAlarm);
       window.removeEventListener('trailoPS_squad_sos_alarm_cleared', handleSOSAlarmCleared);
       window.removeEventListener('trailoPS_group_deleted', handleGroupDeleted);
+      window.removeEventListener('trailoPS_group_updated', handleGroupUpdatedEvent);
     };
   }, [squadKey, currentUserId]);
+
+  // Prompt for real device location permission on initial app open
+  useEffect(() => {
+    if (typeof navigator !== 'undefined' && navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const lat = Number(pos.coords.latitude.toFixed(4));
+          const lng = Number(pos.coords.longitude.toFixed(4));
+          const altitude = pos.coords.altitude || 2150;
+          try {
+            localStorage.setItem('trailoPS_live_gps_coords', JSON.stringify({ lat, lng, altitude }));
+            window.dispatchEvent(
+              new CustomEvent('trailoPS_location_updated', {
+                detail: { lat, lng, altitude, isLiveGps: true },
+              })
+            );
+          } catch {}
+        },
+        (err) => {
+          console.warn('Initial geolocation permission prompt result:', err.message);
+        },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+      );
+    }
+  }, []);
 
   // Global cross-device background sync for notices, roll calls, and SOS alerts (operates on any active screen)
   useEffect(() => {
@@ -386,53 +470,155 @@ export default function App() {
           const { notifications } = await fetchUserJoinRequestsAndNotifications(targetUserId);
           if (!isMounted) return;
           for (const notif of notifications) {
+            const notifAgeMs = notif.created_at
+              ? Date.now() - new Date(notif.created_at).getTime()
+              : 0;
+            const isRecent = notifAgeMs >= 0 && notifAgeMs < 45000;
+
             if (!notif.read && notif.type === 'notice_broadcast') {
               const seenKey = `trailoPS_seen_notice_${targetUserId}_${notif.notice_id || notif.id}`;
               if (!localStorage.getItem(seenKey)) {
                 localStorage.setItem(seenKey, 'true');
                 markNotificationRead(notif.id);
-                setLatestBroadcast({
-                  id: notif.notice_id || notif.id,
-                  title: (notif.title || 'Squad Broadcast').replace(/^📢\s*\[[^\]]+\]\s*/, ''),
-                  text: notif.message,
-                  priority: notif.priority || 'critical',
-                  author: notif.author_name || 'Squad Member',
-                  timestamp: 'Just now',
-                });
-                setIsBroadcastModalOpen(true);
-                showToast(`📢 ${notif.title}: ${notif.message}`);
+                if (isRecent) {
+                  setLatestBroadcast({
+                    id: notif.notice_id || notif.id,
+                    title: (notif.title || 'Squad Broadcast').replace(/^📢\s*\[[^\]]+\]\s*/, ''),
+                    text: notif.message,
+                    priority: notif.priority || 'critical',
+                    author: notif.author_name || 'Squad Member',
+                    timestamp: 'Just now',
+                  });
+                  setIsBroadcastModalOpen(true);
+                  showToast(`📢 ${notif.title}: ${notif.message}`);
+                }
               }
-            } else if (!notif.read && notif.type === 'rollcall_started') {
+            } else if (!notif.read && (notif.type as string) === 'rollcall_started') {
               const seenRcKey = `trailoPS_seen_rc_notif_${targetUserId}_${notif.id}`;
               if (!localStorage.getItem(seenRcKey)) {
                 localStorage.setItem(seenRcKey, 'true');
                 markNotificationRead(notif.id);
-                setIsAttendanceModalOpen(true);
-                showToast(`📡 ${notif.title || 'Live Roll Call Started'}: ${notif.message}`);
+                if (isRecent) {
+                  setIsAttendanceModalOpen(true);
+                  showToast(`📡 ${notif.title || 'Live Roll Call Started'}: ${notif.message}`);
+                }
               }
-            } else if (!notif.read && notif.type === 'sos_alert') {
+            } else if (!notif.read && (notif.type as string) === 'sos_alert') {
               const seenSosKey = `trailoPS_seen_sos_notif_${targetUserId}_${notif.id}`;
               if (!localStorage.getItem(seenSosKey)) {
                 localStorage.setItem(seenSosKey, 'true');
                 markNotificationRead(notif.id);
-                showToast(`🚨 ${notif.title || 'EMERGENCY SOS'}: ${notif.message}`);
+                if (isRecent) {
+                  showToast(`🚨 ${notif.title || 'EMERGENCY SOS'}: ${notif.message}`);
+                }
               }
             }
           }
         }
 
-        // 2. Poll live squad state (Roll Call Attendance + SOS Distress Alarm + Member count)
+        // 2. Poll live squad state (Roll Call Attendance + SOS Distress Alarm + Group Details + Expenses)
         if (targetGroupId || targetUserId) {
           const liveState = await fetchSquadLiveState(targetGroupId, targetUserId || undefined);
-          if (!isMounted) return;
+          if (!isMounted || !liveState) return;
 
-          const totalMembersCount = Array.isArray(liveState.members) && liveState.members.length > 0
-            ? liveState.members.length
-            : 1;
+          const totalMembersCount = Number(liveState.totalMembers) || 1;
+
+          // Sync Cross-Device Group Name, Banner Photo, Destination & Departure Date
+          if (liveState.group && liveState.group.id) {
+            const srvGroup = liveState.group;
+            setActiveSquad((prev) => {
+              if (!prev) return prev;
+              const prevBanner = prev.banner_url || prev.bannerUrl || '';
+              const nextBanner = srvGroup.banner_url || srvGroup.bannerUrl || prevBanner;
+              const prevDate = prev.start_date || prev.startDate || '';
+              const nextDate = srvGroup.start_date || srvGroup.startDate || prevDate;
+              if (
+                prev.name !== srvGroup.name ||
+                prev.destination !== srvGroup.destination ||
+                prevBanner !== nextBanner ||
+                prevDate !== nextDate
+              ) {
+                const updatedGroup = {
+                  ...prev,
+                  ...srvGroup,
+                  name: srvGroup.name || prev.name,
+                  destination: srvGroup.destination || prev.destination,
+                  banner_url: nextBanner,
+                  bannerUrl: nextBanner,
+                  start_date: nextDate,
+                  startDate: nextDate,
+                };
+                try {
+                  localStorage.setItem('trailoPS_active_squad', JSON.stringify(updatedGroup));
+                  if (targetUserId) {
+                    localStorage.setItem(`trailoPS_active_squad_${targetUserId}`, JSON.stringify(updatedGroup));
+                  }
+                  if (nextDate) {
+                    localStorage.setItem(`trailoPS_departure_date_${updatedGroup.id}`, nextDate);
+                  }
+                } catch {}
+                window.dispatchEvent(new CustomEvent('trailoPS_group_updated', { detail: updatedGroup }));
+                return updatedGroup;
+              }
+              return prev;
+            });
+
+            if (srvGroup.start_date || srvGroup.startDate) {
+              const srvDate = (srvGroup.start_date || srvGroup.startDate) as string;
+              setTripDestination((prev) => {
+                if (prev.departureDate !== srvDate || prev.name !== srvGroup.name) {
+                  return {
+                    ...prev,
+                    name: srvGroup.name || prev.name,
+                    destination: srvGroup.destination || prev.destination,
+                    departureDate: srvDate,
+                  };
+                }
+                return prev;
+              });
+            }
+          }
+
+          // Sync Cross-Device Splitwise Expenses to every member's individual budget (deduplicated per expense ID)
+          if (Array.isArray(liveState.expenses) && liveState.expenses.length > 0) {
+            for (const exp of liveState.expenses) {
+              if (!exp || !exp.id) continue;
+              const appliedKey = `trailoPS_applied_exp_${exp.id}`;
+              if (!localStorage.getItem(appliedKey)) {
+                localStorage.setItem(appliedKey, 'true');
+                const share = Math.round(Number(exp.amount_per_member || exp.amountPerMember || 0));
+                if (share > 0) {
+                  setTripBudget((b) => b + share);
+                  setAmountPending((p) => p + share);
+                  window.dispatchEvent(
+                    new CustomEvent('trailoPS_expense_added', {
+                      detail: {
+                        id: exp.id,
+                        expense: {
+                          id: exp.id,
+                          title: exp.title,
+                          totalAmount: Number(exp.total_amount || exp.totalAmount || 0),
+                          paidBy: exp.paid_by || exp.paidBy || 'Squad Admin',
+                          date: exp.date || 'Today',
+                          category: exp.category || 'General',
+                          splitType: exp.split_type === 'subgroup' ? 'custom' : 'all',
+                          memberIds: ['all'],
+                          amountPerMember: share,
+                          settledMemberIds: [],
+                        },
+                        amountPerMember: share,
+                        totalAmount: Number(exp.total_amount || exp.totalAmount || 0),
+                      },
+                    })
+                  );
+                }
+              }
+            }
+          }
 
           // Sync Cross-Device Roll Call
-          if (liveState.rollCall) {
-            const rc = liveState.rollCall;
+          if (liveState.activeRollCall) {
+            const rc = liveState.activeRollCall;
             const sessionObj = {
               sessionId: rc.sessionId,
               active: Boolean(rc.active),
@@ -444,6 +630,7 @@ export default function App() {
             };
             setActiveRollCallSession(sessionObj);
             localStorage.setItem(`trailoPS_active_rollcall_${squadKey}`, JSON.stringify(sessionObj));
+            window.dispatchEvent(new CustomEvent('trailoPS_rollcall_sync', { detail: sessionObj }));
 
             const myId = targetUserId || '1';
             const hasResponded =
@@ -464,13 +651,13 @@ export default function App() {
           }
 
           // Sync Cross-Device Emergency SOS Alarm
-          if (liveState.sosAlarm) {
-            const alarm = liveState.sosAlarm;
-            const alarmUniqueKey = alarm.id || `${alarm.distressedUserId}_${alarm.triggeredAt}`;
+          if (liveState.activeSos) {
+            const alarm = liveState.activeSos;
+            const alarmUniqueKey = alarm.id || `${alarm.distressedUserId}_${alarm.timestamp}`;
             const mutedKey = `trailoPS_muted_sos_${alarmUniqueKey}`;
             if (!localStorage.getItem(mutedKey)) {
               setActiveSOSAlarm((prev) => {
-                const prevKey = prev ? prev.id || `${prev.distressedUserId}_${prev.triggeredAt}` : '';
+                const prevKey = prev ? prev.id || `${prev.distressedUserId}_${prev.timestamp}` : '';
                 if (prevKey !== alarmUniqueKey) {
                   startEmergencySiren();
                   showToast(
@@ -492,27 +679,37 @@ export default function App() {
           }
         }
 
-        // 3. Also check group notices endpoint for newly published broadcasts
+        // 3. Also check group notices endpoint for newly published broadcasts (only pop up if <45s old & not created by current user)
         if (targetGroupId && targetGroupId !== 'default') {
           const res = await fetchGroupNotices(targetGroupId, targetUserId || undefined);
           if (!isMounted) return;
           if (res.notices && res.notices.length > 0) {
             const newest = res.notices[0];
             const seenKey = `trailoPS_seen_notice_${targetUserId || 'anon'}_${newest.id}`;
-            const isCreator = targetUserId && newest.author_id === targetUserId;
-            if (!isCreator && !localStorage.getItem(seenKey)) {
+            const isCreator =
+              (targetUserId && newest.author_id === targetUserId) ||
+              (currentUserName &&
+                newest.author_name &&
+                newest.author_name.toLowerCase() === currentUserName.toLowerCase());
+            const ageMs = newest.created_at
+              ? Date.now() - new Date(newest.created_at).getTime()
+              : 999999;
+
+            if (!localStorage.getItem(seenKey)) {
               localStorage.setItem(seenKey, 'true');
-              setLatestBroadcast({
-                id: newest.id,
-                title: newest.title,
-                text: newest.text,
-                imageUrl: newest.image_url,
-                priority: newest.priority,
-                author: newest.author_name,
-                timestamp: 'Just now',
-              });
-              setIsBroadcastModalOpen(true);
-              showToast(`📢 Announcement: ${newest.title}`);
+              if (!isCreator && ageMs >= 0 && ageMs < 45000) {
+                setLatestBroadcast({
+                  id: newest.id,
+                  title: newest.title,
+                  text: newest.text,
+                  imageUrl: newest.image_url,
+                  priority: newest.priority,
+                  author: newest.author_name,
+                  timestamp: 'Just now',
+                });
+                setIsBroadcastModalOpen(true);
+                showToast(`📢 Announcement: ${newest.title}`);
+              }
             }
           }
         }
@@ -542,7 +739,7 @@ export default function App() {
     localStorage.setItem(`trailoPS_active_rollcall_${squadKey}`, JSON.stringify(updated));
     window.dispatchEvent(new CustomEvent('trailoPS_rollcall_sync', { detail: updated }));
 
-    await respondSquadRollCall(squadKey, myId, 'present');
+    await respondSquadRollCall(squadKey, { userId: myId, userName: currentUserName, response: 'present' });
 
     const savedMembers = localStorage.getItem('trailoPS_squad_members');
     if (savedMembers) {
@@ -575,7 +772,7 @@ export default function App() {
     localStorage.setItem(`trailoPS_active_rollcall_${squadKey}`, JSON.stringify(updated));
     window.dispatchEvent(new CustomEvent('trailoPS_rollcall_sync', { detail: updated }));
 
-    await respondSquadRollCall(squadKey, myId, 'deny');
+    await respondSquadRollCall(squadKey, { userId: myId, userName: currentUserName, response: 'deny' });
 
     const savedMembers = localStorage.getItem('trailoPS_squad_members');
     if (savedMembers) {
@@ -681,6 +878,23 @@ export default function App() {
     localStorage.setItem('trailoPS_amountPaid', String(amountPaid));
     localStorage.setItem('trailoPS_amountPending', String(amountPending));
   }, [tripBudget, amountPaid, amountPending]);
+
+  // Synchronize budget dues when a bill is added in Splitwise by Super Admin / Admin
+  useEffect(() => {
+    const handleExpenseAdded = (e: any) => {
+      const { amountPerMember, id } = e.detail || {};
+      if (typeof amountPerMember === 'number' && amountPerMember > 0) {
+        const appliedKey = `trailoPS_applied_exp_${id}`;
+        if (id && localStorage.getItem(appliedKey)) return;
+        if (id) localStorage.setItem(appliedKey, 'true');
+
+        setTripBudget((b) => b + amountPerMember);
+        setAmountPending((p) => p + amountPerMember);
+      }
+    };
+    window.addEventListener('trailoPS_expense_added', handleExpenseAdded);
+    return () => window.removeEventListener('trailoPS_expense_added', handleExpenseAdded);
+  }, []);
 
   const [subGroupName, setSubGroupName] = useState<string>('Scout Team Alpha');
   const [subGroupColor, setSubGroupColor] = useState<string>('#ef4444');
@@ -792,24 +1006,28 @@ export default function App() {
     }
 
     if (remoteProfile && remoteProfile.is_profile_complete) {
-      // Existing profile found in Supabase
+      // Existing profile found in Supabase / Server DB
       const mappedProfile: ProfileFormData = {
         fullName: remoteProfile.full_name || metaName || emailKey.split('@')[0],
-        guardianName: remoteProfile.guardian_name || '',
+        guardianName: remoteProfile.guardian_name || remoteProfile.emergency_contact_name || '',
         dateOfBirth: remoteProfile.date_of_birth || '',
         age: remoteProfile.age,
         gender: remoteProfile.gender,
-        countryCode: '🇮🇳 +91',
+        countryCode: remoteProfile.country_code || '🇮🇳 +91',
         phoneNumber: remoteProfile.phone || '',
         emergencyNumber: remoteProfile.emergency_contact_phone || '',
         bloodGroup: remoteProfile.blood_group || 'O+',
-        allergies: [],
-        medications: remoteProfile.medical_conditions || '',
-        medsPacked: true,
-        heightCm: 175,
-        weightKg: 70,
-        experienceLevel: 'Intermediate',
-        healthNotes: '',
+        allergies: Array.isArray(remoteProfile.allergies)
+          ? remoteProfile.allergies
+          : Array.isArray(remoteProfile.gear_checklist)
+          ? remoteProfile.gear_checklist
+          : [],
+        medications: remoteProfile.medications || remoteProfile.medical_conditions || '',
+        medsPacked: typeof remoteProfile.meds_packed === 'boolean' ? remoteProfile.meds_packed : true,
+        heightCm: remoteProfile.height_cm || 175,
+        weightKg: remoteProfile.weight_kg || 70,
+        experienceLevel: (remoteProfile.experience_level as any) || 'Intermediate',
+        healthNotes: remoteProfile.health_notes || '',
         avatarUrl: remoteProfile.avatar_url || metaAvatar || DEFAULT_AVATAR_URL,
       };
       setProfileData(mappedProfile);
@@ -837,13 +1055,17 @@ export default function App() {
         localStorage.setItem('trailoPS_active_squad_id', userSquad.id);
         localStorage.setItem(`trailoPS_active_squad_${userId}`, JSON.stringify(userSquad));
         localStorage.setItem(`trailoPS_active_squad_id_${userId}`, userSquad.id);
-        setTripDestination({
+        const savedDate =
+          userSquad.startDate ||
+          userSquad.start_date ||
+          localStorage.getItem(`trailoPS_departure_date_${userSquad.id}`);
+        setTripDestination((prev) => ({
           name: userSquad.name,
           destination: userSquad.destination,
-          coordinates: { lat: 27.3184, lng: 88.2412 },
-          departureDate: userSquad.startDate || '2026-10-24',
-          returnDate: '2026-10-30',
-        });
+          coordinates: prev.coordinates || { lat: 27.3184, lng: 88.2412 },
+          departureDate: savedDate || prev.departureDate || '2026-10-24',
+          returnDate: userSquad.endDate || userSquad.end_date || prev.returnDate || '2026-10-30',
+        }));
       } else {
         setActiveSquad(null);
         setHasJoinedGroup(false);
@@ -855,8 +1077,10 @@ export default function App() {
         localStorage.setItem(`trailoPS_hasJoinedGroup_${emailKey}`, 'false');
       }
 
-      // Strictly transition to gateway ONLY if user was on the signin screen
-      setCurrentScreen((prevScreen) => (prevScreen === 'signin' ? 'gateway' : prevScreen));
+      // Strictly transition to gateway ONLY if user was on the onboarding or signin screen
+      setCurrentScreen((prevScreen) =>
+        prevScreen === 'signin' || prevScreen === 'onboarding' ? 'gateway' : prevScreen
+      );
       showToast(`Welcome back, ${mappedProfile.fullName}!`);
     } else {
       // Check local storage for this specific email/ID as fallback
@@ -912,7 +1136,9 @@ export default function App() {
             localStorage.setItem(`trailoPS_hasJoinedGroup_${userId}`, 'false');
             localStorage.setItem(`trailoPS_hasJoinedGroup_${emailKey}`, 'false');
           }
-          setCurrentScreen((prevScreen) => (prevScreen === 'signin' ? 'gateway' : prevScreen));
+          setCurrentScreen((prevScreen) =>
+            prevScreen === 'signin' || prevScreen === 'onboarding' ? 'gateway' : prevScreen
+          );
           showToast(`Welcome back, ${parsed.fullName}!`);
           return;
         } catch {}
@@ -971,7 +1197,7 @@ export default function App() {
         setIsProfileComplete(false);
         setHasJoinedGroup(false);
         setActiveSquad(null);
-        setCurrentScreen('signin');
+        setCurrentScreen('onboarding');
       }
     });
 
@@ -998,8 +1224,17 @@ export default function App() {
     setCurrentUserName(data.fullName);
     if (data.avatarUrl) setCurrentUserAvatar(data.avatarUrl);
 
-    const activeUserId = currentUserId || 'usr_' + Date.now();
-    const activeEmail = currentUserEmail || 'user@trailoPS.app';
+    const activeUserId = currentUserId || localStorage.getItem('trailoPS_currentUserId') || 'usr_' + Date.now();
+    const activeEmail = (currentUserEmail || localStorage.getItem('trailoPS_currentUserEmail') || 'user@trailoPS.app').toLowerCase();
+
+    setCurrentUserId(activeUserId);
+    setCurrentUserEmail(activeEmail);
+    localStorage.setItem('trailoPS_currentUserId', activeUserId);
+    localStorage.setItem('trailoPS_currentUserEmail', activeEmail);
+    localStorage.setItem('trailoPS_currentUserName', data.fullName);
+    if (data.avatarUrl) {
+      localStorage.setItem('trailoPS_currentUserAvatar', data.avatarUrl);
+    }
 
     // Persist in localStorage
     localStorage.setItem(`trailoPS_profile_${activeUserId}`, JSON.stringify(data));
@@ -1022,11 +1257,20 @@ export default function App() {
           full_name: data.fullName,
           avatar_url: data.avatarUrl,
           phone: data.phoneNumber,
+          country_code: data.countryCode,
+          guardian_name: data.guardianName,
           date_of_birth: data.dateOfBirth,
           age: data.age,
           gender: data.gender,
           blood_group: data.bloodGroup,
           medical_conditions: combinedMedical || data.medications || '',
+          allergies: data.allergies || [],
+          medications: data.medications || '',
+          meds_packed: data.medsPacked,
+          height_cm: data.heightCm,
+          weight_kg: data.weightKg,
+          experience_level: data.experienceLevel,
+          health_notes: data.healthNotes || '',
           emergency_contact_name: data.guardianName || 'Emergency Next of Kin',
           emergency_contact_phone: data.emergencyNumber,
           gear_checklist: data.allergies || [],
@@ -1038,7 +1282,7 @@ export default function App() {
     }
 
     setCurrentScreen('gateway');
-    showToast('Expedition profile registered and secured!');
+    showToast('Expedition profile saved to server and secured!');
 
     // If waiting on deep link join code, open modal
     if (joinCodeParam) {
@@ -1094,7 +1338,7 @@ export default function App() {
     setHasJoinedGroup(false);
     setActiveSquad(null);
     setProfileData(getEmptyProfileDraft('', ''));
-    setCurrentScreen('signin');
+    setCurrentScreen('onboarding');
     showToast('Signed out of TrailoPS session.');
   };
 
@@ -1108,13 +1352,17 @@ export default function App() {
         localStorage.setItem(`trailoPS_hasJoinedGroup_${effectiveId}`, 'true');
         localStorage.setItem('trailoPS_active_squad', JSON.stringify(sq));
         localStorage.setItem('trailoPS_active_squad_id', sq.id);
-        setTripDestination({
+        const savedDate =
+          sq.startDate ||
+          sq.start_date ||
+          localStorage.getItem(`trailoPS_departure_date_${sq.id}`);
+        setTripDestination((prev) => ({
           name: sq.name,
           destination: sq.destination,
-          coordinates: { lat: 27.3184, lng: 88.2412 },
-          departureDate: sq.startDate || sq.start_date || '2026-10-24',
-          returnDate: sq.endDate || sq.end_date || '2026-10-30',
-        });
+          coordinates: prev.coordinates || { lat: 27.3184, lng: 88.2412 },
+          departureDate: savedDate || prev.departureDate || '2026-10-24',
+          returnDate: sq.endDate || sq.end_date || prev.returnDate || '2026-10-30',
+        }));
       }
     }
   };
@@ -1124,6 +1372,10 @@ export default function App() {
       {/* Screen Render Container with Smooth Page Change Animation & Tactical Dark Theme */}
       <div className="w-full max-w-md flex-1 bg-[#f8faf9] dark:bg-slate-950 dark:text-slate-100 relative min-h-screen flex flex-col transition-colors duration-200 shadow-2xl">
         <div key={currentScreen} className="animate-page-enter w-full flex-1 flex flex-col">
+          {currentScreen === 'onboarding' && (
+            <OnboardingScreen onComplete={() => setCurrentScreen('signin')} />
+          )}
+
           {currentScreen === 'signin' && (
             <SignInScreen
               onNavigate={(screen) => setCurrentScreen(screen)}
@@ -1195,12 +1447,15 @@ export default function App() {
                   returnDate: trip.returnDate,
                 };
                 setTripDestination(updatedTrip);
-                setTripBudget(trip.budgetPerMember);
-                setAmountPaid(0);
-                setAmountPending(trip.budgetPerMember);
+                if (activeSquad?.id && trip.departureDate) {
+                  localStorage.setItem(`trailoPS_departure_date_${activeSquad.id}`, trip.departureDate);
+                }
+                if (typeof trip.budgetPerMember === 'number' && trip.budgetPerMember !== tripBudget) {
+                  setTripBudget(trip.budgetPerMember);
+                  setAmountPaid(0);
+                  setAmountPending(trip.budgetPerMember);
+                }
                 setHasJoinedGroup(true);
-                setUserRole('super_admin');
-                localStorage.setItem('trailoPS_userRole', 'super_admin');
                 if (currentUserId) {
                   localStorage.setItem(`trailoPS_hasJoinedGroup_${currentUserId}`, 'true');
                 }
@@ -1314,12 +1569,15 @@ export default function App() {
       />
 
       {/* Global Ask AI Expedition Assistant Floating Overlay */}
-      {isProfileComplete && currentScreen !== 'signin' && currentScreen !== 'profile' && (
-        <AskAIOverlay
-          destinationName={activeSquad?.destination || tripDestination.destination}
-          onShowToast={showToast}
-        />
-      )}
+      {isProfileComplete &&
+        currentScreen !== 'onboarding' &&
+        currentScreen !== 'signin' &&
+        currentScreen !== 'profile' && (
+          <AskAIOverlay
+            destinationName={activeSquad?.destination || tripDestination.destination}
+            onShowToast={showToast}
+          />
+        )}
 
       {/* Global Toast Notification Container */}
       {toastMessage && (
@@ -1362,6 +1620,9 @@ export default function App() {
         tripBudget={tripBudget}
         amountPaid={amountPaid}
         amountPending={amountPending}
+        activeSquadId={activeSquad?.id || 'default'}
+        currentUserId={currentUserId}
+        currentUserName={profileData.fullName || currentUserName}
         onShowToast={showToast}
         onSettlePayment={(settleAmt) => {
           const newPaid = amountPaid + settleAmt;
@@ -1403,13 +1664,17 @@ export default function App() {
             if (currentUserEmail) {
               localStorage.setItem(`trailoPS_hasJoinedGroup_${currentUserEmail}`, 'true');
             }
-            setTripDestination({
+            const savedDate =
+              squad.startDate ||
+              squad.start_date ||
+              localStorage.getItem(`trailoPS_departure_date_${squad.id}`);
+            setTripDestination((prev) => ({
               name: squad.name,
               destination: squad.destination,
-              coordinates: { lat: 27.3184, lng: 88.2412 },
-              departureDate: '2026-10-24',
-              returnDate: '2026-10-30',
-            });
+              coordinates: prev.coordinates || { lat: 27.3184, lng: 88.2412 },
+              departureDate: savedDate || prev.departureDate || '2026-10-24',
+              returnDate: squad.endDate || squad.end_date || prev.returnDate || '2026-10-30',
+            }));
             setIsJoinDeepLinkOpen(false);
             setJoinCodeParam(null);
             const url = new URL(window.location.href);
@@ -1468,7 +1733,7 @@ export default function App() {
           if (activeSOSAlarm) {
             const alarmUniqueKey =
               activeSOSAlarm.id ||
-              `${activeSOSAlarm.distressedUserId}_${activeSOSAlarm.triggeredAt}`;
+              `${activeSOSAlarm.distressedUserId}_${activeSOSAlarm.timestamp}`;
             localStorage.setItem(`trailoPS_muted_sos_${alarmUniqueKey}`, 'true');
           }
           setActiveSOSAlarm(null);

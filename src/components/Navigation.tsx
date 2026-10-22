@@ -15,8 +15,8 @@ export const Navigation: React.FC<NavigationProps> = ({
   onSelectScreen,
   onOpenSOSModal,
 }) => {
-  // Do NOT show bottom dock until profile creation is complete, or if on login / profile setup
-  if (!isProfileComplete || currentScreen === 'signin' || currentScreen === 'profile') {
+  // Do NOT show bottom dock until profile creation is complete, or if on onboarding / login / profile setup
+  if (!isProfileComplete || currentScreen === 'onboarding' || currentScreen === 'signin' || currentScreen === 'profile') {
     return null;
   }
 

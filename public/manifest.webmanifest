@@ -1,0 +1,33 @@
+{
+  "name": "TrailOPS",
+  "short_name": "TrailOPS",
+  "description": "Tactical trail operations and expedition management suite with multi-step expedition profiling, squad roll call telemetry, peer mesh radar, and instant emergency SOS dispatch.",
+  "theme_color": "#0f5238",
+  "background_color": "#f8faf9",
+  "display": "standalone",
+  "orientation": "portrait",
+  "scope": "/",
+  "start_url": "/",
+  "id": "/",
+  "categories": ["navigation", "travel", "utilities"],
+  "icons": [
+    {
+      "src": "/pwa-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/maskable-icon-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

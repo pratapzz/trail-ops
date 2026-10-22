@@ -760,25 +760,28 @@ export const SignInScreen: React.FC<SignInScreenProps> = ({
                 </span>
               </button>
 
-              {/* Apple Button */}
+              {/* Apple Button with Coming Soon badge */}
               <button
                 type="button"
-                disabled={isLoading || oauthProviderLoading !== null}
-                onClick={() => handleStartOAuth('apple')}
-                className="h-11 px-3 rounded-2xl border border-slate-200 hover:border-emerald-600/40 hover:bg-emerald-50/40 active:scale-95 transition-all flex items-center justify-center gap-2.5 bg-white shadow-2xs cursor-pointer group disabled:opacity-50"
+                onClick={() => {
+                  onShowToast('Apple Sign-In is coming soon in the next release!');
+                }}
+                className="h-11 px-2.5 rounded-2xl border border-slate-200 hover:border-slate-300 hover:bg-slate-50/70 active:scale-95 transition-all flex items-center justify-between bg-white shadow-2xs cursor-pointer group"
+                title="Apple Sign-In (Coming Soon)"
               >
-                {oauthProviderLoading === 'apple' ? (
-                  <Loader2 className="w-4 h-4 animate-spin text-slate-900" />
-                ) : (
+                <div className="flex items-center gap-1.5">
                   <svg
-                    className="w-4 h-4 flex-shrink-0 fill-slate-900 group-hover:fill-emerald-950 transition-colors"
+                    className="w-4 h-4 flex-shrink-0 fill-slate-800"
                     viewBox="0 0 170 170"
                   >
                     <path d="M150.37 130.25c-2.45 5.66-5.35 10.87-8.71 15.66-4.58 6.53-8.33 11.05-11.22 13.56-4.48 4.12-9.28 6.23-14.42 6.35-3.69 0-8.14-1.05-13.32-3.18-5.19-2.12-9.97-3.17-14.34-3.17-4.58 0-9.49 1.05-14.75 3.17-5.26 2.13-9.5 3.24-12.74 3.35-4.35.13-9.16-1.9-14.42-6.08-3.7-3.04-7.66-7.85-11.9-14.42-6.09-9.35-10.8-19.89-14.13-31.62-3.34-11.73-5.01-23.06-5.01-34 0-14.24 3.58-26.06 10.74-35.46 7.16-9.4 16.03-14.19 26.6-14.38 5.43 0 11.19 1.41 17.27 4.23 6.09 2.83 10.11 4.3 12.07 4.42 1.52 0 5.76-1.52 12.72-4.56 6.96-3.04 12.83-4.35 17.61-3.91 13.26.87 23.8 5.76 31.62 14.67-11.52 6.96-17.18 16.63-16.96 29.02.22 9.78 3.91 18.04 11.08 24.78 7.17 6.74 15.65 10.54 25.43 11.41-2.17 6.52-4.78 13.04-7.82 19.56zM119.22 31.09c0-7.39 2.61-14.35 7.82-20.87C132.25 3.7 139.64 0 149.21 0c.22 1.09.33 2.17.33 3.26 0 7.39-2.72 14.46-8.15 21.2-5.44 6.74-12.61 10.65-21.52 11.74-.22-1.74-.65-3.44-.65-5.11z" />
                   </svg>
-                )}
-                <span className="text-xs text-slate-800 font-semibold group-hover:text-emerald-950">
-                  Apple
+                  <span className="text-xs text-slate-800 font-semibold">
+                    Apple
+                  </span>
+                </div>
+                <span className="text-[9px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500 border border-slate-200">
+                  Coming Soon
                 </span>
               </button>
             </div>

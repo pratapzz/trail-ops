@@ -96,6 +96,15 @@ import {
   saveSquadChecklistItem,
   updateSquadChecklistPacking,
   deleteSquadChecklistRecord,
+  fetchSubGroups,
+  saveSubGroup,
+  deleteSubGroup,
+  fetchMissingItems,
+  saveMissingItem,
+  updateMissingItemStatus,
+  assignSubGroupMembers,
+  updateSquadGroupDetails,
+  kickSquadMember,
   SquadGroupRecord,
   SquadMemberRecord,
   SquadJoinRequestRecord,
@@ -168,6 +177,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
 
   const [joinRequests, setJoinRequests] = useState<SquadJoinRequestRecord[]>([]);
   const [respondingRequestId, setRespondingRequestId] = useState<string | null>(null);
+  const [isJoinRequestsModalOpen, setIsJoinRequestsModalOpen] = useState(false);
 
   const [pendingMembers, setPendingMembers] = useState<Array<{
     id: string;
@@ -444,9 +454,14 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
   }, [activeSquad?.id, currentUserId]);
 
   // Edit Group Form state
-  const [editFromLocation, setEditFromLocation] = useState('');
+  const [editFromLocation, setEditFromLocation] = useState(
+    activeSquad?.from_location || (activeSquad as any)?.fromLocation || ''
+  );
   const [editDestination, setEditDestination] = useState(activeSquad?.destination || '');
-  const [editDepartureDate, setEditDepartureDate] = useState(activeSquad?.start_date || '2026-10-24');
+  const [editDepartureDate, setEditDepartureDate] = useState(
+    activeSquad?.start_date || (activeSquad as any)?.startDate || '2026-10-24'
+  );
+  const [editBudget, setEditBudget] = useState<number>(activeSquad?.budget || 6000);
 
   // Subgroup creator state (strictly real user records)
   const [subGroupNameInput, setSubGroupNameInput] = useState('');
@@ -473,6 +488,110 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
   useEffect(() => {
     const key = `trailoPS_subgroups_${activeSquad?.id || 'default'}`;
     localStorage.setItem(key, JSON.stringify(subGroups));
+
+    const handleSubGroupSync = (e: any) => {
+      if (e?.detail?.subGroups && Array.isArray(e.detail.subGroups)) {
+        setSubGroups(e.detail.subGroups);
+      }
+    };
+    window.addEventListener('trailoPS_subgroups_updated', handleSubGroupSync);
+
+    const handleExternalGroupUpdate = (e: any) => {
+      const d = e.detail;
+      if (d) {
+        if (d.name) setTripName(d.name);
+        if (d.destination) setEditDestination(d.destination);
+        if (d.fromLocation || d.from_location) setEditFromLocation(d.fromLocation || d.from_location);
+        if (d.startDate || d.start_date) setEditDepartureDate(d.startDate || d.start_date);
+        if (typeof d.budget === 'number') setEditBudget(d.budget);
+        if (d.bannerUrl || d.banner_url) setCoverBg(d.bannerUrl || d.banner_url);
+      }
+    };
+    window.addEventListener('trailoPS_group_updated', handleExternalGroupUpdate);
+
+    let bc: BroadcastChannel | null = null;
+    const squadKey = activeSquad?.id || 'default';
+    if (typeof BroadcastChannel !== 'undefined') {
+      try {
+        bc = new BroadcastChannel(`trailops_squad_bus_${squadKey}`);
+        bc.onmessage = (ev) => {
+          if (ev.data?.type === 'GROUP_DETAILS_UPDATED' && ev.data?.details) {
+            const d = ev.data.details;
+            if (d.name) setTripName(d.name);
+            if (d.destination) setEditDestination(d.destination);
+            if (d.fromLocation || d.from_location) setEditFromLocation(d.fromLocation || d.from_location);
+            if (d.startDate || d.start_date) setEditDepartureDate(d.startDate || d.start_date);
+            if (typeof d.budget === 'number') setEditBudget(d.budget);
+            if (d.bannerUrl || d.banner_url) setCoverBg(d.bannerUrl || d.banner_url);
+            onShowToast(`📢 Squad details updated: ${d.name || ''} · ${d.destination || ''}`);
+          }
+
+          if ((ev.data?.type === 'SUBGROUP_CREATED' || ev.data?.type === 'SUBGROUP_ASSIGNED') && ev.data?.subGroup) {
+            setSubGroups((prev) => {
+              const filtered = prev.filter((s) => s.id !== ev.data.subGroup.id);
+              const next = [...filtered, ev.data.subGroup];
+              localStorage.setItem(key, JSON.stringify(next));
+              return next;
+            });
+
+            // Update member assignments
+            if (Array.isArray(ev.data.assignedMemberIds)) {
+              setMembers((prev) => {
+                const nextMembers = prev.map((m) =>
+                  ev.data.assignedMemberIds.includes(m.id)
+                    ? {
+                        ...m,
+                        subGroupId: ev.data.subGroup.id,
+                        subGroupName: ev.data.subGroup.name,
+                        subGroupColor: ev.data.subGroup.color,
+                      }
+                    : m
+                );
+                try {
+                  localStorage.setItem('trailoPS_squad_members', JSON.stringify(nextMembers));
+                } catch {}
+                return nextMembers;
+              });
+
+              if (ev.data.assignedMemberIds.includes(currentUserId || '1')) {
+                onShowToast(`🛡️ You have been assigned to ${ev.data.subGroup.name}!`);
+              }
+            }
+          }
+
+          if (ev.data?.type === 'MISSING_ITEM_ALERT' && ev.data?.item) {
+            setMissingItems((prev) => {
+              if (prev.some((i) => i.id === ev.data.item.id)) return prev;
+              const next = [ev.data.item, ...prev];
+              localStorage.setItem(`trailoPS_missing_items_${squadKey}`, JSON.stringify(next));
+              return next;
+            });
+
+            if (ev.data.notice) {
+              setAnnouncements((prev) => {
+                if (prev.some((a) => a.id === ev.data.notice.id)) return prev;
+                const next = [ev.data.notice, ...prev];
+                localStorage.setItem(`trailoPS_announcements_${squadKey}`, JSON.stringify(next));
+                return next;
+              });
+              window.dispatchEvent(
+                new CustomEvent('trailoPS_new_announcement', { detail: ev.data.notice })
+              );
+            }
+
+            onShowToast(
+              `🚨 URGENT: Missing Item reported - ${ev.data.item.itemName} (${ev.data.item.urgency.toUpperCase()})!`
+            );
+          }
+        };
+      } catch {}
+    }
+
+    return () => {
+      window.removeEventListener('trailoPS_subgroups_updated', handleSubGroupSync);
+      window.removeEventListener('trailoPS_group_updated', handleExternalGroupUpdate);
+      if (bc) bc.close();
+    };
   }, [subGroups, activeSquad?.id]);
 
   // Quick announcement composer (strictly real records with image attachment support)
@@ -574,6 +693,34 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
     } catch {}
   };
 
+  const syncSubGroups = async () => {
+    if (!activeSquad?.id) return;
+    const items = await fetchSubGroups(activeSquad.id);
+    if (items && items.length > 0) {
+      setSubGroups(items);
+      localStorage.setItem(`trailoPS_subgroups_${activeSquad.id}`, JSON.stringify(items));
+    }
+  };
+
+  const syncMissingItems = async () => {
+    if (!activeSquad?.id) return;
+    const items = await fetchMissingItems(activeSquad.id);
+    if (items && items.length > 0) {
+      setMissingItems(items);
+      localStorage.setItem(`trailoPS_missing_items_${activeSquad.id}`, JSON.stringify(items));
+    }
+  };
+
+  useEffect(() => {
+    syncSubGroups();
+    syncMissingItems();
+    const interval = setInterval(() => {
+      syncSubGroups();
+      syncMissingItems();
+    }, 4000);
+    return () => clearInterval(interval);
+  }, [activeSquad?.id]);
+
   useEffect(() => {
     syncSharedChecklist();
     const interval = setInterval(syncSharedChecklist, 3500);
@@ -618,16 +765,26 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
   const [isCoverPickerOpen, setIsCoverPickerOpen] = useState(false);
 
   useEffect(() => {
-    if (hasJoinedGroup && activeSquad?.name) {
-      setTripName(activeSquad.name);
+    if (hasJoinedGroup && activeSquad) {
+      if (activeSquad.name) setTripName(activeSquad.name);
+      if (activeSquad.destination) setEditDestination(activeSquad.destination);
+      if (activeSquad.from_location || (activeSquad as any).fromLocation) {
+        setEditFromLocation(activeSquad.from_location || (activeSquad as any).fromLocation);
+      }
+      if (activeSquad.start_date || (activeSquad as any).startDate) {
+        setEditDepartureDate(activeSquad.start_date || (activeSquad as any).startDate);
+      }
+      if (typeof activeSquad.budget === 'number') {
+        setEditBudget(activeSquad.budget);
+      }
+      if (activeSquad.banner_url || (activeSquad as any).bannerUrl) {
+        setCoverBg(activeSquad.banner_url || (activeSquad as any).bannerUrl);
+      }
     } else if (!hasJoinedGroup) {
       setTripName('');
       setIsEditingTripName(false);
     }
-    if (hasJoinedGroup && activeSquad?.destination) {
-      setEditDestination(activeSquad.destination);
-    }
-  }, [hasJoinedGroup, activeSquad?.name, activeSquad?.destination]);
+  }, [hasJoinedGroup, activeSquad]);
 
   const presetCovers = [
     {
@@ -1003,13 +1160,29 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
     }
   };
 
-  const handleKickActiveMember = (id: string, name: string) => {
-    setMembers((prev) => prev.filter((m) => m.id !== id));
-    onShowToast(`User ${name} was kicked from squad expedition.`);
+  const handleKickActiveMember = async (id: string, name: string) => {
+    const targetGroupId = activeSquad?.id || localStorage.getItem('trailoPS_active_squad_id') || 'default';
+    setMembers((prev) => {
+      const next = prev.filter((m) => m.id !== id);
+      try {
+        localStorage.setItem('trailoPS_squad_members', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+    const res = await kickSquadMember(targetGroupId, id, currentUserId);
+    if (!res.success && res.error) {
+      onShowToast(res.error);
+      await syncSquadMembersList();
+      return;
+    }
+    await syncSquadMembersList();
+    onRefreshSquad?.();
+    onShowToast(`✓ ${name} was kicked and removed from the squad expedition.`);
   };
 
   // Sub-Group minus deletion (Request 8)
-  const handleDeleteSubGroup = (subGroupId: string, subGroupName: string) => {
+  const handleDeleteSubGroup = async (subGroupId: string, subGroupName: string) => {
+    if (!activeSquad?.id) return;
     setSubGroups((prev) => prev.filter((sg) => sg.id !== subGroupId));
     setMembers((prev) =>
       prev.map((m) =>
@@ -1018,6 +1191,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
           : m
       )
     );
+    await deleteSubGroup(activeSquad.id, subGroupId);
     onShowToast(`Sub-Group "${subGroupName}" removed. Members unassigned.`);
   };
 
@@ -1371,15 +1545,37 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                     type="text"
                     value={tripName}
                     onChange={(e) => setTripName(e.target.value)}
-                    onBlur={() => setIsEditingTripName(false)}
-                    onKeyDown={(e) => e.key === 'Enter' && setIsEditingTripName(false)}
+                    onKeyDown={async (e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        setIsEditingTripName(false);
+                        if (activeSquad?.id && tripName.trim()) {
+                          await updateSquadGroupDetails(activeSquad.id, {
+                            name: tripName.trim(),
+                            userId: currentUserId,
+                          });
+                          onRefreshSquad?.();
+                          onShowToast(`✓ Group renamed to "${tripName.trim()}" & notified all members!`);
+                        }
+                      }
+                    }}
                     autoFocus
                     className="bg-black/60 text-white font-black text-lg px-2.5 py-1 rounded-lg border border-emerald-400 w-full outline-none"
                   />
                   <button
                     type="button"
-                    onClick={() => setIsEditingTripName(false)}
-                    className="px-2.5 py-1 bg-emerald-600 rounded-lg text-xs font-bold"
+                    onClick={async () => {
+                      setIsEditingTripName(false);
+                      if (activeSquad?.id && tripName.trim()) {
+                        await updateSquadGroupDetails(activeSquad.id, {
+                          name: tripName.trim(),
+                          userId: currentUserId,
+                        });
+                        onRefreshSquad?.();
+                        onShowToast(`✓ Group renamed to "${tripName.trim()}" & notified all members!`);
+                      }
+                    }}
+                    className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 rounded-lg text-xs font-bold cursor-pointer shrink-0"
                   >
                     Save
                   </button>
@@ -1511,7 +1707,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
               <span className="text-[11px] font-bold text-slate-800">Missing Item</span>
             </button>
 
-            {/* Tool 6: Shared Journey Checklist */}
+            {/* Tool 6: Shared Check List */}
             <button
               type="button"
               onClick={() => setIsJourneyChecklistModalOpen(true)}
@@ -1520,7 +1716,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
               <div className="w-11 h-11 rounded-full bg-gradient-to-tr from-teal-700 to-emerald-600 text-white flex items-center justify-center shadow-md group-hover:ring-2 ring-teal-400 transition-all">
                 <ClipboardCheck className="w-5 h-5" />
               </div>
-              <span className="text-[11px] font-bold text-slate-800">Checklist</span>
+              <span className="text-[11px] font-bold text-slate-800">Check List</span>
             </button>
           </div>
 
@@ -1669,133 +1865,6 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
           </div>
         ) : (
           <>
-            {/* SHARED TRAIN JOURNEY & RETURN JOURNEY CARD */}
-            <section className="bg-white rounded-3xl p-4.5 border border-slate-200 shadow-xs space-y-3">
-              <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-                <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 rounded-xl bg-amber-100 text-amber-800 flex items-center justify-center">
-                    <Train className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
-                      Train Schedule
-                    </h3>
-                    <p className="text-[10px] text-slate-500">
-                      Live countdown, intermediate halts &amp; coach roster
-                    </p>
-                  </div>
-                </div>
-
-                {/* Onward vs Return Toggle */}
-                <div className="flex bg-slate-100 p-0.5 rounded-xl border border-slate-200">
-                  <button
-                    type="button"
-                    onClick={() => setTrainDirection('onward')}
-                    className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all cursor-pointer ${
-                      trainDirection === 'onward'
-                        ? 'bg-white text-emerald-950 shadow-xs'
-                        : 'text-slate-500 hover:text-slate-800'
-                    }`}
-                  >
-                    Onward
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setTrainDirection('return')}
-                    className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all cursor-pointer ${
-                      trainDirection === 'return'
-                        ? 'bg-white text-emerald-950 shadow-xs'
-                        : 'text-slate-500 hover:text-slate-800'
-                    }`}
-                  >
-                    Return
-                  </button>
-                </div>
-              </div>
-
-              {/* Active Journey Details */}
-              {(() => {
-                const activeJourney = trainDirection === 'onward' ? onwardJourney : returnJourney;
-                const isAdmin = userRole === 'super_admin' || userRole === 'subgroup_admin';
-                const mySeat = seatAssignments.find((s) => s && s.user_id === currentUserId);
-
-                if (!activeJourney) {
-                  return (
-                    <div className="p-4 rounded-2xl bg-slate-50 border border-dashed border-slate-200 text-center space-y-2">
-                      <p className="text-xs text-slate-500">
-                        {trainDirection === 'onward' ? 'No onward train added yet.' : 'No return train added yet.'}
-                      </p>
-                      {isAdmin ? (
-                        <button
-                          type="button"
-                          onClick={() => setIsTrainModalOpen(true)}
-                          className="px-3.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs inline-flex items-center gap-1.5 shadow-xs transition-all active:scale-95 cursor-pointer"
-                        >
-                          <Train className="w-3.5 h-3.5" />
-                          <span>Schedule {trainDirection === 'onward' ? 'Onward' : 'Return'} Train</span>
-                        </button>
-                      ) : (
-                        <span className="text-[11px] text-slate-400 italic block">
-                          Waiting for trip lead or faculty to publish departure train schedule.
-                        </span>
-                      )}
-                    </div>
-                  );
-                }
-
-                return (
-                  <div className="space-y-2.5">
-                    <div className="flex items-center justify-between p-3 rounded-2xl bg-amber-50/70 border border-amber-200/80">
-                      <div>
-                        <span className="text-[10px] text-amber-800 font-bold uppercase tracking-wider block font-mono">
-                          {activeJourney.train_number}
-                        </span>
-                        <h4 className="text-sm font-black text-slate-900">
-                          {activeJourney.train_name}
-                        </h4>
-                        <p className="text-[11px] text-slate-600 font-semibold mt-0.5">
-                          {activeJourney.boarding_station} → {activeJourney.destination_station}
-                        </p>
-                      </div>
-
-                      <div className="text-right">
-                        <span className="text-[10px] text-slate-500 font-bold uppercase block">
-                          Departure In
-                        </span>
-                        <span className="text-xs font-black text-amber-900 font-mono bg-white px-2.5 py-1 rounded-xl border border-amber-300 shadow-2xs block mt-0.5">
-                          {calculateTrainCountdown(activeJourney.departure_time)}
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Member's Assigned Berth */}
-                    <div className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-xs">
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-slate-500 font-medium">Your Berth:</span>
-                        {mySeat ? (
-                          <span className="font-extrabold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-md">
-                            Coach {mySeat.coach} · Berth {mySeat.berth_number || '-'} ({mySeat.berth_type || 'General'})
-                          </span>
-                        ) : (
-                          <span className="text-slate-400 italic text-[11px]">Seat allocation in progress</span>
-                        )}
-                      </div>
-
-                      {isAdmin && (
-                        <button
-                          type="button"
-                          onClick={() => setIsTrainModalOpen(true)}
-                          className="px-2.5 py-1 rounded-lg bg-slate-200 hover:bg-slate-300 text-slate-800 text-[10px] font-bold cursor-pointer transition-colors"
-                        >
-                          Manage Train &amp; Roster
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })()}
-            </section>
-
             {/* Basecamp Check-In */}
             <section className="rounded-3xl p-4 bg-gradient-to-br from-emerald-50/70 via-teal-50/40 to-blue-50/40 border border-emerald-200/60 card-glow-mint relative overflow-hidden">
               <div className="flex items-start justify-between gap-3">
@@ -1811,18 +1880,18 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                       <span className="inline-flex w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping" />
                     </div>
                     <h2 className="text-sm sm:text-base text-slate-900 mt-0.5 font-bold">
-                      Meeting Point: Pelling Basecamp
+                      Meeting Point: {activeSquad?.destination || 'Pelling Basecamp'}
                     </h2>
                     <p className="text-xs text-slate-600 mt-0.5">
-                      Meet near Ridge Marker #3 for the evening briefing.
+                      Super Admin initiates check-in; all members confirm Present or Deny.
                     </p>
                   </div>
                 </div>
               </div>
 
-              {/* Check-In Button / Commander Live Roll Call Controls */}
+              {/* Check-In Button / Commander Live Roll Call Controls (Strictly Super Admin initiates; Locked for Sub-Admin & Member) */}
               <div className="mt-3.5 space-y-2">
-                {userRole === 'super_admin' || userRole === 'admin' || userRole === 'subgroup_admin' || userRole === 'faculty' ? (
+                {isCurrentUserSuperAdmin ? (
                   !liveActive ? (
                     <button
                       type="button"
@@ -1830,7 +1899,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                       className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-emerald-600 via-teal-600 to-[#0f5238] text-white text-xs sm:text-sm font-black flex items-center justify-center gap-2 shadow-lg shadow-emerald-700/25 active:scale-95 transition-all cursor-pointer"
                     >
                       <Radio className="w-5 h-5 animate-pulse" />
-                      <span>Start Attendance</span>
+                      <span>Start Attendance (Super Admin)</span>
                     </button>
                   ) : (
                     <div className="p-3.5 bg-emerald-50 border-2 border-emerald-500 rounded-2xl space-y-3">
@@ -1949,8 +2018,9 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                     )}
                   </div>
                 ) : (
-                  <div className="w-full py-2.5 px-3 rounded-2xl bg-slate-100 border border-slate-200 text-slate-600 text-xs text-center font-medium">
-                    Awaiting Squad Commander to initiate live attendance roll call.
+                  <div className="w-full py-3 px-3.5 rounded-2xl bg-slate-100 border border-slate-200 text-slate-600 text-xs flex items-center justify-center gap-2 font-bold select-none opacity-90">
+                    <Lock className="w-4 h-4 text-slate-500 shrink-0" />
+                    <span>Check-In Locked — Only Super Admin can call Check-In</span>
                   </div>
                 )}
               </div>
@@ -2124,127 +2194,52 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                 </button>
               </div>
 
-              {/* JOIN REQUESTS SECTION (Super Admin Approval Governance) */}
+              {/* Header with Join Requests Icon (Red Dot) & Separate Window Button */}
               <div
                 id="squad-join-requests-section"
-                className="mt-3 p-3.5 rounded-2xl bg-slate-50 border border-slate-200 space-y-2.5"
+                className="mt-3 pt-2.5 flex items-center justify-between border-t border-slate-100"
               >
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <div className="w-7 h-7 rounded-xl bg-emerald-100 text-[#0f5238] flex items-center justify-center shrink-0">
-                      <ShieldCheck className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-xs font-extrabold text-slate-900">
-                          Join Requests
-                        </span>
-                        {joinRequests.filter((r) => r.status === 'pending').length > 0 && (
-                          <span className="px-2 py-0.2 rounded-full bg-amber-500 text-white text-[10px] font-black animate-pulse">
-                            {joinRequests.filter((r) => r.status === 'pending').length} Pending
-                          </span>
-                        )}
-                      </div>
-                      <span className="text-[10px] text-slate-500 block">
-                        {isCurrentUserSuperAdmin
-                          ? 'Review and approve new members'
-                          : 'Only authorized Super Admins may approve or reject requests'}
-                      </span>
-                    </div>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={loadGroupJoinRequests}
-                    className="p-1.5 rounded-lg bg-white hover:bg-slate-100 border border-slate-200 text-slate-600 cursor-pointer transition-colors"
-                    title="Refresh Join Requests"
-                  >
-                    <RefreshCcw className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-
-                {/* Pending Join Requests Queue */}
-                {joinRequests.filter((r) => r.status === 'pending').length === 0 ? (
-                  <div className="p-3 rounded-xl bg-white border border-dashed border-slate-200 text-center text-[11px] text-slate-500">
-                    No pending requests. Share your group code to invite members.
-                  </div>
-                ) : (
-                  <div className="pt-1 space-y-2">
-                    {joinRequests
-                      .filter((r) => r.status === 'pending')
-                      .map((req) => (
-                        <div
-                          key={req.id}
-                          className="p-2.5 rounded-xl bg-white border-2 border-amber-300/80 shadow-2xs flex items-center justify-between gap-2.5 animate-in fade-in duration-150"
-                        >
-                          <div className="flex items-center gap-2.5 min-w-0">
-                            <img
-                              src={
-                                req.user_avatar ||
-                                'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=120&q=80'
-                              }
-                              alt={req.user_name || 'Requester'}
-                              className="w-8 h-8 rounded-full object-cover border border-amber-300 shrink-0"
-                            />
-                            <div className="min-w-0">
-                              <span className="text-xs font-extrabold text-slate-900 truncate block">
-                                {req.user_name || 'Trekker Applicant'}
-                              </span>
-                              <span className="text-[10px] text-slate-500 block truncate">
-                                {req.user_email || req.user_phone || 'Verified Account'}
-                                {req.blood_group ? ` · Blood: ${req.blood_group}` : ''}
-                              </span>
-                            </div>
-                          </div>
-
-                          {isCurrentUserSuperAdmin ? (
-                            <div className="flex items-center gap-1.5 shrink-0">
-                              <button
-                                type="button"
-                                disabled={respondingRequestId === req.id}
-                                onClick={() => handleRespondToJoinRequest(req, 'accept')}
-                                className="px-2.5 py-1.5 rounded-lg bg-[#0f5238] hover:bg-emerald-800 text-white text-[10px] font-extrabold flex items-center gap-1 cursor-pointer shadow-2xs disabled:opacity-50"
-                                title="Accept Join Request"
-                              >
-                                <Check className="w-3 h-3" />
-                                <span>Accept</span>
-                              </button>
-                              <button
-                                type="button"
-                                disabled={respondingRequestId === req.id}
-                                onClick={() => handleRespondToJoinRequest(req, 'reject')}
-                                className="px-2.5 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-[10px] font-extrabold flex items-center gap-1 cursor-pointer disabled:opacity-50"
-                                title="Reject Join Request"
-                              >
-                                <UserX className="w-3 h-3" />
-                                <span>Reject</span>
-                              </button>
-                            </div>
-                          ) : (
-                            <span className="text-[10px] font-bold text-amber-800 bg-amber-50 px-2 py-1 rounded-lg border border-amber-200 shrink-0">
-                              Awaiting Super Admin
-                            </span>
-                          )}
-                        </div>
-                      ))}
-                  </div>
-                )}
-              </div>
-
-              {/* Header with Separate Window Button (Request 9) */}
-              <div className="mt-3 pt-2 flex items-center justify-between border-t border-slate-100">
                 <span className="text-[11px] font-bold text-slate-800">
                   Group Members ({filteredMembers.length})
                 </span>
-                <button
-                  type="button"
-                  onClick={() => setIsAllMembersModalOpen(true)}
-                  className="px-2.5 py-1 rounded-xl bg-cyan-50 hover:bg-cyan-100 text-cyan-900 border border-cyan-300 text-[10px] font-bold flex items-center gap-1 transition-colors cursor-pointer shadow-2xs"
-                  title="Open full members directory in separate window"
-                >
-                  <Eye className="w-3 h-3 text-cyan-700" />
-                  <span>View All</span>
-                </button>
+                <div className="flex items-center gap-2">
+                  {/* Join Requests Icon Button with Red Dot Indicator */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      loadGroupJoinRequests();
+                      setIsJoinRequestsModalOpen(true);
+                    }}
+                    className="relative px-2.5 py-1 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-[#0f5238] border border-emerald-300 text-[10px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
+                    title="Open Join Requests Window"
+                  >
+                    <div className="relative flex items-center justify-center">
+                      <UserCheck className="w-3.5 h-3.5 text-[#0f5238]" />
+                      {joinRequests.filter((r) => r.status === 'pending').length > 0 && (
+                        <>
+                          <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-rose-500 animate-ping" />
+                          <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-rose-600 ring-1 ring-white" />
+                        </>
+                      )}
+                    </div>
+                    <span>Join Req</span>
+                    {joinRequests.filter((r) => r.status === 'pending').length > 0 && (
+                      <span className="px-1.5 py-0.2 rounded-full bg-rose-600 text-white text-[9px] font-black">
+                        {joinRequests.filter((r) => r.status === 'pending').length}
+                      </span>
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setIsAllMembersModalOpen(true)}
+                    className="px-2.5 py-1 rounded-xl bg-cyan-50 hover:bg-cyan-100 text-cyan-900 border border-cyan-300 text-[10px] font-bold flex items-center gap-1 transition-colors cursor-pointer shadow-2xs"
+                    title="Open full members directory in separate window"
+                  >
+                    <Eye className="w-3 h-3 text-cyan-700" />
+                    <span>View All</span>
+                  </button>
+                </div>
               </div>
 
               {/* Member Roster List with Role Hierarchy, Contact & Kick Actions */}
@@ -2341,8 +2336,8 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                         {member.status.toUpperCase()}
                       </span>
 
-                      {/* Super Admin Kick Member Button (Request 7) */}
-                      {member.roleHierarchy !== 'super_admin' && (
+                      {/* Super Admin & Admin Kick Member Button */}
+                      {(userRole === 'super_admin' || userRole === 'subgroup_admin') && member.roleHierarchy !== 'super_admin' && (
                         <button
                           type="button"
                           onClick={() => handleKickActiveMember(member.id, member.name)}
@@ -2575,8 +2570,135 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
               </div>
             </section>
 
-            {/* Leave Group Action Card */}
-            <div className="pt-2 pb-6">
+            {/* SHARED TRAIN JOURNEY & RETURN JOURNEY CARD (Positioned directly above Leave Group) */}
+            <section className="bg-white rounded-3xl p-4.5 border border-slate-200 shadow-xs space-y-3">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-xl bg-amber-100 text-amber-800 flex items-center justify-center">
+                    <Train className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
+                      Train Schedule
+                    </h3>
+                    <p className="text-[10px] text-slate-500">
+                      Live countdown, intermediate halts &amp; coach roster
+                    </p>
+                  </div>
+                </div>
+
+                {/* Onward vs Return Toggle */}
+                <div className="flex bg-slate-100 p-0.5 rounded-xl border border-slate-200">
+                  <button
+                    type="button"
+                    onClick={() => setTrainDirection('onward')}
+                    className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all cursor-pointer ${
+                      trainDirection === 'onward'
+                        ? 'bg-white text-emerald-950 shadow-xs'
+                        : 'text-slate-500 hover:text-slate-800'
+                    }`}
+                  >
+                    Onward
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTrainDirection('return')}
+                    className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all cursor-pointer ${
+                      trainDirection === 'return'
+                        ? 'bg-white text-emerald-950 shadow-xs'
+                        : 'text-slate-500 hover:text-slate-800'
+                    }`}
+                  >
+                    Return
+                  </button>
+                </div>
+              </div>
+
+              {/* Active Journey Details */}
+              {(() => {
+                const activeJourney = trainDirection === 'onward' ? onwardJourney : returnJourney;
+                const isAdmin = userRole === 'super_admin' || userRole === 'subgroup_admin';
+                const mySeat = seatAssignments.find((s) => s && s.user_id === currentUserId);
+
+                if (!activeJourney) {
+                  return (
+                    <div className="p-4 rounded-2xl bg-slate-50 border border-dashed border-slate-200 text-center space-y-2">
+                      <p className="text-xs text-slate-500">
+                        {trainDirection === 'onward' ? 'No onward train added yet.' : 'No return train added yet.'}
+                      </p>
+                      {isAdmin ? (
+                        <button
+                          type="button"
+                          onClick={() => setIsTrainModalOpen(true)}
+                          className="px-3.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs inline-flex items-center gap-1.5 shadow-xs transition-all active:scale-95 cursor-pointer"
+                        >
+                          <Train className="w-3.5 h-3.5" />
+                          <span>Schedule {trainDirection === 'onward' ? 'Onward' : 'Return'} Train</span>
+                        </button>
+                      ) : (
+                        <span className="text-[11px] text-slate-400 italic block">
+                          Waiting for trip lead or faculty to publish departure train schedule.
+                        </span>
+                      )}
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="space-y-2.5">
+                    <div className="flex items-center justify-between p-3 rounded-2xl bg-amber-50/70 border border-amber-200/80">
+                      <div>
+                        <span className="text-[10px] text-amber-800 font-bold uppercase tracking-wider block font-mono">
+                          {activeJourney.train_number}
+                        </span>
+                        <h4 className="text-sm font-black text-slate-900">
+                          {activeJourney.train_name}
+                        </h4>
+                        <p className="text-[11px] text-slate-600 font-semibold mt-0.5">
+                          {activeJourney.boarding_station} → {activeJourney.destination_station}
+                        </p>
+                      </div>
+
+                      <div className="text-right">
+                        <span className="text-[10px] text-slate-500 font-bold uppercase block">
+                          Departure In
+                        </span>
+                        <span className="text-xs font-black text-amber-900 font-mono bg-white px-2.5 py-1 rounded-xl border border-amber-300 shadow-2xs block mt-0.5">
+                          {calculateTrainCountdown(activeJourney.departure_time)}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Member's Assigned Berth */}
+                    <div className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-xs">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-slate-500 font-medium">Your Berth:</span>
+                        {mySeat ? (
+                          <span className="font-extrabold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-md">
+                            Coach {mySeat.coach} · Berth {mySeat.berth_number || '-'} ({mySeat.berth_type || 'General'})
+                          </span>
+                        ) : (
+                          <span className="text-slate-400 italic text-[11px]">Seat allocation in progress</span>
+                        )}
+                      </div>
+
+                      {isAdmin && (
+                        <button
+                          type="button"
+                          onClick={() => setIsTrainModalOpen(true)}
+                          className="px-2.5 py-1 rounded-lg bg-slate-200 hover:bg-slate-300 text-slate-800 text-[10px] font-bold cursor-pointer transition-colors"
+                        >
+                          Manage Train &amp; Roster
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
+            </section>
+
+            {/* Leave Group Action Card (Kept at the bottom below Train Schedule) */}
+            <div className="pt-2 mb-6">
               <button
                 type="button"
                 onClick={() => {
@@ -2589,19 +2711,153 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                 <span>Leave Squad Expedition (Reset Group Membership)</span>
               </button>
               <p className="text-[10px] text-slate-400 text-center mt-1.5">
-                Leaving the group will hide the shared Faculty Drive, Splitwise ledger, and Trip Gear checklist until you rejoin or create a new group.
+                Leaving the group will hide the shared Faculty Drive, Splitwise ledger, and Check List until you rejoin or create a new group.
               </p>
             </div>
           </>
         )}
       </main>
 
+      {/* JOIN REQUESTS POPUP WINDOW MODAL (Opened via Join Req Icon below Overview) */}
+      {isJoinRequestsModalOpen && (
+        <div
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setIsJoinRequestsModalOpen(false);
+          }}
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-md animate-in fade-in duration-200"
+        >
+          <div className="w-full max-w-sm bg-white rounded-3xl p-5 border border-slate-200 shadow-2xl space-y-4 max-h-[85vh] overflow-y-auto no-scrollbar">
+            <div className="flex items-center justify-between pb-2.5 border-b border-slate-100">
+              <div className="flex items-center gap-2.5">
+                <div className="relative w-8 h-8 rounded-xl bg-emerald-100 text-[#0f5238] flex items-center justify-center shrink-0">
+                  <ShieldCheck className="w-4 h-4" />
+                  {joinRequests.filter((r) => r.status === 'pending').length > 0 && (
+                    <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-rose-600 ring-2 ring-white" />
+                  )}
+                </div>
+                <div>
+                  <div className="flex items-center gap-1.5">
+                    <h3 className="font-extrabold text-slate-900 text-sm">Join Requests</h3>
+                    {joinRequests.filter((r) => r.status === 'pending').length > 0 && (
+                      <span className="px-2 py-0.2 rounded-full bg-rose-600 text-white text-[10px] font-black">
+                        {joinRequests.filter((r) => r.status === 'pending').length} Pending
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[10px] text-slate-500">
+                    {isCurrentUserSuperAdmin
+                      ? 'Approve or reject members requesting to join'
+                      : 'Only Super Admin can approve join requests'}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={loadGroupJoinRequests}
+                  className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-600 cursor-pointer"
+                  title="Refresh Join Requests"
+                >
+                  <RefreshCcw className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsJoinRequestsModalOpen(false)}
+                  className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500 cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {joinRequests.filter((r) => r.status === 'pending').length === 0 ? (
+              <div className="p-6 rounded-2xl bg-slate-50 border border-dashed border-slate-200 text-center space-y-1.5">
+                <UserCheck className="w-7 h-7 text-emerald-600 mx-auto" />
+                <p className="text-xs font-bold text-slate-700">No Pending Join Requests</p>
+                <p className="text-[11px] text-slate-500">
+                  All join requests have been reviewed. Share group code <strong className="font-mono text-slate-800">{effectiveGroupCode}</strong> to invite new members.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-2.5 max-h-72 overflow-y-auto no-scrollbar">
+                {joinRequests
+                  .filter((r) => r.status === 'pending')
+                  .map((req) => (
+                    <div
+                      key={req.id}
+                      className="p-3 rounded-2xl bg-slate-50 border-2 border-amber-300/80 shadow-2xs flex items-center justify-between gap-2.5"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <img
+                          src={
+                            req.user_avatar ||
+                            'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=120&q=80'
+                          }
+                          alt={req.user_name || 'Requester'}
+                          className="w-9 h-9 rounded-full object-cover border border-amber-300 shrink-0"
+                        />
+                        <div className="min-w-0">
+                          <span className="text-xs font-extrabold text-slate-900 truncate block">
+                            {req.user_name || 'Trekker Applicant'}
+                          </span>
+                          <span className="text-[10px] text-slate-500 block truncate">
+                            {req.user_email || req.user_phone || 'Verified Account'}
+                            {req.blood_group ? ` · Blood: ${req.blood_group}` : ''}
+                          </span>
+                        </div>
+                      </div>
+
+                      {isCurrentUserSuperAdmin ? (
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            disabled={respondingRequestId === req.id}
+                            onClick={() => handleRespondToJoinRequest(req, 'accept')}
+                            className="px-2.5 py-1.5 rounded-lg bg-[#0f5238] hover:bg-emerald-800 text-white text-[10px] font-extrabold flex items-center gap-1 cursor-pointer shadow-2xs disabled:opacity-50"
+                            title="Accept Join Request"
+                          >
+                            <Check className="w-3 h-3" />
+                            <span>Approve</span>
+                          </button>
+                          <button
+                            type="button"
+                            disabled={respondingRequestId === req.id}
+                            onClick={() => handleRespondToJoinRequest(req, 'reject')}
+                            className="px-2.5 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-[10px] font-extrabold flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                            title="Reject Join Request"
+                          >
+                            <UserX className="w-3 h-3" />
+                            <span>Reject</span>
+                          </button>
+                        </div>
+                      ) : (
+                        <span className="text-[10px] font-bold text-amber-800 bg-amber-50 px-2 py-1 rounded-lg border border-amber-200 shrink-0">
+                          Awaiting Super Admin
+                        </span>
+                      )}
+                    </div>
+                  ))}
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={() => setIsJoinRequestsModalOpen(false)}
+              className="w-full py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition-all cursor-pointer"
+            >
+              Close Window
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Cover Background Picker Modal */}
       {isCoverPickerOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-md animate-in fade-in duration-200">
           <div className="w-full max-w-sm bg-white rounded-3xl p-5 border border-slate-200 shadow-2xl space-y-4">
             <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-              <h3 className="font-bold text-slate-900 text-sm">Choose Expedition Cover</h3>
+              <h3 className="font-bold text-slate-900 text-sm">Choose Group Cover / Profile Photo</h3>
               <button
                 type="button"
                 onClick={() => setIsCoverPickerOpen(false)}
@@ -2611,14 +2867,52 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
               </button>
             </div>
 
+            {/* Upload Custom Photo from Phone */}
+            <label className="w-full py-2.5 px-3 rounded-xl border-2 border-dashed border-emerald-400 bg-emerald-50/60 hover:bg-emerald-100/70 text-[#0f5238] text-xs font-bold flex items-center justify-center gap-2 cursor-pointer transition-colors">
+              <Camera className="w-4 h-4 text-emerald-700" />
+              <span>Upload Photo from Device</span>
+              <input
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  const reader = new FileReader();
+                  reader.onload = async (ev) => {
+                    const dataUrl = ev.target?.result as string;
+                    if (!dataUrl) return;
+                    setCoverBg(dataUrl);
+                    setIsCoverPickerOpen(false);
+                    if (activeSquad?.id) {
+                      await updateSquadGroupDetails(activeSquad.id, {
+                        bannerUrl: dataUrl,
+                        userId: currentUserId,
+                      });
+                      onRefreshSquad?.();
+                    }
+                    onShowToast('✓ Group photo updated & broadcasted to all members!');
+                  };
+                  reader.readAsDataURL(file);
+                }}
+              />
+            </label>
+
             <div className="grid grid-cols-2 gap-2.5">
               {presetCovers.map((item, idx) => (
                 <div
                   key={idx}
-                  onClick={() => {
+                  onClick={async () => {
                     setCoverBg(item.url);
                     setIsCoverPickerOpen(false);
-                    onShowToast(`Cover updated to ${item.name}!`);
+                    if (activeSquad?.id) {
+                      await updateSquadGroupDetails(activeSquad.id, {
+                        bannerUrl: item.url,
+                        userId: currentUserId,
+                      });
+                      onRefreshSquad?.();
+                    }
+                    onShowToast(`✓ Group cover updated to ${item.name} & synced to all members!`);
                   }}
                   className="relative rounded-xl overflow-hidden aspect-video border-2 border-slate-200 hover:border-emerald-600 cursor-pointer shadow-xs group"
                 >
@@ -2677,10 +2971,75 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
             </div>
 
             <form
-              onSubmit={(e) => {
+              onSubmit={async (e) => {
                 e.preventDefault();
                 setIsEditGroupModalOpen(false);
-                onShowToast(`Expedition "${tripName}" details updated!`);
+
+                const targetGroupId = activeSquad?.id || localStorage.getItem('trailoPS_active_squad_id') || 'default';
+                const parsedBudget = Number(editBudget) || 6000;
+                const updatedDetails = {
+                  name: tripName.trim(),
+                  destination: editDestination.trim(),
+                  fromLocation: editFromLocation.trim(),
+                  startDate: editDepartureDate,
+                  budget: parsedBudget,
+                  bannerUrl: coverBg,
+                };
+
+                // 1. Persist to server / Supabase database
+                if (activeSquad?.id) {
+                  try {
+                    await updateSquadGroupDetails(activeSquad.id, updatedDetails);
+                  } catch (err) {
+                    console.error('Failed to update group on backend:', err);
+                  }
+                }
+
+                // 2. Persist to localStorage activeSquad
+                try {
+                  const saved = localStorage.getItem('trailoPS_active_squad');
+                  const parsed = saved ? JSON.parse(saved) : {};
+                  const merged = {
+                    ...parsed,
+                    name: updatedDetails.name,
+                    destination: updatedDetails.destination,
+                    from_location: updatedDetails.fromLocation,
+                    start_date: updatedDetails.startDate,
+                    budget: updatedDetails.budget,
+                    banner_url: updatedDetails.bannerUrl,
+                    bannerUrl: updatedDetails.bannerUrl,
+                  };
+                  localStorage.setItem('trailoPS_active_squad', JSON.stringify(merged));
+                  const uid = currentUserId || localStorage.getItem('trailoPS_currentUserId');
+                  if (uid) {
+                    localStorage.setItem(`trailoPS_active_squad_${uid}`, JSON.stringify(merged));
+                  }
+                  localStorage.setItem('trailoPS_tripBudget', String(parsedBudget));
+                } catch {}
+
+                // 3. Broadcast to all open member phone tabs / windows via BroadcastChannel
+                try {
+                  if (typeof BroadcastChannel !== 'undefined') {
+                    const bc = new BroadcastChannel(`trailops_squad_bus_${targetGroupId}`);
+                    bc.postMessage({
+                      type: 'GROUP_DETAILS_UPDATED',
+                      groupId: targetGroupId,
+                      details: updatedDetails,
+                    });
+                    bc.close();
+                  }
+                } catch {}
+
+                // 4. Dispatch custom event for immediate reactive state in current window
+                window.dispatchEvent(
+                  new CustomEvent('trailoPS_group_updated', {
+                    detail: updatedDetails,
+                  })
+                );
+
+                onShowToast(
+                  `✓ Group "${updatedDetails.name}" destination, budget (₹${parsedBudget}) & banner synced across all phones!`
+                );
               }}
               className="space-y-3"
             >
@@ -2705,8 +3064,8 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                   type="text"
                   value={editFromLocation}
                   onChange={(e) => setEditFromLocation(e.target.value)}
+                  placeholder="e.g. Siliguri Junction"
                   className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs font-semibold text-slate-900 focus:outline-none focus:border-emerald-600"
-                  required
                 />
               </div>
 
@@ -2718,39 +3077,64 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                   type="text"
                   value={editDestination}
                   onChange={(e) => setEditDestination(e.target.value)}
+                  placeholder="e.g. Pelling High Ridge"
                   className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs font-semibold text-slate-900 focus:outline-none focus:border-emerald-600"
                   required
                 />
               </div>
 
-              <div>
-                <label className="text-[11px] font-bold text-slate-600 block mb-1">
-                  Departure Date
-                </label>
-                <input
-                  type="date"
-                  value={editDepartureDate}
-                  onChange={(e) => setEditDepartureDate(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs font-semibold text-slate-900 focus:outline-none focus:border-emerald-600"
-                />
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[11px] font-bold text-slate-600 block mb-1">
+                    Squad Budget (₹ Total)
+                  </label>
+                  <input
+                    type="number"
+                    value={editBudget}
+                    onChange={(e) => setEditBudget(Number(e.target.value) || 0)}
+                    placeholder="6000"
+                    className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs font-semibold text-slate-900 focus:outline-none focus:border-emerald-600 font-mono"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[11px] font-bold text-slate-600 block mb-1">
+                    Departure Date
+                  </label>
+                  <input
+                    type="date"
+                    value={editDepartureDate}
+                    onChange={(e) => setEditDepartureDate(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs font-semibold text-slate-900 focus:outline-none focus:border-emerald-600"
+                  />
+                </div>
               </div>
 
-              <div className="pt-1">
-                <button
-                  type="button"
-                  onClick={() => setIsCoverPickerOpen(true)}
-                  className="w-full py-2 px-3 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer"
-                >
-                  <Camera className="w-3.5 h-3.5 text-slate-500" />
-                  <span>Choose Cover Image</span>
-                </button>
+              {/* Expedition Banner / Cover Photo Section */}
+              <div className="pt-1 space-y-1.5">
+                <label className="text-[11px] font-bold text-slate-600 block">
+                  Expedition Banner / Cover Photo
+                </label>
+                <div className="flex items-center gap-2">
+                  <div className="w-16 h-11 rounded-xl overflow-hidden border border-slate-200 shrink-0 bg-slate-800 shadow-2xs">
+                    <img src={coverBg} alt="Banner Preview" className="w-full h-full object-cover" />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsCoverPickerOpen(true)}
+                    className="flex-1 py-2 px-3 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-2xs"
+                  >
+                    <Camera className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>Choose Banner Photo</span>
+                  </button>
+                </div>
               </div>
 
               <button
                 type="submit"
-                className="w-full py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-bold transition-all shadow-md active:scale-98 cursor-pointer mt-2"
+                className="w-full py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-bold transition-all shadow-md active:scale-98 cursor-pointer mt-3"
               >
-                Save Group Changes
+                Save &amp; Broadcast to All Phones
               </button>
             </form>
           </div>
@@ -2923,18 +3307,52 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                     leadName: currentUserName || 'Squad Member',
                     memberCount: selectedSubGroupMembers.length || 1,
                   };
-                  setSubGroups((prev) => [...prev, newSubGroup]);
-                  // Update assigned members' state
-                  setMembers((prev) =>
-                    prev.map((m) =>
+                  const updatedSubGroups = [...subGroups, newSubGroup];
+                  setSubGroups(updatedSubGroups);
+                  // Update assigned members' state & local storage
+                  setMembers((prev) => {
+                    const next = prev.map((m) =>
                       selectedSubGroupMembers.includes(m.id)
                         ? { ...m, subGroupId: newSubGroup.id, subGroupName: newSubGroup.name, subGroupColor: newSubGroup.color }
                         : m
-                    )
-                  );
+                    );
+                    try {
+                      localStorage.setItem('trailoPS_squad_members', JSON.stringify(next));
+                    } catch {}
+                    return next;
+                  });
+
+                  // Broadcast sub-group assignment to all member devices
+                  try {
+                    const squadKey = activeSquad?.id || 'default';
+                    if (activeSquad?.id) {
+                      saveSubGroup(activeSquad.id, {
+                        ...newSubGroup,
+                        memberIds: selectedSubGroupMembers
+                      });
+                      assignSubGroupMembers(activeSquad.id, newSubGroup.id, selectedSubGroupMembers).catch(() => {});
+                    }
+                    window.dispatchEvent(
+                      new CustomEvent('trailoPS_subgroups_updated', {
+                        detail: { groupId: squadKey, subGroups: updatedSubGroups },
+                      })
+                    );
+                    if (typeof BroadcastChannel !== 'undefined') {
+                      const bc = new BroadcastChannel(`trailops_squad_bus_${squadKey}`);
+                      bc.postMessage({
+                        type: 'SUBGROUP_ASSIGNED',
+                        groupId: squadKey,
+                        subGroup: newSubGroup,
+                        assignedMemberIds: selectedSubGroupMembers,
+                      });
+                      bc.close();
+                    }
+                  } catch {}
+
                   setIsCreateSubGroupModalOpen(false);
                   setSubGroupNameInput('');
-                  onShowToast(`Sub-Group "${newSubGroup.name}" created and assigned!`);
+                  setSelectedSubGroupMembers([]);
+                  onShowToast(`✓ Sub-Group "${newSubGroup.name}" created & assigned to all members with notification!`);
                 }}
                 disabled={!subGroupNameInput.trim()}
                 className="w-full py-2.5 rounded-xl bg-teal-700 hover:bg-teal-600 disabled:opacity-40 text-white text-xs font-bold transition-all shadow-md active:scale-98 cursor-pointer mt-2"
@@ -3523,10 +3941,72 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                   timestamp: 'Just now',
                   status: 'open' as const,
                 };
+                const squadId =
+                  activeSquad?.id ||
+                  localStorage.getItem('trailoPS_active_squad_id') ||
+                  'default';
+                saveMissingItem(squadId, newItem);
                 setMissingItems((prev) => [newItem, ...prev]);
+
+                // Also publish urgent squad announcement for everyone's phone & Notice section
+                const noticeTitle = `🚨 MISSING GEAR: ${newItem.itemName}`;
+                const noticeText = `Urgent alert from ${currentUserName}: ${newItem.itemName} is missing! Last seen: ${newItem.location}. Urgency: ${missingItemUrgency.toUpperCase()}. Please check your pack.`;
+                const newNotice = {
+                  id: `a-${Date.now()}`,
+                  title: noticeTitle,
+                  text: noticeText,
+                  priority: 'critical' as const,
+                  author: `${currentUserName} (Missing Gear Alert)`,
+                  timestamp: 'Just now',
+                };
+                setAnnouncements((prev) => [newNotice, ...prev]);
+                try {
+                  const annKey = `trailoPS_announcements_${squadId}`;
+                  const existingAnn = JSON.parse(localStorage.getItem(annKey) || '[]');
+                  localStorage.setItem(annKey, JSON.stringify([newNotice, ...existingAnn]));
+                  const latestKey = `trailoPS_latest_broadcast_${squadId}`;
+                  localStorage.setItem(latestKey, JSON.stringify(newNotice));
+                  window.dispatchEvent(new CustomEvent('trailoPS_new_announcement', { detail: newNotice }));
+                  createGroupNotice({
+                    groupId: squadId,
+                    userId: currentUserId || localStorage.getItem('trailoPS_currentUserId') || 'user_self',
+                    title: noticeTitle,
+                    text: noticeText,
+                    priority: 'critical',
+                    authorName: currentUserName,
+                    authorRole: 'Missing Item Alert',
+                    groupName: activeSquad?.name || 'Expedition Squad',
+                    groupCode: activeSquad?.code || 'TRL001',
+                    groupDestination: activeSquad?.destination || 'Expedition Base',
+                  })
+                    .then(() => {
+                      window.dispatchEvent(
+                        new CustomEvent('trailoPS_group_notices_updated', {
+                          detail: { groupId: squadId },
+                        })
+                      );
+                    })
+                    .catch(() => {});
+                } catch {}
+
+                // BroadcastChannel broadcast to instantly alert all active member phones
+                try {
+                  if (typeof BroadcastChannel !== 'undefined') {
+                    const bc = new BroadcastChannel(`trailops_squad_bus_${squadId}`);
+                    bc.postMessage({
+                      type: 'MISSING_ITEM_ALERT',
+                      groupId: squadId,
+                      item: newItem,
+                      notice: newNotice,
+                    });
+                    bc.close();
+                  }
+                } catch {}
+
                 setIsMissingItemModalOpen(false);
                 setMissingItemName('');
-                onShowToast(`Missing item alert broadcasted to entire squad!`);
+                setMissingItemLocation('');
+                onShowToast(`🚨 Missing item alert saved & posted to Notice section!`);
               }}
               className="space-y-3"
             >
@@ -3634,6 +4114,9 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                         <button
                           type="button"
                           onClick={() => {
+                            if (activeSquad?.id) {
+                              updateMissingItemStatus(activeSquad.id, item.id, 'found');
+                            }
                             setMissingItems((prev) =>
                               prev.map((i) => (i.id === item.id ? { ...i, status: 'found' } : i))
                             );
@@ -3655,7 +4138,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
         </div>
       )}
 
-      {/* 6. SHARED JOURNEY CHECKLIST MODAL */}
+      {/* 6. SHARED CHECK LIST MODAL (Non-tickable hyphenated list) */}
       {isJourneyChecklistModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-md animate-in fade-in duration-200">
           <div className="w-full max-w-sm bg-white rounded-3xl p-5 border border-slate-200 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto no-scrollbar">
@@ -3665,8 +4148,8 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                   <ClipboardCheck className="w-4 h-4" />
                 </div>
                 <div>
-                  <h3 className="font-bold text-slate-900 text-sm">Shared Journey Checklist</h3>
-                  <p className="text-[10px] text-slate-500">Synced across all squad member home screens</p>
+                  <h3 className="font-bold text-slate-900 text-sm">Check List</h3>
+                  <p className="text-[10px] text-slate-500">Shared items list synced across the squad</p>
                 </div>
               </div>
               <button
@@ -3678,155 +4161,92 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
               </button>
             </div>
 
-            {/* Checklist Progress */}
-            <div className="p-3 rounded-2xl bg-teal-50/70 border border-teal-200">
-              <div className="flex items-center justify-between text-xs font-bold text-teal-900 mb-1.5">
-                <span>Expedition Readiness</span>
-                <span>
-                  {journeyChecklist.filter((t) => t.completed).length} / {journeyChecklist.length} Verified
-                </span>
-              </div>
-              <div className="w-full h-2 rounded-full bg-teal-200/80 overflow-hidden">
-                <div
-                  className="h-full bg-teal-600 transition-all duration-300"
-                  style={{
-                    width: `${Math.round((journeyChecklist.filter((t) => t.completed).length / (journeyChecklist.length || 1)) * 100)}%`,
-                  }}
-                />
-              </div>
-            </div>
-
-            {/* Checklist Tasks List with Minus Deletion Button (Request 10) */}
-            <div className="space-y-2 max-h-56 overflow-y-auto no-scrollbar">
-              {journeyChecklist.length === 0 ? (
-                <p className="text-[11px] text-slate-400 text-center py-4 italic">
-                  No expedition checklist tasks added yet. Add preparation tasks below.
-                </p>
-              ) : (
-                journeyChecklist.map((task) => (
-                <div
-                  key={task.id}
-                  className={`p-2.5 rounded-xl border flex items-center justify-between gap-2 transition-all ${
-                    task.completed ? 'bg-emerald-50/60 border-emerald-300' : 'bg-slate-50 border-slate-200 hover:border-slate-300'
-                  }`}
-                >
-                  <div
-                    onClick={async () => {
-                      const nextCompleted = !task.completed;
-                      const targetGroupId =
-                        activeSquad?.id || localStorage.getItem('trailoPS_active_squad_id') || 'default';
-                      setJourneyChecklist((prev) =>
-                        prev.map((t) => (t.id === task.id ? { ...t, completed: nextCompleted } : t))
-                      );
-                      await updateSquadChecklistPacking(targetGroupId, task.id, nextCompleted, currentUserId);
-                      onShowToast(`Checklist item updated: ${task.title}`);
-                    }}
-                    className="flex items-start gap-2.5 flex-1 min-w-0 cursor-pointer"
-                  >
-                    <div className={`w-5 h-5 rounded-md border flex items-center justify-center shrink-0 mt-0.5 ${
-                      task.completed ? 'bg-emerald-600 border-emerald-600 text-white' : 'border-slate-300 bg-white'
-                    }`}>
-                      {task.completed && <Check className="w-3.5 h-3.5" />}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <p className={`text-xs font-semibold leading-tight ${task.completed ? 'line-through text-slate-400' : 'text-slate-900'}`}>
-                        {task.title}
-                      </p>
-                      <div className="flex items-center gap-2 mt-1">
-                        <span className="text-[9px] font-bold text-teal-800 bg-teal-100 px-1.5 py-0.5 rounded">
-                          {task.category}
-                        </span>
-                        <span className="text-[9px] text-slate-500">
-                          Lead: {task.assignedRole}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Minus button to remove task if added by mistake (Request 10) */}
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDeleteJourneyTask(task.id, task.title);
-                    }}
-                    className="w-7 h-7 rounded-lg bg-white hover:bg-rose-50 text-slate-400 hover:text-rose-600 border border-slate-200 hover:border-rose-300 flex items-center justify-center cursor-pointer transition-colors shrink-0"
-                    title={`Remove task: ${task.title}`}
-                  >
-                    <Minus className="w-3.5 h-3.5 stroke-[2.5]" />
-                  </button>
-                </div>
-              )))}
-            </div>
-
-            {/* Add New Shared Task */}
+            {/* Add New Shared Item */}
             <form
               onSubmit={async (e) => {
                 e.preventDefault();
-                if (!newJourneyTask.trim()) return;
+                const cleaned = newJourneyTask.trim().replace(/^-\s*/, '');
+                if (!cleaned) return;
                 const taskId = `chk-${Date.now()}`;
-                const title = newJourneyTask.trim();
                 const targetGroupId =
                   activeSquad?.id || localStorage.getItem('trailoPS_active_squad_id') || 'default';
                 const newTask = {
                   id: taskId,
-                  title,
-                  category: newJourneyCategory,
+                  title: cleaned,
+                  category: 'Camp',
                   completed: false,
                   assignedRole: 'All Squad',
                 };
                 setJourneyChecklist((prev) => [...prev, newTask]);
                 setNewJourneyTask('');
 
-                const catLower = newJourneyCategory.toLowerCase();
-                const mappedGearCategory: 'navigation' | 'medical' | 'apparel' | 'camp' =
-                  catLower.includes('nav') || catLower.includes('permit')
-                    ? 'navigation'
-                    : catLower.includes('med') || catLower.includes('first aid')
-                    ? 'medical'
-                    : catLower.includes('apparel') || catLower.includes('cloth')
-                    ? 'apparel'
-                    : 'camp';
-
                 await saveSquadChecklistItem(
                   targetGroupId,
                   {
                     id: taskId,
-                    name: title,
-                    category: mappedGearCategory,
+                    name: cleaned,
+                    category: 'camp',
                     isPacked: false,
-                    isMandatory: true,
-                    weightGrams: 250,
-                    spec: newJourneyCategory,
+                    isMandatory: false,
+                    weightGrams: 0,
                     isCustom: true,
                   },
                   currentUserId
                 );
-                onShowToast(`Added "${title}" to shared squad & Home Trip Gear checklist!`);
+                onShowToast(`Added "- ${cleaned}" to Check List!`);
               }}
-              className="pt-2 border-t border-slate-100 space-y-2"
+              className="space-y-1.5"
             >
-              <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider block">
-                Add Shared Squad Task
-              </span>
               <div className="flex gap-2">
                 <input
                   type="text"
                   value={newJourneyTask}
                   onChange={(e) => setNewJourneyTask(e.target.value)}
-                  placeholder="e.g. Verify Satellite Beacon Firmware"
-                  className="flex-1 px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200 text-xs font-semibold text-slate-900 focus:outline-none focus:border-teal-600"
+                  placeholder="Add item (e.g. shoes, voter id)..."
+                  className="flex-1 px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs font-semibold text-slate-900 focus:outline-none focus:border-teal-600"
                 />
                 <button
                   type="submit"
                   disabled={!newJourneyTask.trim()}
-                  className="px-3 py-1.5 rounded-xl bg-teal-700 hover:bg-teal-600 disabled:opacity-40 text-white text-xs font-bold transition-all cursor-pointer flex items-center gap-1"
+                  className="px-3.5 py-2 rounded-xl bg-teal-700 hover:bg-teal-600 disabled:opacity-40 text-white text-xs font-bold transition-all cursor-pointer flex items-center gap-1"
                 >
                   <Plus className="w-3.5 h-3.5" />
                   <span>Add</span>
                 </button>
               </div>
             </form>
+
+            {/* Hyphenated Check List Items (No checkboxes / no ticking) */}
+            <div className="space-y-1.5 max-h-64 overflow-y-auto no-scrollbar">
+              {journeyChecklist.length === 0 ? (
+                <p className="text-[11px] text-slate-400 text-center py-4 italic">
+                  No items in Check List yet. Add items like shoes, voter id above.
+                </p>
+              ) : (
+                journeyChecklist.map((task) => (
+                  <div
+                    key={task.id}
+                    className="px-3 py-2.5 rounded-xl border border-slate-200 bg-slate-50 flex items-center justify-between gap-2"
+                  >
+                    <span className="text-xs font-bold text-slate-900 truncate">
+                      - {task.title.replace(/^-\s*/, '')}
+                    </span>
+
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteJourneyTask(task.id, task.title);
+                      }}
+                      className="w-6 h-6 rounded-lg bg-white hover:bg-rose-50 text-slate-400 hover:text-rose-600 border border-slate-200 hover:border-rose-300 flex items-center justify-center cursor-pointer transition-colors shrink-0"
+                      title={`Remove ${task.title}`}
+                    >
+                      <Minus className="w-3.5 h-3.5 stroke-[2.5]" />
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -4451,6 +4871,18 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
                           <MessageSquare className="w-3 h-3" />
                           <span>Chat</span>
                         </button>
+                        {(userRole === 'super_admin' || userRole === 'subgroup_admin') &&
+                          member.roleHierarchy !== 'super_admin' && (
+                            <button
+                              type="button"
+                              onClick={() => handleKickActiveMember(member.id, member.name)}
+                              className="px-2 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-[10px] font-bold flex items-center gap-1 cursor-pointer transition-colors"
+                              title={`Kick ${member.name} from squad`}
+                            >
+                              <UserX className="w-3 h-3" />
+                              <span>Kick</span>
+                            </button>
+                          )}
                       </div>
                     </div>
                   </div>

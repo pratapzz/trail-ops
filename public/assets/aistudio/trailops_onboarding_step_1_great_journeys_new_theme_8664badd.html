@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" name="viewport"/>
+<title>TrailOPS - Great Journeys Start Together</title>
+<!-- Google Fonts: Plus Jakarta Sans for UI & Bodoni Moda / Playfair Display for editorial headings -->
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Bodoni+Moda:ital,opsz,wght@0,6..96,500;0,6..96,600;0,6..96,700;1,6..96,600&amp;family=Plus+Jakarta+Sans:wght@400;500;600;700;800&amp;family=Playfair+Display:ital,wght@0,600;0,700;1,600&amp;display=swap" rel="stylesheet"/>
+<!-- Lucide Icons -->
+<script src="https://unpkg.com/lucide@latest"></script>
+<!-- Tailwind CSS v3 -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          colors: {
+            primary: "#375dfb",
+            "primary-container": "#2548e6",
+            "on-primary": "#ffffff",
+            surface: "#ffffff",
+            "surface-container": "#f4f6fc"
+          },
+          fontFamily: {
+            sans: ['"Plus Jakarta Sans"', 'system-ui', 'sans-serif'],
+            serif: ['"Playfair Display"', '"Bodoni Moda"', 'Georgia', 'serif'],
+            display: ['"Bodoni Moda"', 'serif']
+          }
+        }
+      }
+    }
+  </script>
+<style>
+    /* iOS home indicator safe margins */
+    .pb-safe {
+      padding-bottom: env(safe-area-inset-bottom, 16px);
+    }
+    .pt-safe {
+      padding-top: env(safe-area-inset-top, 16px);
+    }
+  </style>
+</head>
+<body class="min-h-screen flex items-center justify-center p-0 sm:p-5 font-sans antialiased select-none bg-gradient-to-br from-[#f8bed8] via-[#e6a8dd] to-[#fecf9e]">
+<!-- Phone Screen Outer Shell -->
+<div class="relative w-full max-w-[412px] min-h-screen sm:min-h-[844px] sm:max-h-[890px] sm:rounded-[44px] overflow-hidden flex flex-col justify-between shadow-2xl bg-gradient-to-br from-[#ea85a9] via-[#d598ea] to-[#fdb58e] p-3.5 sm:p-4">
+<!-- Background Organic Curved Ribbon / Flowing Waves Layer (Matching Image 2 Reference) -->
+<div class="absolute inset-0 pointer-events-none overflow-hidden z-0">
+<svg class="absolute -left-12 top-[18%] w-[560px] h-[340px] opacity-75 mix-blend-screen" fill="none" viewbox="0 0 560 340" xmlns="http://www.w3.org/2000/svg">
+<path d="M-40 180 C110 90 220 280 380 170 C480 100 560 140 600 160 L600 360 L-40 360 Z" fill="url(#pinkWaveGrad)"></path>
+<defs>
+<lineargradient gradientunits="userSpaceOnUse" id="pinkWaveGrad" x1="0" x2="560" y1="100" y2="300">
+<stop stop-color="#ffffff" stop-opacity="0.5"></stop>
+<stop offset="0.5" stop-color="#e9d2ff" stop-opacity="0.6"></stop>
+<stop offset="1" stop-color="#fbcfe8" stop-opacity="0.3"></stop>
+</lineargradient>
+</defs>
+</svg>
+<!-- Circular Ambient Glows -->
+<div class="absolute -top-16 -right-16 w-60 h-60 bg-[#fed7aa]/50 rounded-full blur-2xl"></div>
+<div class="absolute bottom-10 -left-20 w-64 h-64 bg-[#ec4899]/30 rounded-full blur-3xl"></div>
+</div>
+<!-- Central Floating Clean White Card (Matching Reference Style in Image 2) -->
+<div class="relative z-10 w-full flex-1 bg-white rounded-[32px] sm:rounded-[36px] shadow-[0_20px_45px_rgba(180,60,110,0.16)] flex flex-col justify-between overflow-hidden border border-white/80">
+<!-- Top Card Header: Logo Branding & Skip Action -->
+<header class="pt-5 px-6 pb-2 flex items-center justify-between z-20" data-purpose="screen-header">
+<div class="flex items-center gap-2.5">
+<!-- Official TrailOPS App Icon -->
+<div class="w-9 h-9 rounded-xl overflow-hidden shadow-sm shadow-slate-900/10 flex-shrink-0 border border-slate-100">
+<img alt="TrailOPS Logo" class="w-full h-full object-cover" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDoOkdufNQ_DUu2V-PxkdtGDSq1PXuvkv_0p1vFU4_nKvhP1enpI5Nk1nw_8mrz-Sb86Pt5lv9A3HVq5DCK6KW8V20HJddzyfFl5XbpsY3hCnTamea_hvx1s8csePi5DaMd4UUFVLJwJEjzJgUA8cDRsjd0gcLF87BgoN7-g4yjfZ6-1LQBbSwhAia7tvdwjnvlkccBjfrfLHFWWjvR9BoqbgT7fDE4KyGBDeqxNn0G8IUW_aJ27bUtZyl9Y3WBseEWR7o"/>
+</div>
+<div class="flex flex-col">
+<span class="text-[15px] font-black tracking-wider leading-none text-slate-800 font-sans">TRAILOPS</span>
+<span class="text-[8px] font-bold tracking-[0.2em] text-slate-400 uppercase mt-0.5">Expedition OS</span>
+</div>
+</div>
+<!-- Skip Button -->
+<button aria-label="Skip introduction" class="text-[12px] font-bold text-slate-400 hover:text-slate-700 tracking-wider uppercase px-2 py-1 transition-colors duration-150" type="button">
+          SKIP
+        </button>
+</header>
+<!-- Center Upper Artwork Section with Lavender Wave Blob behind Scenic Art -->
+<div class="relative flex-1 flex items-center justify-center min-h-[220px] max-h-[300px] my-1 px-4" data-purpose="hero-illustration">
+<!-- Flowing Pastel Blob (Image 2 motif) -->
+<div class="absolute inset-x-2 h-44 my-auto bg-gradient-to-r from-[#eddfff] via-[#e5d4ff] to-[#fce4ec] rounded-[48px] rotate-[-2deg] scale-105 pointer-events-none opacity-80"></div>
+<!-- Scenic Expedition Vector Artwork Illustration -->
+<div class="relative w-full max-w-[310px] h-[220px] rounded-2xl overflow-hidden shadow-sm select-none">
+<svg class="w-full h-full object-cover" fill="none" preserveaspectratio="xMidYMax slice" viewbox="0 0 380 260" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<lineargradient gradientunits="userSpaceOnUse" id="skyGrad" x1="190" x2="190" y1="0" y2="200">
+<stop offset="0%" stop-color="#EEF5F0"></stop>
+<stop offset="60%" stop-color="#FFF8EE"></stop>
+<stop offset="100%" stop-color="#E2ECE5"></stop>
+</lineargradient>
+<lineargradient gradientunits="userSpaceOnUse" id="mntFar" x1="120" x2="220" y1="70" y2="150">
+<stop offset="0%" stop-color="#A5C6B7"></stop>
+<stop offset="100%" stop-color="#80A997"></stop>
+</lineargradient>
+<lineargradient gradientunits="userSpaceOnUse" id="mntMid" x1="200" x2="310" y1="90" y2="200">
+<stop offset="0%" stop-color="#5B8E78"></stop>
+<stop offset="100%" stop-color="#376753"></stop>
+</lineargradient>
+<lineargradient gradientunits="userSpaceOnUse" id="mntLeft" x1="20" x2="150" y1="90" y2="200">
+<stop offset="0%" stop-color="#6F9D8B"></stop>
+<stop offset="100%" stop-color="#325F4D"></stop>
+</lineargradient>
+<lineargradient gradientunits="userSpaceOnUse" id="riverGrad" x1="190" x2="150" y1="130" y2="260">
+<stop offset="0%" stop-color="#85C7BF"></stop>
+<stop offset="100%" stop-color="#4E9990"></stop>
+</lineargradient>
+<lineargradient gradientunits="userSpaceOnUse" id="cliffGrad" x1="0" x2="160" y1="160" y2="260">
+<stop offset="0%" stop-color="#3F4D4B"></stop>
+<stop offset="100%" stop-color="#1E2827"></stop>
+</lineargradient>
+</defs>
+<!-- Sky Background -->
+<rect fill="url(#skyGrad)" height="260" width="380"></rect>
+<!-- Warm Glowing Sun -->
+<circle cx="230" cy="85" fill="#FDBA74" opacity="0.85" r="28"></circle>
+<!-- Birds in distant flight -->
+<path d="M150 72 C153 69 157 70 159 73 C161 70 165 69 168 72" fill="none" opacity="0.6" stroke="#48695C" stroke-linecap="round" stroke-width="1.3"></path>
+<path d="M168 62 C170 59 173 60 175 62 C177 60 180 59 182 62" fill="none" opacity="0.45" stroke="#48695C" stroke-linecap="round" stroke-width="1.1"></path>
+<!-- Distant & Mid Mountains -->
+<polygon fill="url(#mntFar)" opacity="0.85" points="100,160 180,80 260,160"></polygon>
+<polygon fill="url(#mntFar)" opacity="0.75" points="170,160 235,90 310,160"></polygon>
+<polygon fill="url(#mntLeft)" points="30,190 125,95 210,190"></polygon>
+<polygon fill="url(#mntMid)" points="160,190 255,100 360,205"></polygon>
+<!-- Valley River Flow -->
+<path d="M210 145 C200 160 220 175 198 190 C175 205 195 225 160 260 L205 260 C235 215 210 195 230 180 C248 165 224 152 220 145 Z" fill="url(#riverGrad)" opacity="0.9"></path>
+<!-- Evergreen Pines -->
+<g fill="#173426">
+<polygon points="320,165 312,185 328,185"></polygon>
+<polygon points="320,178 310,200 330,200"></polygon>
+<polygon points="320,192 306,220 334,220"></polygon>
+<rect fill="#0C1D15" height="12" width="4" x="318" y="220"></rect>
+<polygon points="345,140 335,165 355,165"></polygon>
+<polygon points="345,157 332,185 358,185"></polygon>
+<polygon points="345,178 328,212 362,212"></polygon>
+<polygon points="345,202 324,242 366,242"></polygon>
+<rect fill="#0C1D15" height="16" width="6" x="342" y="242"></rect>
+</g>
+<!-- Hiker Cliff Outcrop -->
+<path d="M-10 185 Q50 185 80 205 Q120 220 155 230 Q180 240 190 260 L-10 260 Z" fill="url(#cliffGrad)"></path>
+<!-- Seated Hiker Silhouette & Backpack -->
+<ellipse cx="110" cy="245" fill="#141E1C" opacity="0.6" rx="30" ry="6"></ellipse>
+<path d="M78 192 C76 182 87 175 97 178 L100 214 C89 217 78 210 78 192 Z" fill="#0E4434"></path>
+<rect fill="#D97706" height="7" rx="1.5" width="14" x="82" y="184"></rect>
+<!-- Body -->
+<path d="M96 186 C97 176 109 175 116 178 C122 182 123 195 121 206 L105 212 Z" fill="#1B4D3E"></path>
+<!-- Head -->
+<circle cx="114" cy="166" fill="#F4B896" r="8"></circle>
+<path d="M107 164 C107 157 115 155 121 159 C124 161 125 167 120 168 C117 168 115 164 112 166 C109 168 108 167 107 164 Z" fill="#1E293B"></path>
+<!-- Legs -->
+<path d="M105 210 C114 210 126 209 135 221 C140 227 139 234 131 236 C122 237 113 227 103 221 Z" fill="#334155"></path>
+<path d="M130 224 L152 227 C157 228 159 232 155 236 L136 237 Z" fill="#1E293B"></path>
+</svg>
+</div>
+</div>
+<!-- Typography Copy Section (Ref Image 2: Centered Editorial Serif Headline & Clean Body) -->
+<div class="px-6 py-2 text-center flex flex-col items-center" data-purpose="hero-copy">
+<h1 class="font-serif text-[27px] sm:text-[30px] font-bold text-slate-900 tracking-tight leading-[1.2] mb-2.5">
+          Great Journeys<br/>
+<span class="italic font-normal text-slate-800">Start Together</span>
+</h1>
+<p class="text-[13px] sm:text-[13.5px] leading-relaxed text-slate-500 font-normal max-w-[290px] mx-auto">
+          Plan trips, organise your team, track expenses, share documents, and keep everything in one place.
+        </p>
+<!-- Quick Mini Feature Pill Indicators -->
+<div class="flex items-center justify-center gap-2 mt-4">
+<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-800 text-[11px] font-medium border border-emerald-100">
+<i class="w-3 h-3 stroke-[2.2]" data-lucide="users"></i> Team
+          </span>
+<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-amber-50 text-amber-800 text-[11px] font-medium border border-amber-100">
+<i class="w-3 h-3 stroke-[2.2]" data-lucide="coins"></i> Expenses
+          </span>
+<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-800 text-[11px] font-medium border border-indigo-100">
+<i class="w-3 h-3 stroke-[2.2]" data-lucide="calendar"></i> Itinerary
+          </span>
+</div>
+</div>
+<!-- Card Bottom Actions & Pagination (Exact Reference Style from Image 2) -->
+<footer class="px-6 pt-3 pb-6 sm:pb-7 flex items-center justify-between mt-auto border-t border-slate-50" data-purpose="card-footer">
+<!-- Dot / Diamond Pagination (1 active colored diamond/pill + 2 unfilled circles) -->
+<div aria-label="Step 1 of 3" class="flex items-center gap-2">
+<!-- Active Diamond/Pill Indicator (Image 2 style) -->
+<span class="w-2.5 h-2.5 rotate-45 bg-[#2548e6] rounded-[2px] inline-block shadow-sm"></span>
+<span class="w-2 h-2 rounded-full border border-slate-300 bg-transparent inline-block"></span>
+<span class="w-2 h-2 rounded-full border border-slate-300 bg-transparent inline-block"></span>
+</div>
+<!-- Primary CTA Button (Blue Pill Button 'Explore TrailOPS' like the reference Get Started) -->
+<button class="inline-flex items-center justify-center gap-2 px-6 py-3 rounded-full sm:rounded-2xl bg-gradient-to-r from-[#2f55f4] to-[#1e42dd] hover:from-[#254be8] hover:to-[#1737c7] active:scale-[0.98] text-white font-bold text-[13.5px] tracking-wide uppercase shadow-md shadow-blue-600/30 transition-all duration-150" id="btn-explore-trailops" type="button">
+<span>Explore TrailOPS</span>
+<i class="w-4 h-4 stroke-[2.5]" data-lucide="arrow-right"></i>
+</button>
+</footer>
+</div>
+</div>
+<!-- Lucide Icons Initialization -->
+<script data-purpose="lucide-init">
+    document.addEventListener("DOMContentLoaded", function () {
+      if (window.lucide) {
+        lucide.createIcons();
+      }
+    });
+  </script>
+</body></html>

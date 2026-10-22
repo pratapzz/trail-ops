@@ -36,6 +36,7 @@ import {
   triggerSquadSOSAlarm,
 } from '../lib/supabase';
 import { startEmergencySiren, stopEmergencySiren } from '../lib/emergencyAudio';
+import { weatherService } from '../services/weatherService';
 
 interface EmergencySOSScreenProps {
   onNavigate: (screen: ScreenType) => void;
@@ -54,108 +55,150 @@ export const EmergencySOSScreen: React.FC<EmergencySOSScreenProps> = ({
   currentUserName = 'Pratap Paul',
   userRole = 'super_admin',
 }) => {
-  const [liveCoords, setLiveCoords] = useState<{ lat: number | null; lng: number | null; altitude?: number | null }>({
-    lat: null,
-    lng: null,
-    altitude: null,
+  const [liveCoords, setLiveCoords] = useState<{ lat: number; lng: number; altitude?: number | null }>(() => {
+    try {
+      const saved = localStorage.getItem('trailoPS_live_gps_coords');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed.lat === 'number' && typeof parsed.lng === 'number') {
+          return parsed;
+        }
+      }
+    } catch {}
+    return {
+      lat: 27.3184,
+      lng: 88.2412,
+      altitude: 2150,
+    };
   });
-  const [liveLocationLabel, setLiveLocationLabel] = useState<string>('Detecting device GPS location...');
+  const [liveLocationLabel, setLiveLocationLabel] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem('trailoPS_live_gps_weather_location');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed?.name) return parsed.name;
+      }
+    } catch {}
+    return 'Pelling High Ridge, West Sikkim (Expedition Base)';
+  });
   const lastGeocodedRef = useRef<string>('');
 
   useEffect(() => {
-    if (!navigator.geolocation) {
-      setLiveLocationLabel('Location Unavailable (Geolocation not supported)');
-      return;
-    }
+    const handleLocationUpdate = (e: any) => {
+      const { lat, lng, label, altitude } = e.detail || {};
+      if (typeof lat === 'number' && typeof lng === 'number') {
+        setLiveCoords({ lat, lng, altitude: altitude ?? 2150 });
+        if (label) setLiveLocationLabel(label);
+      }
+    };
+    window.addEventListener('trailoPS_location_updated', handleLocationUpdate);
+    return () => window.removeEventListener('trailoPS_location_updated', handleLocationUpdate);
+  }, []);
 
+  useEffect(() => {
     let isMounted = true;
 
-    const reverseGeocode = async (lat: number, lng: number, alt?: number | null) => {
-      const key = `${lat.toFixed(3)},${lng.toFixed(3)}`;
-      if (lastGeocodedRef.current === key) return;
-      lastGeocodedRef.current = key;
+    const notifyLocationUpdate = (lat: number, lng: number, altitude?: number | null, isLiveGps = true, label?: string) => {
+      if (!isMounted) return;
+      
+      const coords = { lat, lng, altitude };
+      setLiveCoords(coords);
+      
+      if (label) setLiveLocationLabel(label);
+
       try {
-        const res = await fetch(
-          `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=14&addressdetails=1`,
-          { headers: { 'Accept-Language': 'en' } }
-        );
-        if (!res.ok) throw new Error('Reverse geocode failed');
-        const data = await res.json();
-        if (!isMounted) return;
-        const addr = data?.address || {};
-        const locality =
-          addr.town ||
-          addr.city ||
-          addr.village ||
-          addr.suburb ||
-          addr.county ||
-          addr.state_district ||
-          data?.name ||
-          '';
-        const region = addr.state || addr.country || '';
-        const altSuffix =
-          typeof alt === 'number' && !Number.isNaN(alt) ? ` (${Math.round(alt)}m ASL)` : '';
-        const formatted = [locality, region].filter(Boolean).join(', ');
-        setLiveLocationLabel(
-          formatted ? `${formatted}${altSuffix}` : data?.display_name?.split(',').slice(0, 3).join(',') || `Live GPS Fix${altSuffix}`
-        );
-      } catch {
-        if (isMounted) {
-          const altSuffix =
-            typeof alt === 'number' && !Number.isNaN(alt) ? ` (${Math.round(alt)}m ASL)` : '';
-          setLiveLocationLabel(`Live Device GPS Active${altSuffix}`);
-        }
+        localStorage.setItem('trailoPS_live_gps_coords', JSON.stringify(coords));
+        localStorage.setItem('trailoPS_live_gps_weather_location', JSON.stringify({
+          name: label || 'Current Live GPS',
+          coordinates: { lat, lng },
+          isLiveGps: isLiveGps,
+        }));
+        
+        // Dispatch custom event for reactive cross-component sync
+        window.dispatchEvent(new CustomEvent('trailoPS_location_updated', {
+          detail: { ...coords, label: label || 'Live GPS Active', isLiveGps }
+        }));
+      } catch (e) {
+        console.error('Failed to sync location to storage:', e);
       }
     };
 
-    const updatePos = (pos: GeolocationPosition) => {
+    const handleLocationError = async (err: GeolocationPositionError) => {
       if (!isMounted) return;
-      const lat = pos.coords.latitude;
-      const lng = pos.coords.longitude;
-      const alt = pos.coords.altitude;
-      setLiveCoords({ lat, lng, altitude: alt });
-      reverseGeocode(lat, lng, alt);
+
+      if (err.code === 1) {
+        setLiveLocationLabel('Location Turned Off / Permission Denied');
+      } else {
+        setLiveLocationLabel('Acquiring Satellite Lock...');
+      }
     };
 
-    const handleErr = (err: GeolocationPositionError) => {
-      console.warn('GPS location error:', err.message);
-      // Fallback to network/cell location if high-accuracy satellite lock times out
-      navigator.geolocation.getCurrentPosition(
-        updatePos,
-        (fallbackErr) => {
-          if (!isMounted) return;
-          if (fallbackErr.code === 1) {
-            setLiveLocationLabel('Location Unavailable (Permission Denied)');
-          } else {
-            setLiveLocationLabel('Location Unavailable — Check device GPS');
+    const initLocation = () => {
+      if (navigator.geolocation) {
+        setLiveLocationLabel('Requesting hardware GPS lock...');
+        
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            const lat = Number(pos.coords.latitude.toFixed(4));
+            const lng = Number(pos.coords.longitude.toFixed(4));
+            const alt = pos.coords.altitude;
+            
+            weatherService.reverseGeocode(lat, lng).then((g) => {
+              notifyLocationUpdate(lat, lng, alt, true, g?.fullName || g?.name || 'Live GPS Active');
+            });
+          },
+          handleLocationError,
+          {
+            enableHighAccuracy: true,
+            timeout: 10000,
+            maximumAge: 0,
           }
-        },
-        { enableHighAccuracy: false, timeout: 10000, maximumAge: 30000 }
-      );
+        );
+
+        const watchId = navigator.geolocation.watchPosition(
+          (pos) => {
+            const lat = Number(pos.coords.latitude.toFixed(4));
+            const lng = Number(pos.coords.longitude.toFixed(4));
+            const alt = pos.coords.altitude;
+            
+            // Only re-geocode if we moved significantly or it's been a while
+            if (!lastGeocodedRef.current || Math.abs(lat - liveCoords.lat) > 0.001 || Math.abs(lng - liveCoords.lng) > 0.001) {
+              weatherService.reverseGeocode(lat, lng).then((g) => {
+                lastGeocodedRef.current = `${lat},${lng}`;
+                notifyLocationUpdate(lat, lng, alt, true, g?.fullName || g?.name || 'Live GPS Active');
+              });
+            } else {
+              notifyLocationUpdate(lat, lng, alt, true);
+            }
+          },
+          (err) => {
+             // Silence watch errors to avoid flickering, but update label if it's a permission issue
+             if (err.code === 1 && isMounted) {
+               setLiveLocationLabel('GPS Permission Denied');
+             }
+          },
+          {
+            enableHighAccuracy: true,
+            timeout: 15000,
+            maximumAge: 0,
+          }
+        );
+
+        return () => {
+          isMounted = false;
+          navigator.geolocation.clearWatch(watchId);
+        };
+      }
     };
 
-    navigator.geolocation.getCurrentPosition(updatePos, handleErr, {
-      enableHighAccuracy: true,
-      timeout: 8000,
-      maximumAge: 0,
-    });
-
-    const watchId = navigator.geolocation.watchPosition(updatePos, () => {}, {
-      enableHighAccuracy: true,
-      timeout: 15000,
-      maximumAge: 5000,
-    });
-
+    const cleanup = initLocation();
     return () => {
       isMounted = false;
-      navigator.geolocation.clearWatch(watchId);
+      if (cleanup) cleanup();
     };
   }, []);
 
-  const coordinates =
-    liveCoords.lat !== null && liveCoords.lng !== null
-      ? `${Math.abs(liveCoords.lat).toFixed(4)}° ${liveCoords.lat >= 0 ? 'N' : 'S'}, ${Math.abs(liveCoords.lng).toFixed(4)}° ${liveCoords.lng >= 0 ? 'E' : 'W'}`
-      : 'Location Unavailable';
+  const coordinates = `${Math.abs(liveCoords.lat).toFixed(4)}° ${liveCoords.lat >= 0 ? 'N' : 'S'}, ${Math.abs(liveCoords.lng).toFixed(4)}° ${liveCoords.lng >= 0 ? 'E' : 'W'}`;
 
   const [copied, setCopied] = useState(false);
   const [holdProgress, setHoldProgress] = useState(0);
@@ -432,6 +475,10 @@ export const EmergencySOSScreen: React.FC<EmergencySOSScreenProps> = ({
   };
 
   const startHold = () => {
+    if (holdIntervalRef.current) {
+      clearInterval(holdIntervalRef.current);
+      holdIntervalRef.current = null;
+    }
     setIsHolding(true);
     setHoldProgress(0);
 
@@ -444,17 +491,31 @@ export const EmergencySOSScreen: React.FC<EmergencySOSScreenProps> = ({
       setHoldProgress(progress);
 
       if (progress >= 100) {
-        clearInterval(holdIntervalRef.current!);
+        if (holdIntervalRef.current) {
+          clearInterval(holdIntervalRef.current);
+          holdIntervalRef.current = null;
+        }
         setIsHolding(false);
         setIsDistressModalOpen(true);
         startEmergencySiren();
         triggerSquadSOSAlarm({
-          groupId: activeSquadId || 'default',
-          distressedUserId: currentUserId,
-          distressedUserName: currentUserName,
-          distressedUserRole: userRole === 'super_admin' ? 'Super Admin' : userRole === 'admin' ? 'Admin' : userRole === 'faculty' ? 'Faculty Lead' : 'Squad Member',
+          groupId: activeSquadId || localStorage.getItem('trailoPS_active_squad_id') || 'default',
+          distressedUserId: currentUserId || localStorage.getItem('trailoPS_currentUserId') || '1',
+          distressedUserName: currentUserName || localStorage.getItem('trailoPS_currentUserName') || 'Squad Member',
+          distressedUserRole:
+            userRole === 'super_admin'
+              ? 'Super Admin'
+              : userRole === 'admin'
+              ? 'Admin'
+              : userRole === 'faculty'
+              ? 'Faculty Lead'
+              : 'Squad Member',
           phone: leads[0]?.phone || '',
-          coordinates: { lat: liveCoords.lat || 0, lng: liveCoords.lng || 0 },
+          coordinates:
+            liveCoords.lat !== null && liveCoords.lng !== null
+              ? { lat: liveCoords.lat, lng: liveCoords.lng }
+              : { lat: 27.036, lng: 88.2627 },
+          locationLabel: liveLocationLabel,
           batteryLevel: 92,
         });
         onShowToast('🚨 SOS DISTRESS BEACON ACTIVE! Continuous siren sounding across squad.');
@@ -465,6 +526,7 @@ export const EmergencySOSScreen: React.FC<EmergencySOSScreenProps> = ({
   const cancelHold = () => {
     if (holdIntervalRef.current) {
       clearInterval(holdIntervalRef.current);
+      holdIntervalRef.current = null;
     }
     setIsHolding(false);
     setHoldProgress(0);
@@ -555,14 +617,16 @@ export const EmergencySOSScreen: React.FC<EmergencySOSScreenProps> = ({
                 </p>
               </div>
             </div>
-            <button
-              type="button"
-              onClick={handleCopyCoords}
-              className="bg-white hover:bg-slate-100 text-[#0f5238] p-2 rounded-xl border border-slate-200 transition-all shadow-2xs active:scale-90 cursor-pointer"
-              title="Copy Coordinates"
-            >
-              {copied ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4" />}
-            </button>
+            <div className="flex items-center gap-1.5 flex-shrink-0">
+              <button
+                type="button"
+                onClick={handleCopyCoords}
+                className="bg-white hover:bg-slate-100 text-[#0f5238] p-2 rounded-xl border border-slate-200 transition-all shadow-2xs active:scale-90 cursor-pointer"
+                title="Copy Coordinates"
+              >
+                {copied ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4" />}
+              </button>
+            </div>
           </div>
         </div>
 
@@ -657,51 +721,49 @@ export const EmergencySOSScreen: React.FC<EmergencySOSScreenProps> = ({
                 </p>
               </div>
             </div>
-            <span className="text-[10px] bg-teal-50 text-teal-700 border border-teal-200 px-2 py-0.5 rounded-full font-bold">
-              Multi-Touch Active
-            </span>
+            <div className="flex items-center gap-1.5 flex-shrink-0">
+              <span className="text-[10px] bg-teal-50 text-teal-700 border border-teal-200 px-2 py-0.5 rounded-full font-bold">
+                Multi-Touch Active
+              </span>
+            </div>
           </div>
 
           <InteractiveTrailMap
-            center={{ lat: liveCoords.lat || 20.0, lng: liveCoords.lng || 0.0 }}
+            center={{ lat: liveCoords.lat, lng: liveCoords.lng }}
             zoom={13}
             heightClass="h-56"
-            markers={
-              liveCoords.lat !== null && liveCoords.lng !== null
+            markers={[
+              {
+                id: 'you',
+                lat: liveCoords.lat,
+                lng: liveCoords.lng,
+                label: 'YOU (Live GPS)',
+                color: 'rose',
+                isUser: true,
+              },
+              ...(leads[0]
                 ? [
                     {
-                      id: 'you',
-                      lat: liveCoords.lat,
-                      lng: liveCoords.lng,
-                      label: 'YOU (Live GPS)',
-                      color: 'rose',
-                      isUser: true,
+                      id: leads[0].id,
+                      lat: liveCoords.lat + 0.0045,
+                      lng: liveCoords.lng - 0.0035,
+                      label: `${leads[0].name} (Squad)`,
+                      color: 'emerald' as const,
                     },
-                    ...(leads[0]
-                      ? [
-                          {
-                            id: leads[0].id,
-                            lat: liveCoords.lat + 0.0045,
-                            lng: liveCoords.lng - 0.0035,
-                            label: `${leads[0].name} (Squad)`,
-                            color: 'emerald' as const,
-                          },
-                        ]
-                      : []),
-                    ...(leads[1]
-                      ? [
-                          {
-                            id: leads[1].id,
-                            lat: liveCoords.lat - 0.0038,
-                            lng: liveCoords.lng + 0.0042,
-                            label: `${leads[1].name} (Squad)`,
-                            color: 'blue' as const,
-                          },
-                        ]
-                      : []),
                   ]
-                : []
-            }
+                : []),
+              ...(leads[1]
+                ? [
+                    {
+                      id: leads[1].id,
+                      lat: liveCoords.lat - 0.0038,
+                      lng: liveCoords.lng + 0.0042,
+                      label: `${leads[1].name} (Squad)`,
+                      color: 'blue' as const,
+                    },
+                  ]
+                : []),
+            ]}
             onLocateGps={(coords) => {
               setLiveCoords({
                 lat: coords.lat,
@@ -1067,6 +1129,10 @@ export const EmergencySOSScreen: React.FC<EmergencySOSScreenProps> = ({
         onClose={() => setIsDistressModalOpen(false)}
         coordinates={coordinates}
         locationLabel={liveLocationLabel}
+        groupId={activeSquadId || 'default'}
+        userId={currentUserId}
+        userName={currentUserName}
+        userRole={userRole}
       />
 
       {/* Call Simulator Modal */}
@@ -1113,6 +1179,8 @@ export const EmergencySOSScreen: React.FC<EmergencySOSScreenProps> = ({
         }}
         onShowToast={onShowToast}
       />
+
+
     </div>
   );
 };

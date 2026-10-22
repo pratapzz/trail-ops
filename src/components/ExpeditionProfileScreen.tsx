@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { ProfileFormData, AllergyItem, ScreenType } from '../types';
 import { AddAllergyModal } from './modals/AddAllergyModal';
+import { uploadProfileAvatar } from '../lib/supabase';
 
 interface ExpeditionProfileScreenProps {
   onNavigate: (screen: ScreenType) => void;
@@ -118,14 +119,34 @@ export const ExpeditionProfileScreen: React.FC<ExpeditionProfileScreenProps> = (
     const file = e.target.files?.[0];
     if (file) {
       const reader = new FileReader();
-      reader.onload = (event) => {
+      reader.onload = async (event) => {
         if (event.target?.result) {
+          const base64 = event.target.result as string;
           setFormData((prev) => ({
             ...prev,
-            avatarUrl: event.target!.result as string,
+            avatarUrl: base64,
           }));
-          onShowToast('Custom profile photo updated!');
+          onShowToast('Custom profile photo selected!');
           setIsAvatarPickerOpen(false);
+
+          // Upload permanently to backend server media store
+          const activeUserId = localStorage.getItem('trailoPS_currentUserId') || 'current_user';
+          try {
+            const uploadRes = await uploadProfileAvatar(activeUserId, base64, file.type, file.name);
+            if (uploadRes.success && uploadRes.avatarUrl) {
+              setFormData((prev) => ({
+                ...prev,
+                avatarUrl: uploadRes.avatarUrl!,
+              }));
+              localStorage.setItem('trailoPS_currentUserAvatar', uploadRes.avatarUrl);
+              window.dispatchEvent(new CustomEvent('trailoPS_profile_updated', {
+                detail: { avatarUrl: uploadRes.avatarUrl }
+              }));
+              onShowToast('✓ Profile photo permanently saved to server!');
+            }
+          } catch (err) {
+            console.error('Avatar upload failed:', err);
+          }
         }
       };
       reader.readAsDataURL(file);

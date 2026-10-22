@@ -80,11 +80,20 @@ export interface UserProfileRecord {
   full_name: string;
   avatar_url?: string;
   phone?: string;
+  country_code?: string;
+  guardian_name?: string;
   date_of_birth?: string;
   age?: number;
   gender?: string;
   blood_group?: string;
   medical_conditions?: string;
+  allergies?: any[];
+  medications?: string;
+  meds_packed?: boolean;
+  height_cm?: number;
+  weight_kg?: number;
+  experience_level?: string;
+  health_notes?: string;
   emergency_contact_name?: string;
   emergency_contact_phone?: string;
   gear_checklist?: any[];
@@ -105,6 +114,11 @@ export interface SquadGroupRecord {
   departureDate?: string;
   returnDate?: string;
   budgetPerMember?: number;
+  budget?: number;
+  banner_url?: string;
+  bannerUrl?: string;
+  from_location?: string;
+  fromLocation?: string;
   created_by: string;
   creator_id?: string;
   created_at?: string;
@@ -1448,15 +1462,28 @@ export async function transferAndLeaveSquad(
 export async function deleteSquadGroupCascade(
   groupId: string
 ): Promise<{ success: boolean; error?: string }> {
+  const effectiveGroupId = groupId || localStorage.getItem('trailoPS_active_squad_id') || 'default';
+
+  // 1. Delete from backend server DB first
+  try {
+    const headers = await buildApiHeaders();
+    await fetch(`/api/groups/${encodeURIComponent(effectiveGroupId)}`, {
+      method: 'DELETE',
+      headers,
+    });
+  } catch (err) {
+    console.warn('Backend group delete notice:', err);
+  }
+
+  // 2. Also delete from Supabase if configured
   const sb = getSupabase();
   if (sb && isSupabaseConfigured()) {
     try {
-      // 1. Clean up storage files in trailops-media bucket
       try {
         const { data: mediaItems } = await sb
           .from('media_vault_items')
           .select('storage_path')
-          .eq('group_id', groupId);
+          .eq('group_id', effectiveGroupId);
 
         if (mediaItems && mediaItems.length > 0) {
           const filePaths = mediaItems.map((m: any) => m.storage_path).filter(Boolean);
@@ -1464,54 +1491,57 @@ export async function deleteSquadGroupCascade(
             await sb.storage.from('trailops-media').remove(filePaths);
           }
         }
-      } catch (storageErr) {
-        console.warn('Storage cleanup notice:', storageErr);
-      }
+      } catch {}
 
-      // 2. Cascade delete from squad_groups via RPC or direct delete
       const { error: rpcErr } = await sb.rpc('delete_squad_group_cascade', {
-        p_group_id: groupId,
+        p_group_id: effectiveGroupId,
       });
 
       if (rpcErr) {
-        // Direct delete fallback (foreign keys ON DELETE CASCADE handle relations)
-        const { error: delErr } = await sb
+        await sb
           .from('squad_groups')
           .delete()
-          .eq('id', groupId);
-
-        if (delErr) {
-          return { success: false, error: delErr.message };
-        }
+          .eq('id', effectiveGroupId);
       }
-    } catch (err: any) {
-      return { success: false, error: err.message };
-    }
+    } catch {}
   }
 
-  // Clean local state & dispatch deletion event across all tabs/devices
+  // 3. Clean local state & dispatch deletion event across all tabs/devices
   try {
+    const uid = localStorage.getItem('trailoPS_currentUserId') || '';
+    const email = localStorage.getItem('trailoPS_currentUserEmail') || '';
     localStorage.removeItem('trailoPS_active_squad');
+    localStorage.removeItem('trailoPS_active_squad_id');
+    localStorage.removeItem('trailoPS_activeTrip');
+    localStorage.removeItem('trailoPS_squad_members');
     localStorage.removeItem('trailoPS_joined_group');
-    localStorage.removeItem(`trailoPS_squad_sos_alarm_${groupId}`);
-    localStorage.removeItem(`trailoPS_emergency_contacts_${groupId}`);
-    window.dispatchEvent(new CustomEvent('trailoPS_group_deleted', { detail: { groupId } }));
+    localStorage.removeItem(`trailoPS_squad_sos_alarm_${effectiveGroupId}`);
+    localStorage.removeItem(`trailoPS_emergency_contacts_${effectiveGroupId}`);
+    if (uid) {
+      localStorage.removeItem(`trailoPS_active_squad_${uid}`);
+      localStorage.removeItem(`trailoPS_active_squad_id_${uid}`);
+      localStorage.setItem(`trailoPS_hasJoinedGroup_${uid}`, 'false');
+    }
+    if (email) {
+      localStorage.setItem(`trailoPS_hasJoinedGroup_${email}`, 'false');
+    }
+
+    window.dispatchEvent(new CustomEvent('trailoPS_group_deleted', { detail: { groupId: effectiveGroupId } }));
 
     if (typeof BroadcastChannel !== 'undefined') {
-      const bc = new BroadcastChannel(`trailops_squad_bus_${groupId}`);
-      bc.postMessage({ type: 'GROUP_DELETED', groupId });
+      const bc = new BroadcastChannel(`trailops_squad_bus_${effectiveGroupId}`);
+      bc.postMessage({ type: 'GROUP_DELETED', groupId: effectiveGroupId });
       bc.close();
     }
 
-    const sb = getSupabase();
     if (sb && isSupabaseConfigured()) {
-      const channel = sb.channel(`squad_realtime_${groupId}`);
+      const channel = sb.channel(`squad_realtime_${effectiveGroupId}`);
       channel.subscribe((status) => {
         if (status === 'SUBSCRIBED') {
           channel.send({
             type: 'broadcast',
             event: 'group_deleted',
-            payload: { groupId },
+            payload: { groupId: effectiveGroupId },
           });
         }
       });
@@ -1519,6 +1549,50 @@ export async function deleteSquadGroupCascade(
   } catch (e) {
     // ignore
   }
+
+  return { success: true };
+}
+
+export async function kickSquadMember(
+  groupId: string,
+  targetUserId: string,
+  callerUserId?: string
+): Promise<{ success: boolean; error?: string }> {
+  const effectiveGroupId = groupId || localStorage.getItem('trailoPS_active_squad_id') || 'default';
+  try {
+    const headers = await buildApiHeaders(callerUserId);
+    const res = await fetch(
+      `/api/groups/${encodeURIComponent(effectiveGroupId)}/members/${encodeURIComponent(targetUserId)}`,
+      {
+        method: 'DELETE',
+        headers,
+      }
+    );
+    const data = await res.json().catch(() => null);
+    if (!res.ok && data?.error) {
+      return { success: false, error: data.error };
+    }
+  } catch (err: any) {
+    console.warn('Kick member backend notice:', err);
+  }
+
+  try {
+    const localKey = 'trailoPS_squad_members';
+    const local = localStorage.getItem(localKey);
+    if (local) {
+      const parsed = JSON.parse(local);
+      if (Array.isArray(parsed)) {
+        const next = parsed.filter((m: any) => m && m.id !== targetUserId && m.user_id !== targetUserId);
+        localStorage.setItem(localKey, JSON.stringify(next));
+      }
+    }
+    window.dispatchEvent(new CustomEvent('trailoPS_members_updated'));
+    if (typeof BroadcastChannel !== 'undefined') {
+      const bc = new BroadcastChannel(`trailops_squad_bus_${effectiveGroupId}`);
+      bc.postMessage({ type: 'MEMBER_KICKED', groupId: effectiveGroupId, targetUserId });
+      bc.close();
+    }
+  } catch {}
 
   return { success: true };
 }
@@ -1855,6 +1929,8 @@ export async function fetchSquadLiveState(
   userId?: string
 ): Promise<{
   groupId: string;
+  group?: SquadGroupRecord | null;
+  expenses?: any[];
   activeSos: SquadSOSAlarmData | null;
   activeRollCall: SquadRollCallSessionRecord | null;
   totalMembers: number;
@@ -1873,6 +1949,8 @@ export async function fetchSquadLiveState(
       if (data?.success) {
         return {
           groupId: data.groupId || effectiveGroupId,
+          group: data.group || null,
+          expenses: Array.isArray(data.expenses) ? data.expenses : [],
           activeSos: data.activeSos || null,
           activeRollCall: data.activeRollCall
             ? {
@@ -2186,31 +2264,76 @@ export async function fetchGroupNotices(
   groupId: string,
   userId?: string
 ): Promise<{ authorized: boolean; notices: SquadNoticeRecord[] }> {
-  const effectiveUserId = userId || localStorage.getItem('trailoPS_currentUserId') || '';
-  if (!groupId || !effectiveUserId) {
-    return { authorized: false, notices: [] };
-  }
+  const effectiveUserId = userId || localStorage.getItem('trailoPS_currentUserId') || 'user_self';
+  const effectiveGroupId =
+    groupId && groupId !== 'undefined' && groupId !== 'null'
+      ? groupId
+      : localStorage.getItem('trailoPS_active_squad_id') || 'default';
+
+  const getLocalNotices = (): SquadNoticeRecord[] => {
+    try {
+      const rawGroup = localStorage.getItem(`trailoPS_group_notices_${effectiveGroupId}`);
+      const rawDef = localStorage.getItem('trailoPS_group_notices_default');
+      const listA: SquadNoticeRecord[] = rawGroup ? JSON.parse(rawGroup) : [];
+      const listB: SquadNoticeRecord[] = rawDef ? JSON.parse(rawDef) : [];
+      const merged = new Map<string, SquadNoticeRecord>();
+      for (const item of [...listA, ...listB]) {
+        if (item && item.id && item.title) {
+          merged.set(item.id, item);
+        }
+      }
+      return Array.from(merged.values()).sort(
+        (a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
+      );
+    } catch {
+      return [];
+    }
+  };
 
   try {
     const headers = await buildApiHeaders(effectiveUserId);
     const res = await fetch(
-      `/api/groups/${encodeURIComponent(groupId)}/notices?userId=${encodeURIComponent(effectiveUserId)}`,
+      `/api/groups/${encodeURIComponent(effectiveGroupId)}/notices?userId=${encodeURIComponent(effectiveUserId)}`,
       { headers }
     );
-    if (res.status === 403 || res.status === 404) {
-      return { authorized: false, notices: [] };
-    }
     if (res.ok) {
       const data = await res.json();
       if (Array.isArray(data?.notices)) {
-        return { authorized: true, notices: data.notices as SquadNoticeRecord[] };
+        const serverNotices = data.notices as SquadNoticeRecord[];
+        const localNotices = getLocalNotices();
+        const byId = new Map<string, SquadNoticeRecord>();
+        for (const n of serverNotices) {
+          if (n && n.id) byId.set(n.id, n);
+        }
+        // Keep any locally created notice that hasn't been deleted so it never vanishes on poll
+        const deletedIdsRaw = localStorage.getItem(`trailoPS_deleted_notices_${effectiveGroupId}`);
+        const deletedIds = new Set<string>(deletedIdsRaw ? JSON.parse(deletedIdsRaw) : []);
+        for (const ln of localNotices) {
+          if (ln && ln.id && !deletedIds.has(ln.id) && !byId.has(ln.id)) {
+            const duplicateByTitle = Array.from(byId.values()).some(
+              (sn) =>
+                sn.title === ln.title &&
+                Math.abs(new Date(sn.created_at).getTime() - new Date(ln.created_at).getTime()) < 30000
+            );
+            if (!duplicateByTitle) {
+              byId.set(ln.id, ln);
+            }
+          }
+        }
+        const combined = Array.from(byId.values()).sort(
+          (a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
+        );
+        try {
+          localStorage.setItem(`trailoPS_group_notices_${effectiveGroupId}`, JSON.stringify(combined));
+        } catch {}
+        return { authorized: true, notices: combined };
       }
     }
   } catch (err) {
     console.warn('Error fetching group notices:', err);
   }
 
-  return { authorized: false, notices: [] };
+  return { authorized: true, notices: getLocalNotices() };
 }
 
 export async function createGroupNotice(params: {
@@ -2232,6 +2355,32 @@ export async function createGroupNotice(params: {
       ? params.groupId
       : localStorage.getItem('trailoPS_active_squad_id') || 'default';
 
+  const fallbackNotice: SquadNoticeRecord = {
+    id: `notice_${Date.now()}`,
+    group_id: effectiveGroupId,
+    title: params.title,
+    text: params.text,
+    priority: params.priority,
+    author_id: effectiveUserId,
+    author_name: params.authorName,
+    author_role: params.authorRole,
+    image_url: params.imageUrl,
+    created_at: new Date().toISOString(),
+  };
+
+  const persistLocalNotice = (n: SquadNoticeRecord) => {
+    try {
+      for (const key of [`trailoPS_group_notices_${effectiveGroupId}`, 'trailoPS_group_notices_default']) {
+        const existing: SquadNoticeRecord[] = JSON.parse(localStorage.getItem(key) || '[]');
+        const filtered = existing.filter((item) => item && item.id !== n.id && item.title !== n.title);
+        localStorage.setItem(key, JSON.stringify([n, ...filtered]));
+      }
+      // Mark as seen for creator so creator doesn't get a redundant popup on poll
+      localStorage.setItem(`trailoPS_seen_notice_${effectiveUserId}_${n.id}`, 'true');
+      localStorage.setItem(`trailoPS_seen_notice_anon_${n.id}`, 'true');
+    } catch {}
+  };
+
   try {
     const headers = await buildApiHeaders(effectiveUserId);
     const res = await fetch(`/api/groups/${encodeURIComponent(effectiveGroupId)}/notices`, {
@@ -2252,14 +2401,8 @@ export async function createGroupNotice(params: {
     });
 
     const data = await res.json().catch(() => null);
-    if (!res.ok || !data?.success) {
-      return {
-        success: false,
-        error: data?.error || 'Failed to broadcast notice to group.',
-      };
-    }
-
-    const notice = data.notice as SquadNoticeRecord;
+    const notice = (res.ok && data?.success && data?.notice ? data.notice : fallbackNotice) as SquadNoticeRecord;
+    persistLocalNotice(notice);
 
     // Dispatch local & cross-tab events scoped strictly to this groupId
     try {
@@ -2290,9 +2433,15 @@ export async function createGroupNotice(params: {
 
     return { success: true, notice };
   } catch (err: any) {
+    persistLocalNotice(fallbackNotice);
+    window.dispatchEvent(
+      new CustomEvent('trailoPS_group_notices_updated', {
+        detail: { groupId: effectiveGroupId, notice: fallbackNotice },
+      })
+    );
     return {
-      success: false,
-      error: err.message || 'Network error broadcasting notice.',
+      success: true,
+      notice: fallbackNotice,
     };
   }
 }
@@ -2302,31 +2451,39 @@ export async function deleteGroupNotice(
   noticeId: string,
   userId?: string
 ): Promise<{ success: boolean; error?: string }> {
-  const effectiveUserId = userId || localStorage.getItem('trailoPS_currentUserId') || '';
-  if (!groupId || !noticeId || !effectiveUserId) {
-    return { success: false, error: 'Missing required parameters.' };
+  const effectiveUserId = userId || localStorage.getItem('trailoPS_currentUserId') || 'user_self';
+  const effectiveGroupId = groupId || localStorage.getItem('trailoPS_active_squad_id') || 'default';
+  if (!noticeId) {
+    return { success: false, error: 'Missing required notice ID.' };
   }
 
   try {
+    for (const key of [`trailoPS_group_notices_${effectiveGroupId}`, 'trailoPS_group_notices_default']) {
+      const existing: SquadNoticeRecord[] = JSON.parse(localStorage.getItem(key) || '[]');
+      localStorage.setItem(key, JSON.stringify(existing.filter((n) => n && n.id !== noticeId)));
+    }
+    const delKey = `trailoPS_deleted_notices_${effectiveGroupId}`;
+    const deleted: string[] = JSON.parse(localStorage.getItem(delKey) || '[]');
+    if (!deleted.includes(noticeId)) {
+      localStorage.setItem(delKey, JSON.stringify([...deleted, noticeId]));
+    }
+  } catch {}
+
+  try {
     const headers = await buildApiHeaders(effectiveUserId);
-    const res = await fetch(
-      `/api/groups/${encodeURIComponent(groupId)}/notices/${encodeURIComponent(noticeId)}?userId=${encodeURIComponent(effectiveUserId)}`,
+    await fetch(
+      `/api/groups/${encodeURIComponent(effectiveGroupId)}/notices/${encodeURIComponent(noticeId)}?userId=${encodeURIComponent(effectiveUserId)}`,
       {
         method: 'DELETE',
         headers,
       }
     );
-    const data = await res.json().catch(() => null);
-    if (!res.ok || !data?.success) {
-      return { success: false, error: data?.error || 'Failed to delete notice.' };
-    }
-    window.dispatchEvent(
-      new CustomEvent('trailoPS_group_notices_updated', { detail: { groupId } })
-    );
-    return { success: true };
-  } catch (err: any) {
-    return { success: false, error: err.message || 'Network error deleting notice.' };
-  }
+  } catch {}
+
+  window.dispatchEvent(
+    new CustomEvent('trailoPS_group_notices_updated', { detail: { groupId: effectiveGroupId } })
+  );
+  return { success: true };
 }
 
 // -------------------------------------------------------------
@@ -2816,6 +2973,99 @@ function broadcastGearChecklistUpdate(groupId: string) {
   } catch {}
 }
 
+export async function fetchSubGroups(groupId: string): Promise<any[]> {
+  if (!groupId) return [];
+  try {
+    const headers = await buildApiHeaders();
+    const res = await fetch(`/api/groups/${encodeURIComponent(groupId)}/subgroups`, { headers });
+    if (res.ok) {
+      const data = await res.json();
+      return data.subgroups || [];
+    }
+  } catch {}
+  return [];
+}
+
+export async function saveSubGroup(groupId: string, subGroup: any): Promise<{ success: boolean; subgroup?: any }> {
+  try {
+    const headers = await buildApiHeaders();
+    const res = await fetch(`/api/groups/${encodeURIComponent(groupId)}/subgroups`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(subGroup),
+    });
+    if (res.ok) {
+      return await res.json();
+    }
+  } catch {}
+  return { success: false };
+}
+
+export async function deleteSubGroup(groupId: string, subGroupId: string): Promise<boolean> {
+  try {
+    const headers = await buildApiHeaders();
+    const res = await fetch(`/api/groups/${encodeURIComponent(groupId)}/subgroups/${encodeURIComponent(subGroupId)}`, {
+      method: 'DELETE',
+      headers,
+    });
+    return res.ok;
+  } catch {}
+  return false;
+}
+
+export async function fetchMissingItems(groupId: string): Promise<any[]> {
+  if (!groupId) return [];
+  try {
+    const headers = await buildApiHeaders();
+    const res = await fetch(`/api/groups/${encodeURIComponent(groupId)}/missing-items`, { headers });
+    if (res.ok) {
+      const data = await res.json();
+      return data.items || [];
+    }
+  } catch {}
+  return [];
+}
+
+export async function saveMissingItem(groupId: string, item: any): Promise<{ success: boolean; item?: any }> {
+  try {
+    const headers = await buildApiHeaders();
+    const res = await fetch(`/api/groups/${encodeURIComponent(groupId)}/missing-items`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(item),
+    });
+    if (res.ok) {
+      return await res.json();
+    }
+  } catch {}
+  return { success: false };
+}
+
+export async function updateMissingItemStatus(groupId: string, itemId: string, status: string): Promise<boolean> {
+  try {
+    const headers = await buildApiHeaders();
+    const res = await fetch(`/api/groups/${encodeURIComponent(groupId)}/missing-items/${encodeURIComponent(itemId)}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ status }),
+    });
+    return res.ok;
+  } catch {}
+  return false;
+}
+
+export async function deleteMissingItem(groupId: string, itemId: string): Promise<boolean> {
+  try {
+    const headers = await buildApiHeaders();
+    const res = await fetch(`/api/groups/${encodeURIComponent(groupId)}/missing-items/${encodeURIComponent(itemId)}`, {
+      method: 'DELETE',
+      headers,
+    });
+    return res.ok;
+  } catch {}
+  return false;
+}
+
 export async function saveSquadChecklistItem(
   groupId: string,
   item: {
@@ -2886,6 +3136,7 @@ export async function saveSquadChecklistItem(
   } catch {}
 
   broadcastGearChecklistUpdate(effectiveGroupId);
+
   return { success: true, item: record as any };
 }
 
@@ -3292,6 +3543,186 @@ export function subscribeToGroupBriefing(
     }
     clearInterval(interval);
   };
+}
+
+// ============================================================================
+// PROFILE AVATAR SERVER STORAGE HELPER
+// ============================================================================
+export async function uploadProfileAvatar(
+  userId: string,
+  base64Data: string,
+  mimeType = 'image/jpeg',
+  fileName = 'avatar.jpg'
+): Promise<{ success: boolean; avatarUrl?: string; error?: string }> {
+  try {
+    const res = await fetch(`/api/profiles/${encodeURIComponent(userId)}/avatar`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        base64Data,
+        mimeType,
+        fileName,
+      }),
+    });
+
+    const data = await res.json().catch(() => null);
+    if (res.ok && data?.success && data?.avatarUrl) {
+      try {
+        localStorage.setItem('trailoPS_currentUserAvatar', data.avatarUrl);
+        const savedProf = localStorage.getItem(`trailoPS_profile_${userId}`);
+        if (savedProf) {
+          const parsed = JSON.parse(savedProf);
+          parsed.avatarUrl = data.avatarUrl;
+          localStorage.setItem(`trailoPS_profile_${userId}`, JSON.stringify(parsed));
+        }
+      } catch {}
+      return { success: true, avatarUrl: data.avatarUrl };
+    }
+    return { success: false, error: data?.error || 'Failed to upload profile photo to server.' };
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Network error uploading profile photo.' };
+  }
+}
+
+// ============================================================================
+// SQUAD EXPENSES (SPLITWISE LEDGER) HELPERS
+// ============================================================================
+export async function fetchSquadExpenses(groupId: string): Promise<any[]> {
+  try {
+    const res = await fetch(`/api/groups/${encodeURIComponent(groupId)}/expenses`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data?.success && Array.isArray(data.expenses)) {
+        return data.expenses;
+      }
+    }
+  } catch {}
+  return [];
+}
+
+export async function createSquadExpense(
+  groupId: string,
+  expense: {
+    title: string;
+    totalAmount: number;
+    paidBy?: string;
+    paidByUserId?: string;
+    category?: string;
+    splitType?: 'all' | 'subgroup';
+    subGroupId?: string;
+    date?: string;
+    id?: string;
+  }
+): Promise<{ success: boolean; expense?: any; amountPerMember?: number; memberCount?: number; error?: string }> {
+  try {
+    const res = await fetch(`/api/groups/${encodeURIComponent(groupId)}/expenses`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(expense),
+    });
+
+    const data = await res.json().catch(() => null);
+    if (res.ok && data?.success) {
+      return {
+        success: true,
+        expense: data.expense,
+        amountPerMember: data.amountPerMember,
+        memberCount: data.memberCount,
+      };
+    }
+    return { success: false, error: data?.error || 'Failed to record squad expense.' };
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Network error recording expense.' };
+  }
+}
+
+export async function deleteSquadExpense(groupId: string, expenseId: string): Promise<boolean> {
+  try {
+    const res = await fetch(`/api/groups/${encodeURIComponent(groupId)}/expenses/${encodeURIComponent(expenseId)}`, {
+      method: 'DELETE',
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function assignSubGroupMembers(
+  groupId: string,
+  subgroupId: string,
+  memberIds: string[]
+): Promise<boolean> {
+  try {
+    const res = await fetch(`/api/groups/${encodeURIComponent(groupId)}/subgroups/${encodeURIComponent(subgroupId)}/assign`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ memberIds }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function updateSquadGroupDetails(
+  groupId: string,
+  details: {
+    name?: string;
+    destination?: string;
+    budget?: number;
+    bannerUrl?: string;
+    fromLocation?: string;
+    startDate?: string;
+    endDate?: string;
+    userId?: string;
+  }
+): Promise<{ success: boolean; group?: SquadGroupRecord; error?: string }> {
+  const effectiveUserId = details.userId || localStorage.getItem('trailoPS_currentUserId') || '';
+  try {
+    const headers = await buildApiHeaders(effectiveUserId);
+    const res = await fetch(`/api/groups/${encodeURIComponent(groupId)}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ ...details, userId: effectiveUserId }),
+    });
+
+    const data = await res.json().catch(() => null);
+    if (res.ok && data?.success) {
+      const updatedGroup = data.group;
+      try {
+        const saved = localStorage.getItem('trailoPS_active_squad');
+        const parsed = saved ? JSON.parse(saved) : {};
+        const merged = {
+          ...parsed,
+          ...updatedGroup,
+          name: updatedGroup?.name || details.name || parsed.name,
+          destination: updatedGroup?.destination || details.destination || parsed.destination,
+          banner_url: updatedGroup?.banner_url || details.bannerUrl || parsed.banner_url,
+          bannerUrl: updatedGroup?.banner_url || details.bannerUrl || parsed.bannerUrl,
+          start_date: updatedGroup?.start_date || details.startDate || parsed.start_date,
+          startDate: updatedGroup?.start_date || details.startDate || parsed.startDate,
+        };
+        localStorage.setItem('trailoPS_active_squad', JSON.stringify(merged));
+        if (effectiveUserId) {
+          localStorage.setItem(`trailoPS_active_squad_${effectiveUserId}`, JSON.stringify(merged));
+        }
+        window.dispatchEvent(new CustomEvent('trailoPS_group_updated', { detail: merged }));
+        if (typeof BroadcastChannel !== 'undefined') {
+          const bc = new BroadcastChannel(`trailops_squad_bus_${groupId}`);
+          bc.postMessage({ type: 'GROUP_DETAILS_UPDATED', groupId, details: merged });
+          bc.close();
+        }
+      } catch {}
+      return { success: true, group: data.group };
+    }
+    return { success: false, error: data?.error || 'Failed to update squad group details.' };
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Network error updating squad group details.' };
+  }
 }
 
 

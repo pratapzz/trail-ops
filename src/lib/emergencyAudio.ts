@@ -88,42 +88,38 @@ export function stopEmergencySiren(): void {
     return;
   }
 
+  isSirenActive = false;
+
   try {
-    if (masterGain && audioCtx && audioCtx.state !== 'closed') {
-      masterGain.gain.setValueAtTime(masterGain.gain.value, audioCtx.currentTime);
-      masterGain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.1);
-    }
-
-    setTimeout(() => {
+    if (carrierOsc) {
       try {
-        if (carrierOsc) {
-          carrierOsc.stop();
-          carrierOsc.disconnect();
-          carrierOsc = null;
-        }
-        if (modOsc) {
-          modOsc.stop();
-          modOsc.disconnect();
-          modOsc = null;
-        }
-        if (modGain) {
-          modGain.disconnect();
-          modGain = null;
-        }
-        if (masterGain) {
-          masterGain.disconnect();
-          masterGain = null;
-        }
-      } catch (e) {
-        // ignore cleanup errors
-      }
-      isSirenActive = false;
-    }, 120);
-
+        carrierOsc.stop();
+        carrierOsc.disconnect();
+      } catch {}
+      carrierOsc = null;
+    }
+    if (modOsc) {
+      try {
+        modOsc.stop();
+        modOsc.disconnect();
+      } catch {}
+      modOsc = null;
+    }
+    if (modGain) {
+      try {
+        modGain.disconnect();
+      } catch {}
+      modGain = null;
+    }
+    if (masterGain) {
+      try {
+        masterGain.disconnect();
+      } catch {}
+      masterGain = null;
+    }
     stopEmergencyVibration();
   } catch (err) {
     console.warn('Error stopping emergency siren:', err);
-    isSirenActive = false;
     stopEmergencyVibration();
   }
 }

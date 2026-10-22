@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { AlertTriangle, ShieldCheck, Radio, X } from 'lucide-react';
 import { triggerSquadSOSAlarm, clearSquadSOSAlarm } from '../../lib/supabase';
+import { startEmergencySiren, stopEmergencySiren } from '../../lib/emergencyAudio';
 
 interface DistressAlertModalProps {
   isOpen: boolean;
@@ -49,7 +50,8 @@ export const DistressAlertModal: React.FC<DistressAlertModalProps> = ({
       let resolvedPhone = userPhone || '';
       try {
         const prof = JSON.parse(
-          localStorage.getItem(`trailoPS_profile_data_${resolvedUserId}`) ||
+          localStorage.getItem(`trailoPS_profile_${resolvedUserId}`) ||
+            localStorage.getItem(`trailoPS_profile_data_${resolvedUserId}`) ||
             localStorage.getItem('trailoPS_profile_data') ||
             '{}'
         );
@@ -63,17 +65,12 @@ export const DistressAlertModal: React.FC<DistressAlertModalProps> = ({
         distressedUserName: resolvedName,
         distressedUserRole: userRole || localStorage.getItem('trailoPS_userRole') || 'Member',
         phone: resolvedPhone,
-        coordinates: coordsToUse || '27.0360° N, 88.2627° E',
+        coordinates: { lat: 27.036, lng: 88.2627 },
         locationLabel:
           locLabelToUse && !locLabelToUse.startsWith('Detecting')
             ? locLabelToUse
             : 'Live GPS Distress Beacon',
-        batteryLevel: '84%',
-        triggeredAt: new Date().toLocaleTimeString([], {
-          hour: '2-digit',
-          minute: '2-digit',
-          second: '2-digit',
-        }),
+        batteryLevel: 92,
       });
     },
     [groupId, userId, userName, userRole, userPhone]
@@ -85,6 +82,8 @@ export const DistressAlertModal: React.FC<DistressAlertModalProps> = ({
       setIsDispatched(false);
       return;
     }
+
+    startEmergencySiren();
 
     // Immediately broadcast SOS alert to all squad devices when SOS button is pressed
     const initialCoords =
@@ -193,6 +192,7 @@ export const DistressAlertModal: React.FC<DistressAlertModalProps> = ({
       : detectedLocationLabel;
 
   const handleCancelFalseAlarm = () => {
+    stopEmergencySiren();
     const resolvedGroupId =
       groupId ||
       localStorage.getItem('trailoPS_active_squad_id') ||

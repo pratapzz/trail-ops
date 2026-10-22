@@ -70,7 +70,7 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
   hasJoinedGroup = false,
   activeSquad,
 }) => {
-  const effectiveUserId = currentUserId || localStorage.getItem('trailoPS_currentUserId') || '';
+  const effectiveUserId = currentUserId || localStorage.getItem('trailoPS_currentUserId') || 'user_self';
 
   // Resilient squad resolution across memory, local storage, user-scoped storage, and active trips
   const [resolvedSquad, setResolvedSquad] = useState<SquadGroupRecord | null>(() => {
@@ -136,8 +136,11 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
   }, [effectiveUserId, resolvedSquad?.id]);
 
   const effectiveSquad = resolvedSquad || activeSquad;
-  const effectiveHasJoinedGroup = hasJoinedGroup || Boolean(effectiveSquad?.id);
-  const activeGroupId = effectiveSquad?.id || '';
+  const activeGroupId =
+    effectiveSquad?.id ||
+    localStorage.getItem('trailoPS_active_squad_id') ||
+    (hasJoinedGroup ? 'default' : '');
+  const effectiveHasJoinedGroup = hasJoinedGroup || Boolean(activeGroupId);
 
   const [isPosting, setIsPosting] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -181,7 +184,12 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
 
     const handleNoticeUpdated = (e: Event) => {
       const custom = e as CustomEvent;
-      if (custom.detail?.groupId && custom.detail.groupId !== activeGroupId) {
+      if (
+        custom.detail?.groupId &&
+        custom.detail.groupId !== activeGroupId &&
+        custom.detail.groupId !== 'default' &&
+        activeGroupId !== 'default'
+      ) {
         return; // Strictly ignore notices from other groups
       }
       loadGroupNoticesList();

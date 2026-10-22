@@ -22,6 +22,7 @@ import {
   PieChart,
   CreditCard,
   DollarSign,
+  ChevronLeft,
   ChevronRight,
   Calendar,
   Sparkles,
@@ -55,6 +56,8 @@ import {
   markNotificationRead,
   subscribeToGroupBriefing,
   cancelGroupBriefing,
+  fetchSquadLiveState,
+  updateSquadGroupDetails,
   SquadGroupRecord,
   SquadJoinRequestRecord,
   UserNotificationRecord,
@@ -124,6 +127,7 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isPermissionModalOpen, setIsPermissionModalOpen] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
+  const [showBudgetModal, setShowBudgetModal] = useState(false);
 
   // Code lookup & Join Request state
   const [isVerifyingCode, setIsVerifyingCode] = useState(false);
@@ -154,48 +158,87 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
   useEffect(() => {
     let isMounted = true;
     const loadStats = async () => {
-      // Check live roll call session first
       const squadKey = effectiveSquadId || 'default';
-      const liveSession = localStorage.getItem(`trailoPS_active_rollcall_${squadKey}`);
       let livePresentCount: number | null = null;
+      let liveTotalCount: number | null = null;
+
+      // 1. Check live roll call session in localStorage
+      const liveSession = localStorage.getItem(`trailoPS_active_rollcall_${squadKey}`);
       if (liveSession) {
         try {
           const parsed = JSON.parse(liveSession);
-          if (parsed?.active && Array.isArray(parsed?.presentUserIds)) {
+          if (parsed && Array.isArray(parsed.presentUserIds)) {
             livePresentCount = parsed.presentUserIds.length;
+            if (typeof parsed.totalMembers === 'number' && parsed.totalMembers > 0) {
+              liveTotalCount = parsed.totalMembers;
+            }
           }
         } catch {}
       }
 
+      // 2. Fetch live state & members from server
       if (effectiveSquadId) {
         try {
-          const sbMembers = await fetchSquadMembers(effectiveSquadId);
-          if (isMounted && sbMembers && sbMembers.length > 0) {
-            const present = livePresentCount !== null
-              ? livePresentCount
-              : sbMembers.filter((m) => m.status !== 'distress').length;
-            setSquadMemberStats({ total: sbMembers.length, present });
+          const [liveState, sbMembers] = await Promise.all([
+            fetchSquadLiveState(effectiveSquadId, currentUserId),
+            fetchSquadMembers(effectiveSquadId),
+          ]);
+          if (!isMounted) return;
+
+          if (liveState?.activeRollCall && Array.isArray(liveState.activeRollCall.presentUserIds)) {
+            livePresentCount = liveState.activeRollCall.presentUserIds.length;
+            liveTotalCount = liveState.totalMembers || sbMembers?.length || 1;
+            localStorage.setItem(
+              `trailoPS_active_rollcall_${squadKey}`,
+              JSON.stringify({
+                ...liveState.activeRollCall,
+                totalMembers: liveTotalCount,
+              })
+            );
+          }
+
+          if (sbMembers && sbMembers.length > 0) {
+            const total = sbMembers.length;
+            const present =
+              livePresentCount !== null
+                ? Math.min(total, livePresentCount)
+                : sbMembers.filter(
+                    (m) => m.status === 'active' || (m.status as string) === 'present'
+                  ).length;
+            setSquadMemberStats({ total, present });
+            return;
+          } else if (livePresentCount !== null && liveTotalCount !== null) {
+            setSquadMemberStats({
+              total: liveTotalCount,
+              present: Math.min(liveTotalCount, livePresentCount),
+            });
             return;
           }
         } catch {}
       }
+
       const saved = localStorage.getItem('trailoPS_squad_members');
       if (saved && isMounted) {
         try {
           const parsed = JSON.parse(saved);
           if (Array.isArray(parsed) && parsed.length > 0) {
-            const present = livePresentCount !== null
-              ? livePresentCount
-              : parsed.filter((m: any) => m.status === 'present').length;
-            setSquadMemberStats({ total: parsed.length, present: present || 1 });
+            const total = parsed.length;
+            const present =
+              livePresentCount !== null
+                ? Math.min(total, livePresentCount)
+                : parsed.filter((m: any) => m.status === 'present' || m.status === 'active').length;
+            setSquadMemberStats({ total, present });
             return;
           }
         } catch {}
       }
-      setSquadMemberStats({ total: 1, present: 1 });
+      if (isMounted) {
+        setSquadMemberStats({ total: 1, present: livePresentCount !== null ? livePresentCount : 1 });
+      }
     };
 
     loadStats();
+    const pollInterval = setInterval(loadStats, 2500);
 
     window.addEventListener('storage', loadStats);
     window.addEventListener('trailoPS_members_updated', loadStats);
@@ -203,11 +246,12 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
 
     return () => {
       isMounted = false;
+      clearInterval(pollInterval);
       window.removeEventListener('storage', loadStats);
       window.removeEventListener('trailoPS_members_updated', loadStats);
       window.removeEventListener('trailoPS_rollcall_sync', loadStats);
     };
-  }, [effectiveSquadId, hasJoinedGroup]);
+  }, [effectiveSquadId, hasJoinedGroup, currentUserId]);
 
   // Active Destination and Coordinates set during group creation or passed from parent
   const [activeDestination, setActiveDestination] = useState<{
@@ -218,9 +262,28 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
     coordinates: destinationCoordinates,
   });
 
-  // Active Departure Date with inline editing capability
-  const [activeDepartureDate, setActiveDepartureDate] = useState<string>(departureDate || '2026-10-24');
+  // Active Departure Date with stable draft editing capability
+  const [activeDepartureDate, setActiveDepartureDate] = useState<string>(() => {
+    const squadKey = effectiveSquadId || 'default';
+    const savedCustom =
+      localStorage.getItem(`trailoPS_departure_date_${squadKey}`) ||
+      localStorage.getItem('trailoPS_departure_date_default');
+    return (
+      savedCustom ||
+      activeSquad?.start_date ||
+      activeSquad?.startDate ||
+      departureDate ||
+      '2026-10-24'
+    );
+  });
+  const [draftDepartureDate, setDraftDepartureDate] = useState<string>(activeDepartureDate);
   const [isEditingDepartureDate, setIsEditingDepartureDate] = useState(false);
+  const [calendarMonthYear, setCalendarMonthYear] = useState<{ year: number; month: number }>(() => {
+    const parts = (activeDepartureDate || '2026-10-24').split('-');
+    const y = Number(parts[0]) || new Date().getFullYear();
+    const m = (Number(parts[1]) || new Date().getMonth() + 1) - 1;
+    return { year: y, month: m };
+  });
 
   useEffect(() => {
     if (activeSquad?.destination) {
@@ -237,10 +300,21 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
   }, [activeSquad?.destination, destinationName, destinationCoordinates?.lat, destinationCoordinates?.lng]);
 
   useEffect(() => {
-    if (departureDate) {
-      setActiveDepartureDate(departureDate);
+    if (isEditingDepartureDate) return;
+    const squadKey = effectiveSquadId || 'default';
+    const savedCustom =
+      localStorage.getItem(`trailoPS_departure_date_${squadKey}`) ||
+      localStorage.getItem('trailoPS_departure_date_default');
+    const nextDate =
+      savedCustom ||
+      activeSquad?.start_date ||
+      activeSquad?.startDate ||
+      departureDate;
+    if (nextDate && nextDate !== activeDepartureDate) {
+      setActiveDepartureDate(nextDate);
+      setDraftDepartureDate(nextDate);
     }
-  }, [departureDate]);
+  }, [effectiveSquadId, activeSquad?.start_date, activeSquad?.startDate, departureDate, isEditingDepartureDate]);
 
   const isSuperAdminOrAdmin =
     userRole === 'super_admin' ||
@@ -602,8 +676,24 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
             </span>
           </div>
 
-          {/* Right Actions: Notifications Bell, Online Pill & Avatar */}
+          {/* Right Actions: Individual Budget Icon, Notifications Bell, Online Pill & Avatar */}
           <div className="flex items-center gap-2.5">
+            {/* Individual Trip Budget Icon Button */}
+            <button
+              type="button"
+              onClick={() => setShowBudgetModal(true)}
+              className="w-9 h-9 rounded-full bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200/80 flex items-center justify-center transition-colors relative cursor-pointer shadow-2xs"
+              title="Individual Trip Budget"
+              aria-label="Open Individual Trip Budget"
+            >
+              <CreditCard className="w-4 h-4" />
+              <span
+                className={`absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-white ${
+                  amountPending === 0 ? 'bg-emerald-500' : 'bg-amber-500'
+                }`}
+              />
+            </button>
+
             {/* Notification Bell Icon */}
             <div className="relative">
               <button
@@ -803,48 +893,213 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
                     <span>Trip Countdown</span>
                   </span>
                   
-                  {/* Edit Date Action Button */}
+                  {/* Edit Date Action Button with Calendar Icon */}
                   <button
                     type="button"
-                    onClick={() => setIsEditingDepartureDate(!isEditingDepartureDate)}
-                    className="flex items-center gap-1 px-2 py-0.5 rounded-lg bg-white/15 hover:bg-white/25 text-amber-200 text-[10px] font-bold cursor-pointer transition-colors"
-                    title="Change departure date"
+                    onClick={() => {
+                      if (!isEditingDepartureDate) {
+                        const baseDate = activeDepartureDate || '2026-10-24';
+                        setDraftDepartureDate(baseDate);
+                        const parts = baseDate.split('-');
+                        const y = Number(parts[0]) || new Date().getFullYear();
+                        const m = (Number(parts[1]) || new Date().getMonth() + 1) - 1;
+                        setCalendarMonthYear({ year: y, month: m });
+                      }
+                      setIsEditingDepartureDate(!isEditingDepartureDate);
+                    }}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/15 hover:bg-white/25 border border-amber-300/30 text-amber-200 text-[10px] font-bold cursor-pointer transition-colors"
+                    title="Change departure date via calendar"
                   >
-                    <Edit3 className="w-2.5 h-2.5" />
-                    <span>{isEditingDepartureDate ? 'Done' : 'Change Date'}</span>
+                    <Calendar className="w-3 h-3 text-amber-300" />
+                    <span>{isEditingDepartureDate ? 'Close Calendar' : 'Change Date'}</span>
                   </button>
                 </div>
 
-                {/* Inline Date Selector when editing */}
+                {/* Interactive Visual Calendar Picker when editing */}
                 {isEditingDepartureDate ? (
-                  <div className="p-2.5 rounded-xl bg-white/10 border border-white/20 space-y-1.5 animate-in fade-in duration-150">
-                    <div className="flex items-center justify-between text-[11px] text-slate-200">
-                      <span className="font-semibold">Select Departure Date:</span>
-                      <span className="font-mono text-emerald-300 font-bold">{activeDepartureDate}</span>
-                    </div>
-                    <input
-                      type="date"
-                      value={activeDepartureDate}
-                      onChange={(e) => {
-                        const newDate = e.target.value;
-                        if (!newDate) return;
-                        setActiveDepartureDate(newDate);
-                        if (onUpdateTripDestination) {
-                          onUpdateTripDestination({
-                            name: activeDestination.name ? activeDestination.name.split('(')[0].trim() : 'Squad Expedition',
-                            destination: activeDestination.name,
-                            coordinates: activeDestination.coordinates,
-                            budgetPerMember: tripBudget,
-                            departureDate: newDate,
-                            returnDate: '2026-10-30',
+                  <div className="p-3 rounded-2xl bg-slate-900/95 border border-emerald-400/40 shadow-xl space-y-3 animate-in fade-in duration-150">
+                    {/* Calendar Month/Year Navigation Header */}
+                    <div className="flex items-center justify-between border-b border-white/10 pb-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCalendarMonthYear((prev) => {
+                            if (prev.month === 0) {
+                              return { year: prev.year - 1, month: 11 };
+                            }
+                            return { year: prev.year, month: prev.month - 1 };
                           });
+                        }}
+                        className="w-7 h-7 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center text-white cursor-pointer transition-colors"
+                        title="Previous Month"
+                      >
+                        <ChevronLeft className="w-4 h-4" />
+                      </button>
+
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs font-extrabold text-amber-300 tracking-wide">
+                          {[
+                            'January',
+                            'February',
+                            'March',
+                            'April',
+                            'May',
+                            'June',
+                            'July',
+                            'August',
+                            'September',
+                            'October',
+                            'November',
+                            'December',
+                          ][calendarMonthYear.month]}{' '}
+                          {calendarMonthYear.year}
+                        </span>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCalendarMonthYear((prev) => {
+                            if (prev.month === 11) {
+                              return { year: prev.year + 1, month: 0 };
+                            }
+                            return { year: prev.year, month: prev.month + 1 };
+                          });
+                        }}
+                        className="w-7 h-7 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center text-white cursor-pointer transition-colors"
+                        title="Next Month"
+                      >
+                        <ChevronRight className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    {/* Weekday Headers */}
+                    <div className="grid grid-cols-7 gap-1 text-center">
+                      {['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'].map((dayLabel) => (
+                        <div
+                          key={dayLabel}
+                          className="text-[10px] font-bold text-slate-400 uppercase py-0.5"
+                        >
+                          {dayLabel}
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Calendar Days Grid */}
+                    <div className="grid grid-cols-7 gap-1 text-center">
+                      {(() => {
+                        const firstDayOfWeek = new Date(
+                          calendarMonthYear.year,
+                          calendarMonthYear.month,
+                          1
+                        ).getDay();
+                        const daysInMonth = new Date(
+                          calendarMonthYear.year,
+                          calendarMonthYear.month + 1,
+                          0
+                        ).getDate();
+
+                        const cells: React.ReactNode[] = [];
+                        for (let i = 0; i < firstDayOfWeek; i++) {
+                          cells.push(<div key={`empty-${i}`} className="h-7" />);
                         }
-                        if (onShowToast) {
-                          onShowToast(`Expedition departure date updated to ${newDate}! Countdown adjusted.`);
+
+                        const todayNow = new Date();
+                        const todayStr = `${todayNow.getFullYear()}-${String(
+                          todayNow.getMonth() + 1
+                        ).padStart(2, '0')}-${String(todayNow.getDate()).padStart(2, '0')}`;
+
+                        for (let d = 1; d <= daysInMonth; d++) {
+                          const dateStr = `${calendarMonthYear.year}-${String(
+                            calendarMonthYear.month + 1
+                          ).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+                          const isSelected = draftDepartureDate === dateStr;
+                          const isToday = todayStr === dateStr;
+
+                          cells.push(
+                            <button
+                              key={dateStr}
+                              type="button"
+                              onClick={() => setDraftDepartureDate(dateStr)}
+                              className={`h-7 rounded-lg text-[11px] font-bold flex items-center justify-center cursor-pointer transition-all ${
+                                isSelected
+                                  ? 'bg-emerald-500 text-slate-950 font-black ring-2 ring-amber-300 shadow-md scale-105'
+                                  : isToday
+                                  ? 'bg-amber-400/25 text-amber-300 border border-amber-300/50 hover:bg-amber-400/40'
+                                  : 'bg-white/5 text-white hover:bg-white/20'
+                              }`}
+                            >
+                              {d}
+                            </button>
+                          );
                         }
-                      }}
-                      className="w-full px-2.5 py-1.5 rounded-lg bg-slate-900 border border-emerald-400 text-white text-xs font-bold outline-none cursor-pointer"
-                    />
+                        return cells;
+                      })()}
+                    </div>
+
+                    {/* Selected Date Summary + Save Action */}
+                    <div className="flex items-center justify-between pt-2 border-t border-white/10 gap-2">
+                      <div className="text-[11px] text-slate-300">
+                        Selected:{' '}
+                        <span className="font-mono font-black text-emerald-300">
+                          {draftDepartureDate}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setIsEditingDepartureDate(false)}
+                          className="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-slate-200 text-[11px] font-bold cursor-pointer transition-colors"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            if (!draftDepartureDate) return;
+                            const squadKey = effectiveSquadId || 'default';
+                            setActiveDepartureDate(draftDepartureDate);
+                            setIsEditingDepartureDate(false);
+                            localStorage.setItem(
+                              `trailoPS_departure_date_${squadKey}`,
+                              draftDepartureDate
+                            );
+                            localStorage.setItem(
+                              'trailoPS_departure_date_default',
+                              draftDepartureDate
+                            );
+                            if (effectiveSquadId) {
+                              updateSquadGroupDetails(effectiveSquadId, {
+                                startDate: draftDepartureDate,
+                                userId: currentUserId,
+                              }).catch(() => {});
+                            }
+                            if (onUpdateTripDestination) {
+                              onUpdateTripDestination({
+                                name:
+                                  activeSquad?.name ||
+                                  (activeDestination.name
+                                    ? activeDestination.name.split('(')[0].trim()
+                                    : 'Squad Expedition'),
+                                destination: activeDestination.name,
+                                coordinates: activeDestination.coordinates,
+                                budgetPerMember: tripBudget,
+                                departureDate: draftDepartureDate,
+                                returnDate: '2026-10-30',
+                              });
+                            }
+                            if (onShowToast) {
+                              onShowToast(
+                                `✓ Departure date saved (${draftDepartureDate})! Countdown updated.`
+                              );
+                            }
+                          }}
+                          className="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-black cursor-pointer transition-colors shrink-0 shadow-md"
+                        >
+                          Save Date
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 ) : (
                   <div className="flex items-center justify-between text-[10px] text-slate-300 font-medium px-0.5">
@@ -971,68 +1226,6 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
                 setActiveDestination({ name, coordinates: coords });
               }}
             />
-
-            {/* USER TRIP BUDGET & PAYMENT PROGRESS BAR ON HOME PAGE */}
-            <div className="bg-white rounded-3xl p-4 border-2 border-emerald-500/25 shadow-xs space-y-3">
-              <div className="flex items-center justify-between">
-                <div>
-                  <span className="text-[10px] font-extrabold text-emerald-700 uppercase tracking-wider">
-                    Your Individual Trip Budget
-                  </span>
-                  <h4 className="text-base font-extrabold text-slate-900">
-                    Total Quota: ₹{tripBudget.toLocaleString()}
-                  </h4>
-                </div>
-
-                <div className="text-right">
-                  <span
-                    className={`text-xs font-black px-2.5 py-0.5 rounded-full ${
-                      amountPending === 0
-                        ? 'bg-emerald-100 text-emerald-900'
-                        : 'bg-amber-100 text-amber-900 border border-amber-300'
-                    }`}
-                  >
-                    {amountPending === 0 ? '✓ Paid in Full' : `₹${amountPending.toLocaleString()} Pending`}
-                  </span>
-                </div>
-              </div>
-
-              {/* Dual-Color Amount Bar */}
-              <div className="space-y-1.5">
-                <div className="flex justify-between text-xs font-semibold">
-                  <span className="text-emerald-800 flex items-center gap-1">
-                    <span className="w-2 h-2 rounded-full bg-emerald-500" />
-                    Paid: ₹{amountPaid.toLocaleString()} ({paidPercent}%)
-                  </span>
-                  <span className="text-amber-700 flex items-center gap-1">
-                    <span className="w-2 h-2 rounded-full bg-amber-500" />
-                    Pending: ₹{amountPending.toLocaleString()}
-                  </span>
-                </div>
-
-                <div className="w-full h-3 rounded-full bg-slate-100 border border-slate-200 overflow-hidden flex">
-                  <div
-                    className="bg-gradient-to-r from-emerald-600 to-[#0f5238] h-full transition-all duration-700"
-                    style={{ width: `${paidPercent}%` }}
-                  />
-                  <div
-                    className="bg-gradient-to-r from-amber-400 to-amber-500 h-full transition-all duration-700"
-                    style={{ width: `${100 - paidPercent}%` }}
-                  />
-                </div>
-              </div>
-
-              {/* Quick Launch Splitwise from Home */}
-              <button
-                type="button"
-                onClick={onOpenSplitwise}
-                className="w-full py-2.5 rounded-xl bg-slate-50 hover:bg-emerald-50 border border-slate-200 hover:border-emerald-300 text-xs font-bold text-slate-800 flex items-center justify-center gap-1.5 transition-all cursor-pointer"
-              >
-                <PieChart className="w-3.5 h-3.5 text-emerald-700" />
-                <span>Open Splitwise Ledger &amp; Settle Balance</span>
-                <ChevronRight className="w-3.5 h-3.5 text-slate-400 ml-0.5" />
-              </button>
-            </div>
 
             {/* DUAL ACTION SHORTCUTS: FACULTY DRIVE & SQUAD SPLITWISE */}
             <div className="grid grid-cols-2 gap-3">
@@ -1561,6 +1754,96 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
         currentUserName={userName}
         currentUserRole={userRole}
       />
+
+      {/* Individual Trip Budget Popup Modal */}
+      {showBudgetModal && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
+          onClick={() => setShowBudgetModal(false)}
+        >
+          <div
+            className="w-full max-w-sm bg-white rounded-3xl p-5 border-2 border-emerald-500/30 shadow-2xl space-y-4 animate-in zoom-in-95 duration-150"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-emerald-100 text-emerald-800 flex items-center justify-center">
+                  <CreditCard className="w-5 h-5" />
+                </div>
+                <div>
+                  <span className="text-[10px] font-extrabold text-emerald-700 uppercase tracking-wider block">
+                    Your Individual Trip Budget
+                  </span>
+                  <h4 className="text-base font-extrabold text-slate-900">
+                    Total Quota: ₹{tripBudget.toLocaleString()}
+                  </h4>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowBudgetModal(false)}
+                className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500 flex items-center justify-center cursor-pointer transition-colors"
+                aria-label="Close budget modal"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between bg-slate-50 rounded-2xl p-3 border border-slate-200/80">
+              <span className="text-xs font-bold text-slate-600">Payment Status</span>
+              <span
+                className={`text-xs font-black px-2.5 py-0.5 rounded-full ${
+                  amountPending === 0
+                    ? 'bg-emerald-100 text-emerald-900'
+                    : 'bg-amber-100 text-amber-900 border border-amber-300'
+                }`}
+              >
+                {amountPending === 0 ? '✓ Paid in Full' : `₹${amountPending.toLocaleString()} Pending`}
+              </span>
+            </div>
+
+            {/* Dual-Color Amount Bar */}
+            <div className="space-y-2">
+              <div className="flex justify-between text-xs font-semibold">
+                <span className="text-emerald-800 flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
+                  Paid: ₹{amountPaid.toLocaleString()} ({paidPercent}%)
+                </span>
+                <span className="text-amber-700 flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-full bg-amber-500" />
+                  Pending: ₹{amountPending.toLocaleString()}
+                </span>
+              </div>
+
+              <div className="w-full h-3.5 rounded-full bg-slate-100 border border-slate-200 overflow-hidden flex shadow-inner">
+                <div
+                  className="bg-gradient-to-r from-emerald-600 to-[#0f5238] h-full transition-all duration-700"
+                  style={{ width: `${paidPercent}%` }}
+                />
+                <div
+                  className="bg-gradient-to-r from-amber-400 to-amber-500 h-full transition-all duration-700"
+                  style={{ width: `${100 - paidPercent}%` }}
+                />
+              </div>
+            </div>
+
+            {/* Quick Launch Splitwise from Modal */}
+            <button
+              type="button"
+              onClick={() => {
+                setShowBudgetModal(false);
+                onOpenSplitwise?.();
+              }}
+              className="w-full py-3 rounded-xl bg-emerald-900 hover:bg-emerald-800 text-white text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-sm"
+            >
+              <PieChart className="w-4 h-4 text-emerald-300" />
+              <span>Open Splitwise Ledger &amp; Settle Balance</span>
+              <ChevronRight className="w-4 h-4 text-emerald-300 ml-0.5" />
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

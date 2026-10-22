@@ -1,15 +1,26 @@
 {
-  "profiles": {},
+  "profiles": {
+    "2d499a31-5705-4497-a259-2a545e132997": {
+      "id": "2d499a31-5705-4497-a259-2a545e132997",
+      "email": "pratappaul450@gmail.com",
+      "full_name": "PRATAP PAUL",
+      "avatar_url": "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=200&q=80",
+      "is_profile_complete": true,
+      "created_at": "2026-10-22T10:50:29.959Z",
+      "updated_at": "2026-10-22T10:50:29.959Z"
+    }
+  },
   "squad_groups": {
     "6c67e54e-90ca-4b49-a8c4-91e9e64a1e8d": {
       "id": "6c67e54e-90ca-4b49-a8c4-91e9e64a1e8d",
-      "name": "hi",
+      "name": "Pelling High Camp",
       "code": "TRM7HS",
-      "destination": "jk",
+      "destination": "Pelling Sikkim",
       "start_date": "2026-10-24",
       "end_date": "2026-10-30",
       "created_by": "2d499a31-5705-4497-a259-2a545e132997",
-      "created_at": "2026-10-21T09:06:24.816Z"
+      "created_at": "2026-10-21T09:06:24.816Z",
+      "budget": 7500
     }
   },
   "squad_members": [
@@ -24,20 +35,14 @@
   ],
   "squad_join_requests": [],
   "user_notifications": [],
-  "squad_notices": [
-    {
-      "id": "notice_87361747-cee2-42b3-8644-18abbf4d3078",
-      "group_id": "default",
-      "title": "Squad Dusk Briefing",
-      "text": "Squad Dusk Briefing is scheduled for 07:42 AM (15 min remaining). All members please prepare and assemble.",
-      "priority": "info",
-      "author_id": "user_self",
-      "author_name": "Squad Command",
-      "author_role": "Super Admin",
-      "author_avatar": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=150&q=80",
-      "created_at": "2026-10-21T07:27:48.194Z"
-    }
-  ],
+  "squad_notices": [],
   "squad_media_vault": [],
-  "squad_briefings": {}
+  "squad_faculty_drive": [],
+  "squad_briefings": {},
+  "squad_checklists": {},
+  "squad_rollcalls": {},
+  "squad_sos_alarms": {},
+  "squad_subgroups": {},
+  "squad_missing_items": {},
+  "squad_expenses": {}
 }

@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" name="viewport"/>
+<title>TRAILOPS - Your Privacy Matters</title>
+<!-- Google Fonts: Plus Jakarta Sans & Bodoni Moda / Playfair for elegant serif typography -->
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Bodoni+Moda:ital,opsz,wght@0,6..96,400..700;1,6..96,400..700&amp;family=Plus+Jakarta+Sans:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet"/>
+<!-- Tailwind CSS v3 CDN with forms and container queries -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            serif: ['"Bodoni Moda"', 'Georgia', 'serif'],
+            sans: ['"Plus Jakarta Sans"', '-apple-system', 'BlinkMacSystemFont', 'sans-serif'],
+          },
+          colors: {
+            brand: {
+              blue: '#3b66f5',
+              indigo: '#2e4ce6',
+              dark: '#141a29',
+              muted: '#64748b',
+            }
+          },
+          boxShadow: {
+            'card-float': '0 20px 45px -10px rgba(186, 73, 142, 0.18), 0 8px 24px -6px rgba(0, 0, 0, 0.08)',
+            'btn-vibrant': '0 10px 22px -4px rgba(59, 102, 245, 0.45)',
+          }
+        }
+      }
+    }
+  </script>
+<style>
+    body {
+      font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    /* Smooth custom scrollbar inside card */
+    .custom-scrollbar::-webkit-scrollbar {
+      width: 4px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb {
+      background: rgba(148, 163, 184, 0.3);
+      border-radius: 9999px;
+    }
+  </style>
+</head>
+<body class="flex items-center justify-center min-h-screen p-0 sm:p-5 bg-slate-900/10">
+<!-- BEGIN: Mobile Device Frame with Vibrant Sunset / Rose-Purple Backdrop -->
+<main class="w-full max-w-[412px] h-[874px] relative overflow-hidden flex flex-col justify-between shadow-2xl sm:rounded-[44px] border-0 sm:border-[8px] sm:border-slate-800/80 bg-gradient-to-br from-[#f8a8b8] via-[#e577aa] to-[#d64a93]">
+<!-- Decorative Organic Wave / Liquid Ribbon Behind the Card (matching reference style) -->
+<div class="absolute inset-0 pointer-events-none overflow-hidden z-0">
+<!-- Soft ambient glows -->
+<div class="absolute -top-16 -left-16 w-80 h-80 rounded-full bg-[#fdd0c7] opacity-60 blur-3xl"></div>
+<div class="absolute top-1/3 -right-20 w-72 h-80 rounded-full bg-[#d8b4fe] opacity-50 blur-2xl"></div>
+<div class="absolute bottom-4 left-1/4 w-80 h-64 rounded-full bg-[#fa86be] opacity-50 blur-2xl"></div>
+<!-- Flowing S-curve Organic Shape Banner in purple-tinted soft violet -->
+<svg class="absolute top-[12%] -left-12 w-[520px] h-[340px] opacity-45 transform rotate-[-8deg]" fill="none" viewbox="0 0 500 300" xmlns="http://www.w3.org/2000/svg">
+<path d="M-40,110 C80,30 200,220 330,120 C420,50 490,140 540,160 L540,290 C470,270 380,210 280,260 C150,320 60,190 -40,240 Z" fill="url(#violetWave)"></path>
+<defs>
+<lineargradient id="violetWave" x1="0%" x2="100%" y1="0%" y2="100%">
+<stop offset="0%" stop-color="#ffffff" stop-opacity="0.85"></stop>
+<stop offset="50%" stop-color="#dfd0fb" stop-opacity="0.7"></stop>
+<stop offset="100%" stop-color="#d4b5f9" stop-opacity="0.55"></stop>
+</lineargradient>
+</defs>
+</svg>
+</div>
+<!-- Top Status Bar Area Spacer -->
+<div class="h-6 w-full shrink-0 z-10"></div>
+<!-- BEGIN: Floating Card Container (Clean White Floating Container as in reference) -->
+<div class="relative z-10 mx-3.5 mb-4 flex-1 flex flex-col bg-white rounded-[32px] shadow-card-float overflow-hidden border border-white/80">
+<!-- BEGIN: Card Header (Logo + Brand + Back action) -->
+<header class="px-5 pt-5 pb-3 flex items-center justify-between shrink-0 border-b border-slate-100/70" data-purpose="app-header">
+<!-- Logo & Title -->
+<div class="flex items-center gap-2.5">
+<div class="w-9 h-9 rounded-xl overflow-hidden shadow-sm flex items-center justify-center bg-white border border-slate-100">
+<img alt="TrailOps Expedition OS Logo" class="w-full h-full object-cover" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDoOkdufNQ_DUu2V-PxkdtGDSq1PXuvkv_0p1vFU4_nKvhP1enpI5Nk1nw_8mrz-Sb86Pt5lv9A3HVq5DCK6KW8V20HJddzyfFl5XbpsY3hCnTamea_hvx1s8csePi5DaMd4UUFVLJwJEjzJgUA8cDRsjd0gcLF87BgoN7-g4yjfZ6-1LQBbSwhAia7tvdwjnvlkccBjfrfLHFWWjvR9BoqbgT7fDE4KyGBDeqxNn0G8IUW_aJ27bUtZyl9Y3WBseEWR7o"/>
+</div>
+<div class="flex flex-col">
+<span class="text-[14.5px] font-extrabold tracking-wider text-slate-900 leading-none">TRAILOPS</span>
+<span class="text-[8.5px] font-bold tracking-[0.18em] text-[#3b66f5] uppercase mt-0.5">Expedition OS</span>
+</div>
+</div>
+<!-- Back Action Link -->
+<button aria-label="Go back to previous screen" class="flex items-center gap-1 text-[11.5px] font-bold uppercase tracking-wider text-slate-400 hover:text-slate-700 transition-colors py-1 px-1.5 rounded-lg active:bg-slate-100" type="button">
+<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewbox="0 0 24 24">
+<path d="M15 19l-7-7 7-7" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+<span>Back</span>
+</button>
+</header>
+<!-- END: Card Header -->
+<!-- BEGIN: Scrollable Content Body -->
+<div class="px-5 py-4 overflow-y-auto custom-scrollbar flex-1 flex flex-col gap-4" data-purpose="scrollable-content">
+<!-- Title & Subtitle in Bodoni Moda serif style -->
+<div class="text-left pt-1">
+<h1 class="font-serif text-[27px] font-medium text-slate-900 tracking-tight leading-[1.2]">
+            Your Privacy Matters
+          </h1>
+<p class="text-[13px] text-slate-500 mt-1.5 leading-relaxed font-normal">
+            We are committed to keeping your data safe, secure and transparent.
+          </p>
+</div>
+<!-- Security Features Itemized Group -->
+<div class="bg-slate-50/80 rounded-2xl p-3.5 border border-slate-100/90 flex flex-col gap-3.5" data-purpose="privacy-features-container">
+<!-- Item 1: Secure Authentication -->
+<div class="flex items-start gap-3">
+<div class="w-8 h-8 rounded-xl bg-blue-50 text-[#3b66f5] flex items-center justify-center shrink-0 mt-0.5 shadow-sm">
+<svg class="w-4 h-4" fill="currentColor" viewbox="0 0 24 24">
+<path clip-rule="evenodd" d="M12 1.5a5.25 5.25 0 00-5.25 5.25v3a3 3 0 00-3 3v6.75a3 3 0 003 3h10.5a3 3 0 003-3v-6.75a3 3 0 00-3-3v-3c0-2.9-2.35-5.25-5.25-5.25zm3.75 8.25v-3a3.75 3.75 0 00-7.5 0v3h7.5zM12 14.25a1.5 1.5 0 100 3 1.5 1.5 0 000-3z" fill-rule="evenodd"></path>
+</svg>
+</div>
+<div>
+<h2 class="text-[12.5px] font-bold text-slate-800 leading-tight">Secure Authentication</h2>
+<p class="text-[11.5px] text-slate-500 leading-[16px] mt-0.5">
+                We use Supabase Authentication (secure OAuth with Google) to keep your account safe.
+              </p>
+</div>
+</div>
+<!-- Item 2: Secure Database -->
+<div class="flex items-start gap-3">
+<div class="w-8 h-8 rounded-xl bg-indigo-50 text-[#4965ea] flex items-center justify-center shrink-0 mt-0.5 shadow-sm">
+<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.1" viewbox="0 0 24 24">
+<ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
+<path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
+<path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
+</svg>
+</div>
+<div>
+<h2 class="text-[12.5px] font-bold text-slate-800 leading-tight">Secure Database</h2>
+<p class="text-[11.5px] text-slate-500 leading-[16px] mt-0.5">
+                All your data is stored in Supabase with encrypted connections and row level security (RLS).
+              </p>
+</div>
+</div>
+<!-- Item 3: We Only Use What's Needed -->
+<div class="flex items-start gap-3">
+<div class="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0 mt-0.5 shadow-sm">
+<svg class="w-4 h-4" fill="currentColor" viewbox="0 0 24 24">
+<path clip-rule="evenodd" d="M12.516 2.17a.75.75 0 00-1.032 0 11.209 11.209 0 01-7.877 3.08.75.75 0 00-.722.515A12.74 12.74 0 002.25 9.75c0 5.942 4.064 10.933 9.563 12.348a.749.749 0 00.374 0c5.499-1.415 9.563-6.406 9.563-12.348 0-1.39-.223-2.73-.635-3.985a.75.75 0 00-.722-.516l-.143.001c-2.996 0-5.728-1.17-7.734-3.08zm3.094 8.01a.75.75 0 10-1.22-.872l-3.236 4.53L9.53 12.22a.75.75 0 00-1.06 1.06l2.25 2.25a.75.75 0 001.14-.094l3.75-5.256z" fill-rule="evenodd"></path>
+</svg>
+</div>
+<div>
+<h2 class="text-[12.5px] font-bold text-slate-800 leading-tight">We Only Use What's Needed</h2>
+<p class="text-[11.5px] text-slate-500 leading-[16px] mt-0.5">
+                We collect only the information required to provide app features like trip management, expenses, documents and safety tools.
+              </p>
+</div>
+</div>
+<!-- Item 4: We Do Not Share Your Data -->
+<div class="flex items-start gap-3">
+<div class="w-8 h-8 rounded-xl bg-violet-50 text-violet-600 flex items-center justify-center shrink-0 mt-0.5 shadow-sm">
+<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" viewbox="0 0 24 24">
+<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
+<line x1="1" x2="23" y1="1" y2="23"></line>
+</svg>
+</div>
+<div>
+<h2 class="text-[12.5px] font-bold text-slate-800 leading-tight">We Do Not Share Your Data</h2>
+<p class="text-[11.5px] text-slate-500 leading-[16px] mt-0.5">
+                Your personal data is never sold to third parties.
+              </p>
+</div>
+</div>
+</div>
+<!-- Links Section: Policy & Terms in sleek row cards -->
+<div class="flex flex-col gap-2 pt-0.5">
+<a class="flex items-center justify-between px-3.5 py-2.5 bg-slate-50/70 hover:bg-slate-100/80 rounded-xl border border-slate-200/60 transition-colors group" href="#privacy-policy">
+<div class="flex items-center gap-2.5">
+<svg class="w-4 h-4 text-[#3b66f5]" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24">
+<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+<polyline points="14 2 14 8 20 8"></polyline>
+<line x1="16" x2="8" y1="13" y2="13"></line>
+<line x1="16" x2="8" y1="17" y2="17"></line>
+</svg>
+<span class="text-[12px] font-semibold text-slate-800">Read Privacy Policy</span>
+</div>
+<svg class="w-3.5 h-3.5 text-slate-400 group-hover:translate-x-0.5 transition-transform" fill="none" stroke="currentColor" stroke-width="2.2" viewbox="0 0 24 24">
+<path d="M9 5l7 7-7 7" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+</a>
+<a class="flex items-center justify-between px-3.5 py-2.5 bg-slate-50/70 hover:bg-slate-100/80 rounded-xl border border-slate-200/60 transition-colors group" href="#terms-and-conditions">
+<div class="flex items-center gap-2.5">
+<svg class="w-4 h-4 text-[#3b66f5]" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24">
+<path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+</svg>
+<span class="text-[12px] font-semibold text-slate-800">Terms &amp; Conditions</span>
+</div>
+<svg class="w-3.5 h-3.5 text-slate-400 group-hover:translate-x-0.5 transition-transform" fill="none" stroke="currentColor" stroke-width="2.2" viewbox="0 0 24 24">
+<path d="M9 5l7 7-7 7" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+</a>
+</div>
+</div>
+<!-- END: Scrollable Content Body -->
+<!-- BEGIN: Bottom Action Area (Matching Inspiration: Diamond/Dot Pagination + Vibrant Blue CTA Button) -->
+<footer class="px-5 py-4 bg-white border-t border-slate-100 flex items-center justify-between gap-3 shrink-0" data-purpose="screen-footer-actions">
+<!-- Pagination: Diamond & Dot Indicator matching reference (step 3 active) -->
+<div aria-label="Step 3 of 3" class="flex items-center gap-2" data-purpose="step-indicator">
+<div class="flex items-center gap-1.5">
+<!-- Step 1 (unfilled diamond) -->
+<span class="w-2 h-2 rotate-45 border border-slate-300 inline-block"></span>
+<!-- Step 2 (unfilled diamond) -->
+<span class="w-2 h-2 rotate-45 border border-slate-300 inline-block"></span>
+<!-- Step 3 (solid accent diamond) -->
+<span class="w-2.5 h-2.5 rotate-45 bg-[#3b66f5] inline-block shadow-sm"></span>
+</div>
+<span class="text-[11px] font-semibold text-slate-400 tracking-tight ml-0.5">3 / 3</span>
+</div>
+<!-- Primary CTA Button matching GET STARTED button style from reference -->
+<button class="h-11 px-6 bg-[#3b66f5] hover:bg-[#2f55db] active:scale-[0.98] transition-all rounded-xl text-white font-bold text-[12px] tracking-wider uppercase flex items-center justify-center gap-1.5 shadow-btn-vibrant" data-purpose="accept-terms-btn" type="button">
+<span>I Agree &amp; Get Started</span>
+<svg class="w-4 h-4 text-white shrink-0" fill="none" stroke="currentColor" stroke-width="2.4" viewbox="0 0 24 24">
+<path d="M14 5l7 7m0 0l-7 7m7-7H3" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+</button>
+</footer>
+<!-- END: Bottom Action Area -->
+</div>
+<!-- END: Floating Card Container -->
+</main>
+<!-- END: Mobile Device Frame -->
+</body></html>
