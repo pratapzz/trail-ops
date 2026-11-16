@@ -134,7 +134,7 @@ BEGIN
   WHERE group_id = p_group_id AND user_id = auth.uid()
   FOR UPDATE;
 
-  IF v_caller_role != 'super_admin' THEN
+  IF v_caller_role IS DISTINCT FROM 'super_admin' THEN
     RAISE EXCEPTION 'Access Denied: Only an authorized Super Admin can change member roles.';
   END IF;
 
@@ -198,7 +198,7 @@ BEGIN
   WHERE group_id = p_group_id AND user_id = auth.uid()
   FOR UPDATE;
 
-  IF v_caller_role != 'super_admin' THEN
+  IF v_caller_role IS DISTINCT FROM 'super_admin' THEN
     RAISE EXCEPTION 'Access Denied: Only a Super Admin can transfer squad leadership.';
   END IF;
 
@@ -257,7 +257,7 @@ BEGIN
   FROM public.squad_members
   WHERE group_id = p_group_id AND user_id = auth.uid();
 
-  IF v_caller_role != 'super_admin' THEN
+  IF v_caller_role IS DISTINCT FROM 'super_admin' THEN
     RAISE EXCEPTION 'Access Denied: Only an authorized Super Admin can permanently delete the squad group.';
   END IF;
 
@@ -279,47 +279,18 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
--- 7. RPC: recover_group_super_admin (Emergency Platform Recovery)
-CREATE OR REPLACE FUNCTION public.recover_group_super_admin(
-  p_group_id UUID,
-  p_new_admin_user_id UUID,
-  p_recovery_key TEXT
-)
-RETURNS JSONB AS $$
-DECLARE
-  v_current_super_admins INTEGER;
-BEGIN
-  -- Verify master recovery key
-  IF p_recovery_key != 'TRAIL-OPS-MASTER-2026' THEN
-    RAISE EXCEPTION 'Invalid platform recovery authorization key.';
-  END IF;
+-- 7. (Removed) recover_group_super_admin used a recovery key hard-coded in this file and in the
+--    app, so anyone could promote themselves. Use transfer_and_leave_squad from the current
+--    Super Admin instead.
+DROP FUNCTION IF EXISTS public.recover_group_super_admin(uuid, uuid, text);
 
-  -- Check current super admins count
-  SELECT COUNT(*) INTO v_current_super_admins
-  FROM public.squad_members
-  WHERE group_id = p_group_id AND role = 'super_admin';
-
-  IF v_current_super_admins > 0 THEN
-    RAISE EXCEPTION 'Squad already has active Super Admins. Recovery is only permitted for squads with zero Super Admins.';
-  END IF;
-
-  -- Promote specified user or insert if not present
-  UPDATE public.squad_members
-  SET role = 'super_admin'
-  WHERE group_id = p_group_id AND user_id = p_new_admin_user_id;
-
-  -- Record recovery in audit log
-  INSERT INTO public.squad_audit_logs (group_id, actor_id, action, details)
-  VALUES (
-    p_group_id,
-    auth.uid(),
-    'EMERGENCY_RECOVERY',
-    jsonb_build_object('restored_admin_user_id', p_new_admin_user_id)
-  );
-
-  RETURN jsonb_build_object('success', true);
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+-- 8. These functions act on behalf of auth.uid(); never callable without a login.
+REVOKE EXECUTE ON FUNCTION public.manage_member_role FROM anon, public;
+REVOKE EXECUTE ON FUNCTION public.transfer_and_leave_squad FROM anon, public;
+REVOKE EXECUTE ON FUNCTION public.delete_squad_group_cascade FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.manage_member_role TO authenticated;
+GRANT EXECUTE ON FUNCTION public.transfer_and_leave_squad TO authenticated;
+GRANT EXECUTE ON FUNCTION public.delete_squad_group_cascade TO authenticated;
 
 -- 8. Add realtime publication for emergency contacts
 ALTER PUBLICATION supabase_realtime ADD TABLE public.squad_emergency_contacts;

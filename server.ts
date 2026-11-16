@@ -636,35 +636,70 @@ function deliverPush(targets: PushSubscriptionRow[], payload: PushPayload, ttlSe
   });
 }
 
+type VerifiedUser = { id: string; email: string; fullName?: string; avatarUrl?: string };
+
+/** True when the server itself has a Supabase project to verify logins against. */
+function serverAuthConfigured(): boolean {
+  return Boolean((process.env.VITE_SUPABASE_URL || '').trim() && (process.env.VITE_SUPABASE_ANON_KEY || '').trim());
+}
+
+const tokenCache = new Map<string, { user: VerifiedUser | null; until: number }>();
+
+/**
+ * Verify a Supabase access token against the SERVER's own Supabase project only (never a
+ * client-supplied URL, which would let someone mint tokens in their own project).
+ * Results are cached briefly so polling doesn't call Supabase on every request.
+ */
+async function verifyAccessToken(token: string): Promise<VerifiedUser | null> {
+  const now = Date.now();
+  const cached = tokenCache.get(token);
+  if (cached && cached.until > now) return cached.user;
+  const sb = getSupabaseServerClient();
+  if (!sb) return null;
+  let user: VerifiedUser | null = null;
+  try {
+    const { data, error } = await sb.auth.getUser(token);
+    if (!error && data?.user) {
+      user = {
+        id: data.user.id,
+        email: (data.user.email || '').toLowerCase(),
+        fullName: data.user.user_metadata?.full_name || data.user.user_metadata?.name,
+        avatarUrl: data.user.user_metadata?.avatar_url || data.user.user_metadata?.picture,
+      };
+    }
+  } catch {
+    return null; // network blip: don't cache a negative result
+  }
+  tokenCache.set(token, { user, until: now + (user ? 5 * 60 * 1000 : 30 * 1000) });
+  if (tokenCache.size > 5000) {
+    for (const [k, v] of tokenCache) if (v.until <= now) tokenCache.delete(k);
+  }
+  return user;
+}
+
 async function resolveAuthenticatedUser(req: express.Request): Promise<{
   id: string;
   email: string;
   fullName?: string;
   avatarUrl?: string;
 } | null> {
-  const authHeader = req.headers.authorization;
-  const sb = getSupabaseServerClient(req);
+  // Middleware already verified this request (see identityGuard); reuse the result.
+  if ((req as any)._identityChecked) return (req as any).verifiedUser || null;
 
-  if (authHeader && authHeader.startsWith('Bearer ') && sb) {
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
     const token = authHeader.slice(7).trim();
     if (token && token !== 'undefined' && token !== 'null') {
-      try {
-        const { data, error } = await sb.auth.getUser(token);
-        if (!error && data?.user) {
-          return {
-            id: data.user.id,
-            email: (data.user.email || '').toLowerCase(),
-            fullName: data.user.user_metadata?.full_name || data.user.user_metadata?.name,
-            avatarUrl: data.user.user_metadata?.avatar_url || data.user.user_metadata?.picture,
-          };
-        }
-      } catch (e) {
-        // Fallback header check below if token check failed due to network
-      }
+      const verified = await verifyAccessToken(token);
+      if (verified) return verified;
     }
   }
 
-  // Fallback for verified Supabase user UUID passed via headers (e.g., immediately after signUp before email confirmation)
+  // With a server-side Supabase project configured, ONLY a verified login counts. Trusting an
+  // x-user-id header (or a userId in the body) let anyone act as any user, including Super Admin.
+  if (serverAuthConfigured()) return null;
+
+  // Local/dev mode without Supabase: keep the legacy header identity.
   const headerUserId = (req.headers['x-user-id'] as string || '').trim();
   const headerEmail = (req.headers['x-user-email'] as string || '').trim().toLowerCase();
   if (headerUserId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(headerUserId)) {
@@ -712,6 +747,83 @@ async function startServer() {
   }
   app.use(express.json({ limit: '80mb' }));
   app.use(express.urlencoded({ limit: '80mb', extended: true }));
+
+  // ==========================================================================
+  // IDENTITY GUARD: decide who the caller is ONCE, from a verified login, and
+  // overwrite any user id the client put in the request so routes can't be fooled.
+  // ==========================================================================
+  const IDENTITY_FIELDS = ['userId', 'uploaderId', 'startedByUserId', 'distressedUserId', 'creatorId', 'authorId', 'callerUserId', 'requesterId'];
+  app.use('/api', async (req, res, next) => {
+    try {
+      if (!serverAuthConfigured()) return next(); // local/dev mode keeps legacy behaviour
+      (req as any)._identityChecked = false;
+      const user = await resolveAuthenticatedUser(req);
+      (req as any)._identityChecked = true;
+      (req as any).verifiedUser = user;
+      const body = req.body && typeof req.body === 'object' ? req.body : null;
+      const query = req.query as Record<string, any>;
+
+      if (user) {
+        req.headers['x-user-id'] = user.id;
+        if (user.email) req.headers['x-user-email'] = user.email;
+        for (const f of IDENTITY_FIELDS) {
+          if (body && f in body) body[f] = user.id;
+          if (query && f in query) query[f] = user.id;
+        }
+        if (req.method === 'POST' && req.path === '/profiles' && body) body.id = user.id;
+        // Per-user endpoints may only be used for your own account.
+        const own = req.path.match(/^\/users\/([^/]+)\//) || req.path.match(/^\/profiles\/([^/]+)\/avatar/);
+        if (own && decodeURIComponent(own[1]) !== user.id) {
+          res.status(403).json({ success: false, error: 'You can only access your own account.' });
+          return;
+        }
+        return next();
+      }
+
+      // No verified login: behave as anonymous.
+      delete req.headers['x-user-id'];
+      delete req.headers['x-user-email'];
+      for (const f of IDENTITY_FIELDS) {
+        if (body && f in body) delete body[f];
+        if (query && f in query) delete query[f];
+      }
+      const readOnly = req.method === 'GET' || req.method === 'HEAD';
+      const publicPaths = ['/push/public-key', '/push/unsubscribe', '/auth/diagnostics', '/groups/lookup'];
+      const isPublic = publicPaths.includes(req.path) || /^\/groups\/[^/]+\/(media|faculty-drive)\/[^/]+\/(file|download)$/.test(req.path);
+      if (!isPublic && (!readOnly || /^\/users\//.test(req.path))) {
+        res.status(401).json({ success: false, error: 'Please sign in again (confirm your email first if you just signed up).' });
+        return;
+      }
+      return next();
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // ==========================================================================
+  // SQUAD MEMBERSHIP GUARD: everything under /api/groups/:groupId is for that
+  // squad's members only (joining, restoring and photo/document files excepted).
+  // ==========================================================================
+  app.use('/api/groups/:groupId', async (req, res, next) => {
+    try {
+      if (!serverAuthConfigured()) return next();
+      const rawId = String(req.params.groupId || '');
+      if (rawId === 'lookup' || rawId === 'restore') return next();
+      if (req.method === 'POST' && /^\/join-requests\/?$/.test(req.path)) return next();
+      if (/^\/(media|faculty-drive)\/[^/]+\/(file|download)$/.test(req.path)) return next();
+
+      const group = await findGroupByIdOrCode(rawId, req);
+      if (!group) return next(); // the route answers 404 itself
+      const ids = [group.id, rawId, group.code].filter(Boolean);
+      const members = db.squad_members.filter((m) => m && ids.includes(m.group_id));
+      if (members.length === 0) return next(); // squad being rebuilt after a restart
+      const caller = ((req as any).verifiedUser?.id as string) || '';
+      if (caller && (members.some((m) => m.user_id === caller) || group.created_by === caller)) return next();
+      res.status(403).json({ success: false, error: 'Only members of this squad can do that.' });
+    } catch (err) {
+      next(err);
+    }
+  });
 
   // ============================================================================
   // 1. OAUTH CALLBACK HANDLER (Supports Popup postMessage & Top-Level Redirect)
@@ -1155,7 +1267,7 @@ async function startServer() {
           .select()
           .single();
 
-        if (!sbErr && sbGroup) {
+        if (!sbErr && sbGroup && sbGroup.id && sbGroup.code) {
           groupRecord = {
             id: sbGroup.id,
             name: sbGroup.name,
@@ -1462,7 +1574,7 @@ async function startServer() {
           .limit(1)
           .maybeSingle();
 
-        if (!sbErr && sbGroup) {
+        if (!sbErr && sbGroup && sbGroup.id && sbGroup.code) {
           foundGroup = {
             id: sbGroup.id,
             name: sbGroup.name,
@@ -1919,7 +2031,7 @@ async function startServer() {
           }
           const { data: sbGroup } = await sbQuery.maybeSingle();
 
-          if (sbGroup) {
+          if (sbGroup && sbGroup.id && sbGroup.code) {
             const row: GroupRow = {
               id: sbGroup.id,
               name: sbGroup.name,
