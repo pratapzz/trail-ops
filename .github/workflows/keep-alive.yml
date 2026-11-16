@@ -1,0 +1,28 @@
+name: Keep TrailOPS server awake
+
+# The live server (Cloud Run, via AI Studio) keeps squads, members, notices and push
+# subscriptions in memory. If nobody uses the app for ~15 minutes, Cloud Run shuts the
+# server down and that data is lost (this happened overnight on 16-17 Nov 2026).
+# Pinging it every 5 minutes keeps one instance alive. GitHub may delay scheduled runs,
+# so this reduces, but cannot fully rule out, a shutdown.
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Ping the live server
+        run: |
+          for i in 1 2 3; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "https://trailops.ai.studio/api/push/public-key?ka=$(date +%s)" || true)
+            echo "attempt $i: HTTP $code"
+            [ "$code" = "200" ] && exit 0
+            sleep 10
+          done
+          exit 1
