@@ -12,7 +12,6 @@ import { Navigation } from './components/Navigation';
 import { DistressAlertModal } from './components/modals/DistressAlertModal';
 import { FacultyDriveModal } from './components/FacultyDriveModal';
 import { SplitwiseModal } from './components/SplitwiseModal';
-import { AskAIOverlay } from './components/AskAIOverlay';
 import { SupabaseSetupModal } from './components/modals/SupabaseSetupModal';
 import { JoinSquadDeepLinkModal } from './components/modals/JoinSquadDeepLinkModal';
 import { AttendanceAlertModal } from './components/modals/AttendanceAlertModal';
@@ -1665,17 +1664,6 @@ export default function App() {
         onSelectScreen={(screen) => setCurrentScreen(screen)}
         onOpenSOSModal={() => setIsSOSModalOpen(true)}
       />
-
-      {/* Global Ask AI Expedition Assistant Floating Overlay */}
-      {isProfileComplete &&
-        currentScreen !== 'onboarding' &&
-        currentScreen !== 'signin' &&
-        currentScreen !== 'profile' && (
-          <AskAIOverlay
-            destinationName={activeSquad?.destination || tripDestination.destination}
-            onShowToast={showToast}
-          />
-        )}
 
       {/* Global Toast Notification Container */}
       {toastMessage && (
