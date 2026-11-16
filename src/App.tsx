@@ -899,9 +899,26 @@ export default function App() {
 
   // Keep this device's push subscription tied to the current user + squad, so the
   // server can deliver SOS / attendance / notice alerts while the app is closed.
+  // Re-registered on open, on returning to the app (at most every 5 min) and every 15 min, so
+  // phones heal automatically if the server restarted, lost data or rotated its push keys.
   useEffect(() => {
     if (!currentUserId) return;
-    syncPushSubscription(currentUserId, activeSquad?.id || null).catch(() => {});
+    let lastSync = 0;
+    const sync = () => {
+      if (Date.now() - lastSync < 5 * 60 * 1000) return;
+      lastSync = Date.now();
+      syncPushSubscription(currentUserId, activeSquad?.id || null).catch(() => {});
+    };
+    sync();
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') sync();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    const timer = setInterval(sync, 15 * 60 * 1000);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      clearInterval(timer);
+    };
   }, [currentUserId, activeSquad?.id]);
 
   // Handle dark mode class application on <html>

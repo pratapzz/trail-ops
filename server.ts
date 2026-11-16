@@ -542,11 +542,37 @@ function broadcastRealtime(
 // VAPID_PRIVATE_KEY and VAPID_SUBJECT in production so keys survive redeploys;
 // otherwise a key pair is generated once and stored in .data/vapid_keys.json.
 // ----------------------------------------------------------------------------
+/**
+ * Derive a stable VAPID key pair from a secret the host already has, so push works with
+ * zero extra configuration and survives restarts/redeploys (AI Studio injects GEMINI_API_KEY).
+ * HKDF output reveals nothing about the input secret.
+ */
+function deriveVapidKeys(secret: string): { publicKey: string; privateKey: string } | null {
+  const n = BigInt('0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551'); // P-256 order
+  for (let i = 0; i < 8; i++) {
+    const d = Buffer.from(
+      crypto.hkdfSync('sha256', Buffer.from(secret, 'utf8'), Buffer.from('trailops-web-push'), Buffer.from(`vapid-v1:${i}`), 32)
+    );
+    const k = BigInt('0x' + d.toString('hex'));
+    if (k === BigInt(0) || k >= n) continue;
+    const ecdh = crypto.createECDH('prime256v1');
+    ecdh.setPrivateKey(d);
+    return { publicKey: ecdh.getPublicKey().toString('base64url'), privateKey: d.toString('base64url') };
+  }
+  return null;
+}
+
 function loadOrCreateVapidKeys(): { publicKey: string; privateKey: string; subject: string } {
   const subject = (process.env.VAPID_SUBJECT || 'mailto:admin@trailops.app').trim();
   const envPub = (process.env.VAPID_PUBLIC_KEY || '').trim();
   const envPriv = (process.env.VAPID_PRIVATE_KEY || '').trim();
   if (envPub && envPriv) return { publicKey: envPub, privateKey: envPriv, subject };
+
+  const seed = (process.env.VAPID_SEED || process.env.GEMINI_API_KEY || '').trim();
+  if (seed && seed !== 'MY_GEMINI_API_KEY') {
+    const derived = deriveVapidKeys(seed);
+    if (derived) return { ...derived, subject };
+  }
 
   const keyFile = path.join(DATA_DIR, 'vapid_keys.json');
   try {
