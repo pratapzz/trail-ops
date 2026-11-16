@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { AlertTriangle, ShieldCheck, Radio, X } from 'lucide-react';
 import { triggerSquadSOSAlarm, clearSquadSOSAlarm } from '../../lib/supabase';
 import { startEmergencySiren, stopEmergencySiren } from '../../lib/emergencyAudio';
@@ -13,6 +13,19 @@ interface DistressAlertModalProps {
   userName?: string;
   userRole?: string;
   userPhone?: string;
+}
+
+/** Parse "27.0360° N, 88.2627° E" or "27.036, 88.2627" into numbers; null if not a real fix. */
+function parseCoordinates(raw: string): { lat: number; lng: number } | null {
+  if (!raw) return null;
+  const m = raw.match(/(-?\d+(?:\.\d+)?)\s*°?\s*([NS])?\s*,\s*(-?\d+(?:\.\d+)?)\s*°?\s*([EW])?/i);
+  if (!m) return null;
+  let lat = parseFloat(m[1]);
+  let lng = parseFloat(m[3]);
+  if (m[2] && m[2].toUpperCase() === 'S') lat = -Math.abs(lat);
+  if (m[4] && m[4].toUpperCase() === 'W') lng = -Math.abs(lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
+  return { lat, lng };
 }
 
 export const DistressAlertModal: React.FC<DistressAlertModalProps> = ({
@@ -30,6 +43,10 @@ export const DistressAlertModal: React.FC<DistressAlertModalProps> = ({
   const [isDispatched, setIsDispatched] = useState(false);
   const [detectedCoords, setDetectedCoords] = useState<string>('');
   const [detectedLocationLabel, setDetectedLocationLabel] = useState<string>('Detecting GPS location...');
+  // One alarm id per SOS activation, so location updates don't look like brand-new SOS
+  // events (which re-sounded the siren for members who had already acknowledged it).
+  const alarmIdRef = useRef<string | null>(null);
+  const batteryRef = useRef<number | undefined>(undefined);
 
   const broadcastGroupSOS = useCallback(
     (coordsToUse: string, locLabelToUse: string) => {
@@ -65,12 +82,14 @@ export const DistressAlertModal: React.FC<DistressAlertModalProps> = ({
         distressedUserName: resolvedName,
         distressedUserRole: userRole || localStorage.getItem('trailoPS_userRole') || 'Member',
         phone: resolvedPhone,
-        coordinates: { lat: 27.036, lng: 88.2627 },
+        id: alarmIdRef.current || undefined,
+        // Real GPS fix only. This used to always send a fixed Pelling coordinate.
+        coordinates: parseCoordinates(coordsToUse) || undefined,
         locationLabel:
           locLabelToUse && !locLabelToUse.startsWith('Detecting')
             ? locLabelToUse
-            : 'Live GPS Distress Beacon',
-        batteryLevel: 92,
+            : 'Location not available yet',
+        batteryLevel: batteryRef.current,
       });
     },
     [groupId, userId, userName, userRole, userPhone]
@@ -80,16 +99,26 @@ export const DistressAlertModal: React.FC<DistressAlertModalProps> = ({
     if (!isOpen) {
       setCountdown(10);
       setIsDispatched(false);
+      alarmIdRef.current = null;
       return;
     }
 
+    alarmIdRef.current = `sos_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     startEmergencySiren();
+
+    const nav: any = navigator;
+    if (typeof nav.getBattery === 'function') {
+      nav
+        .getBattery()
+        .then((b: any) => {
+          batteryRef.current = Math.round((b?.level ?? 0) * 100);
+        })
+        .catch(() => {});
+    }
 
     // Immediately broadcast SOS alert to all squad devices when SOS button is pressed
     const initialCoords =
-      coordinates && coordinates !== 'Location Unavailable'
-        ? coordinates
-        : detectedCoords || '27.0360° N, 88.2627° E';
+      coordinates && coordinates !== 'Location Unavailable' ? coordinates : detectedCoords || '';
     broadcastGroupSOS(initialCoords, locationLabel || detectedLocationLabel);
   }, [isOpen]);
 

@@ -18,6 +18,9 @@ import { JoinSquadDeepLinkModal } from './components/modals/JoinSquadDeepLinkMod
 import { AttendanceAlertModal } from './components/modals/AttendanceAlertModal';
 import { BroadcastAlertModal } from './components/modals/BroadcastAlertModal';
 import { EmergencySirenAlertModal } from './components/modals/EmergencySirenAlertModal';
+import { HomeAttendanceCard } from './components/HomeAttendanceCard';
+import { PushAlertsPrompt } from './components/PushAlertsPrompt';
+import { syncPushSubscription } from './lib/pushNotifications';
 import { startEmergencySiren, stopEmergencySiren } from './lib/emergencyAudio';
 import {
   getSupabase,
@@ -33,8 +36,27 @@ import {
   SquadSOSAlarmData,
   clearSquadSOSAlarm,
   respondSquadRollCall,
+  startSquadRollCall,
+  endSquadRollCall,
   fetchSquadLiveState,
 } from './lib/supabase';
+
+/** An SOS this device acknowledged ("Mute") must never restart the siren from any path. */
+function isSosMuted(alarm: any): boolean {
+  if (!alarm) return false;
+  const key = alarm.id || `${alarm.distressedUserId}_${alarm.timestamp}`;
+  try {
+    return Boolean(localStorage.getItem(`trailoPS_muted_sos_${key}`));
+  } catch {
+    return false;
+  }
+}
+
+const KNOWN_ROLES: UserRole[] = ['super_admin', 'admin', 'subgroup_admin', 'faculty', 'member'];
+function normalizeRole(raw: unknown): UserRole {
+  const r = String(raw || '').toLowerCase().replace(/[\s-]+/g, '_');
+  return (KNOWN_ROLES as string[]).includes(r) ? (r as UserRole) : 'member';
+}
 import { CheckCircle2, Database, Shield } from 'lucide-react';
 
 export default function App() {
@@ -153,7 +175,8 @@ export default function App() {
     const saved = localStorage.getItem(`trailoPS_squad_sos_alarm_${squadKey}`);
     if (saved) {
       try {
-        return JSON.parse(saved);
+        const parsed = JSON.parse(saved);
+        return isSosMuted(parsed) ? null : parsed;
       } catch {}
     }
     return null;
@@ -161,6 +184,15 @@ export default function App() {
 
   // Sync Roll Call, Broadcast alerts, and Group-Wide SOS Siren across tabs and screens
   useEffect(() => {
+    // Open the attendance popup only once per roll-call session. The 2.5s poll re-fires
+    // this sync event constantly, which used to reopen the popup right after "Dismiss".
+    const shouldPopAttendance = (session: any, myId: string) => {
+      const presentIds: string[] = session?.presentUserIds || [];
+      const deniedIds: string[] = session?.deniedUserIds || [];
+      if (!session?.active || presentIds.includes(myId) || deniedIds.includes(myId)) return false;
+      return !localStorage.getItem(`trailoPS_alerted_rc_${myId}_${session.sessionId}`);
+    };
+
     const handleRollCallSync = (e?: any) => {
       const detail = e?.detail;
       if (detail && typeof detail === 'object') {
@@ -170,9 +202,7 @@ export default function App() {
           totalMembers: detail.totalMembers || prev?.totalMembers || 1,
         }));
         const myId = currentUserId || localStorage.getItem('trailoPS_currentUserId') || '1';
-        const presentIds: string[] = detail.presentUserIds || [];
-        const deniedIds: string[] = detail.deniedUserIds || [];
-        if (detail.active && !presentIds.includes(myId) && !deniedIds.includes(myId)) {
+        if (shouldPopAttendance(detail, myId)) {
           setIsAttendanceModalOpen(true);
         }
         return;
@@ -184,10 +214,8 @@ export default function App() {
           if (parsed && typeof parsed === 'object') {
             setActiveRollCallSession(parsed);
             const myId = currentUserId || localStorage.getItem('trailoPS_currentUserId') || '1';
-            const presentIds: string[] = parsed.presentUserIds || [];
-            const deniedIds: string[] = parsed.deniedUserIds || [];
             // Show alert popup if roll call is active and user has not marked present or denied yet
-            if (parsed.active && !presentIds.includes(myId) && !deniedIds.includes(myId)) {
+            if (shouldPopAttendance(parsed, myId)) {
               setIsAttendanceModalOpen(true);
             }
           }
@@ -217,6 +245,7 @@ export default function App() {
 
     const handleSOSAlarm = (e: any) => {
       if (e?.detail) {
+        if (isSosMuted(e.detail)) return;
         setActiveSOSAlarm(e.detail);
         startEmergencySiren();
       }
@@ -246,6 +275,7 @@ export default function App() {
         if (e.newValue) {
           try {
             const parsed = JSON.parse(e.newValue);
+            if (isSosMuted(parsed)) return;
             setActiveSOSAlarm(parsed);
             startEmergencySiren();
           } catch {}
@@ -267,7 +297,7 @@ export default function App() {
     if (existingAlarm) {
       try {
         const parsed = JSON.parse(existingAlarm);
-        if (parsed) {
+        if (parsed && !isSosMuted(parsed)) {
           setActiveSOSAlarm(parsed);
           startEmergencySiren();
         }
@@ -321,6 +351,7 @@ export default function App() {
         squadBus = new BroadcastChannel(`trailops_squad_bus_${squadKey}`);
         squadBus.onmessage = (event) => {
           if (event.data?.type === 'SOS_TRIGGERED') {
+            if (isSosMuted(event.data.payload)) return;
             setActiveSOSAlarm(event.data.payload);
             startEmergencySiren();
           } else if (event.data?.type === 'SOS_CLEARED') {
@@ -359,7 +390,7 @@ export default function App() {
       try {
         realtimeChannel = sb.channel(`squad_realtime_${squadKey}`)
           .on('broadcast', { event: 'sos_trigger' }, ({ payload }: any) => {
-            if (payload) {
+            if (payload && !isSosMuted(payload)) {
               setActiveSOSAlarm(payload);
               startEmergencySiren();
             }
@@ -463,12 +494,18 @@ export default function App() {
     const pollIncomingNoticesAndBroadcasts = async () => {
       try {
         const targetUserId = currentUserId || localStorage.getItem('trailoPS_currentUserId');
-        const targetGroupId = activeSquad?.id || localStorage.getItem('trailoPS_active_squad_id') || 'default';
+        const storedGroupId = activeSquad?.id || localStorage.getItem('trailoPS_active_squad_id') || '';
+        const targetGroupId = storedGroupId && storedGroupId !== 'default' ? storedGroupId : '';
 
         // 1. Check user notifications if user ID available
         if (targetUserId) {
-          const { notifications } = await fetchUserJoinRequestsAndNotifications(targetUserId);
+          const { notifications, activeSquad: serverSquad } =
+            await fetchUserJoinRequestsAndNotifications(targetUserId);
           if (!isMounted) return;
+          if (serverSquad?.role) {
+            const serverRole = normalizeRole(serverSquad.role);
+            setUserRole((prev) => (prev === serverRole ? prev : serverRole));
+          }
           for (const notif of notifications) {
             const notifAgeMs = notif.created_at
               ? Date.now() - new Date(notif.created_at).getTime()
@@ -517,7 +554,7 @@ export default function App() {
         }
 
         // 2. Poll live squad state (Roll Call Attendance + SOS Distress Alarm + Group Details + Expenses)
-        if (targetGroupId || targetUserId) {
+        if (targetGroupId) {
           const liveState = await fetchSquadLiveState(targetGroupId, targetUserId || undefined);
           if (!isMounted || !liveState) return;
 
@@ -680,7 +717,7 @@ export default function App() {
         }
 
         // 3. Also check group notices endpoint for newly published broadcasts (only pop up if <45s old & not created by current user)
-        if (targetGroupId && targetGroupId !== 'default') {
+        if (targetGroupId) {
           const res = await fetchGroupNotices(targetGroupId, targetUserId || undefined);
           if (!isMounted) return;
           if (res.notices && res.notices.length > 0) {
@@ -719,9 +756,22 @@ export default function App() {
     pollIncomingNoticesAndBroadcasts();
     const interval = setInterval(pollIncomingNoticesAndBroadcasts, 2500);
 
+    // Phones freeze timers in the background; catch up the moment we're visible again
+    // or the service worker tells us a push arrived.
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') pollIncomingNoticesAndBroadcasts();
+    };
+    const onSwMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'TRAILOPS_PUSH') pollIncomingNoticesAndBroadcasts();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    navigator.serviceWorker?.addEventListener('message', onSwMessage);
+
     return () => {
       isMounted = false;
       clearInterval(interval);
+      document.removeEventListener('visibilitychange', onVisible);
+      navigator.serviceWorker?.removeEventListener('message', onSwMessage);
     };
   }, [currentUserId, activeSquad?.id, squadKey]);
 
@@ -791,25 +841,52 @@ export default function App() {
     }, 600);
   };
 
+  const handleStartRollCallFromHome = async () => {
+    const myId = currentUserId || localStorage.getItem('trailoPS_currentUserId') || '';
+    if (!activeSquad?.id || !myId) {
+      showToast('Join a squad first to start attendance.');
+      return;
+    }
+    const startedAt = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const res = await startSquadRollCall(activeSquad.id, {
+      userId: myId,
+      startedBy: profileData.fullName || currentUserName || 'Squad Commander',
+      startedAt,
+      sessionId: `rc-${Date.now()}`,
+    });
+    if (res.success && res.session) {
+      setActiveRollCallSession({
+        ...res.session,
+        totalMembers: res.totalMembers || activeRollCallSession?.totalMembers || 1,
+      });
+      showToast('📢 Attendance started. Everyone in the squad has been alerted.');
+    } else {
+      showToast('Could not start attendance. Check your connection and try again.');
+    }
+  };
+
+  const handleEndRollCallFromHome = async () => {
+    if (!activeSquad?.id) return;
+    const res = await endSquadRollCall(activeSquad.id, currentUserId);
+    if (res.success) {
+      setActiveRollCallSession((prev) => (prev ? { ...prev, ...(res.session || {}), active: false } : prev));
+      setIsAttendanceModalOpen(false);
+      const s = res.session || activeRollCallSession;
+      const present = s?.presentUserIds?.length || 0;
+      const denied = s?.deniedUserIds?.length || 0;
+      showToast(`Attendance closed: ${present} present, ${denied} denied.`);
+    } else {
+      showToast('Could not end attendance. Check your connection and try again.');
+    }
+  };
+
   // Group Hierarchy & Financials state
-  const [userRole, setUserRole] = useState<UserRole>(() => {
-    const saved = localStorage.getItem('trailoPS_userRole');
-    const savedMembers = localStorage.getItem('trailoPS_squad_members');
-    if (savedMembers) {
-      try {
-        const parsed = JSON.parse(savedMembers);
-        if (Array.isArray(parsed) && (parsed.length <= 1 || !parsed.some((m: any) => m.roleHierarchy === 'super_admin'))) {
-          localStorage.setItem('trailoPS_userRole', 'super_admin');
-          return 'super_admin';
-        }
-      } catch {}
-    }
-    if (saved === 'super_admin' || saved === 'admin' || saved === 'faculty' || saved === 'subgroup_admin') {
-      return saved as UserRole;
-    }
-    // If user is the creator or in a 1-member group, default to super_admin
-    return 'super_admin';
-  });
+  // The server's membership row is the source of truth; it is re-synced on every poll below.
+  // (Previously any saved role of 'member' fell through to 'super_admin', so every member
+  // became Super Admin after a reload.)
+  const [userRole, setUserRole] = useState<UserRole>(() =>
+    normalizeRole(localStorage.getItem('trailoPS_userRole'))
+  );
 
   // App Theme: 'dark' | 'light' | 'system'
   const [theme, setTheme] = useState<'light' | 'dark' | 'system'>(() => {
@@ -820,28 +897,12 @@ export default function App() {
     localStorage.setItem('trailoPS_userRole', userRole);
   }, [userRole]);
 
-  // Mandatory Single Member Super Admin Check: Ensure 1 member in group is always Super Admin
+  // Keep this device's push subscription tied to the current user + squad, so the
+  // server can deliver SOS / attendance / notice alerts while the app is closed.
   useEffect(() => {
-    if (hasJoinedGroup) {
-      const savedMembers = localStorage.getItem('trailoPS_squad_members');
-      if (savedMembers) {
-        try {
-          const parsed = JSON.parse(savedMembers);
-          if (Array.isArray(parsed) && (parsed.length <= 1 || !parsed.some((m: any) => m.roleHierarchy === 'super_admin'))) {
-            if (userRole !== 'super_admin') {
-              setUserRole('super_admin');
-              localStorage.setItem('trailoPS_userRole', 'super_admin');
-            }
-          }
-        } catch {}
-      } else {
-        if (userRole !== 'super_admin') {
-          setUserRole('super_admin');
-          localStorage.setItem('trailoPS_userRole', 'super_admin');
-        }
-      }
-    }
-  }, [hasJoinedGroup, userRole]);
+    if (!currentUserId) return;
+    syncPushSubscription(currentUserId, activeSquad?.id || null).catch(() => {});
+  }, [currentUserId, activeSquad?.id]);
 
   // Handle dark mode class application on <html>
   useEffect(() => {
@@ -1368,7 +1429,7 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-start text-slate-800 dark:text-slate-100">
+    <div className="app-glass min-h-screen bg-slate-950 flex flex-col items-center justify-start text-slate-800 dark:text-slate-100">
       {/* Screen Render Container with Smooth Page Change Animation & Tactical Dark Theme */}
       <div className="w-full max-w-md flex-1 bg-[#f8faf9] dark:bg-slate-950 dark:text-slate-100 relative min-h-screen flex flex-col transition-colors duration-200 shadow-2xl">
         <div key={currentScreen} className="animate-page-enter w-full flex-1 flex flex-col">
@@ -1415,6 +1476,26 @@ export default function App() {
               activeSquadId={activeSquad?.id}
               activeSquad={activeSquad}
               userRole={userRole}
+              homeTopSlot={
+                hasJoinedGroup && activeSquad ? (
+                  <>
+                    <HomeAttendanceCard
+                      session={activeRollCallSession}
+                      currentUserId={currentUserId}
+                      isSuperAdmin={
+                        userRole === 'super_admin' ||
+                        (!!currentUserId &&
+                          (activeSquad.created_by === currentUserId || activeSquad.creator_id === currentUserId))
+                      }
+                      onStart={handleStartRollCallFromHome}
+                      onEnd={handleEndRollCallFromHome}
+                      onMarkPresent={handleMarkPresentFromModal}
+                      onDeny={handleDenyAttendanceFromModal}
+                    />
+                    <PushAlertsPrompt userId={currentUserId} groupId={activeSquad.id} onShowToast={showToast} />
+                  </>
+                ) : null
+              }
               onSquadJoined={(group, role) => {
                 setActiveSquad(group);
                 setHasJoinedGroup(true);
@@ -1735,6 +1816,7 @@ export default function App() {
               activeSOSAlarm.id ||
               `${activeSOSAlarm.distressedUserId}_${activeSOSAlarm.timestamp}`;
             localStorage.setItem(`trailoPS_muted_sos_${alarmUniqueKey}`, 'true');
+            localStorage.removeItem(`trailoPS_squad_sos_alarm_${activeSOSAlarm.groupId || squadKey}`);
           }
           setActiveSOSAlarm(null);
         }}

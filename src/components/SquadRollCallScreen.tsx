@@ -932,7 +932,8 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
             const rawRc = localStorage.getItem(`trailoPS_active_rollcall_${activeSquad.id}`);
             if (rawRc) {
               const rc = JSON.parse(rawRc);
-              if (rc && Array.isArray(rc.presentUserIds)) {
+              // Only a live roll call overrides the server status (an ended one used to mask distress).
+              if (rc && rc.active && Array.isArray(rc.presentUserIds)) {
                 if (rc.presentUserIds.includes(m.user_id)) {
                   computedStatus = 'present';
                 } else if (
@@ -989,10 +990,8 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
             mapped[0].id === (currentUserId || '1')
               ? 'Squad Commander (You)'
               : 'Squad Commander';
-          if (mapped[0].id === (currentUserId || '1') || mapped[0].name.includes('(You)')) {
-            if (onUpdateRole) onUpdateRole('super_admin');
-            localStorage.setItem('trailoPS_userRole', 'super_admin');
-          }
+          // Display only. The user's real role comes from the server (App re-syncs it each poll);
+          // promoting here made members flip to Super Admin whenever the roster was incomplete.
         }
 
         setMembers(mapped);
@@ -1013,30 +1012,9 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
     };
   }, [hasJoinedGroup, activeSquad?.id, currentUserId, currentUserName, currentUserAvatar]);
 
-  // Mandatory Single Member Super Admin Auto-Promotion
-  useEffect(() => {
-    if (members.length === 1) {
-      const soleMember = members[0];
-      if (soleMember && soleMember.roleHierarchy !== 'super_admin') {
-        const updated = [{
-          ...soleMember,
-          roleHierarchy: 'super_admin' as const,
-          role: 'Squad Commander (You)',
-        }];
-        setMembers(updated);
-        localStorage.setItem('trailoPS_squad_members', JSON.stringify(updated));
-        if (onUpdateRole) {
-          onUpdateRole('super_admin');
-        }
-        localStorage.setItem('trailoPS_userRole', 'super_admin');
-      } else if (soleMember && userRole !== 'super_admin') {
-        if (onUpdateRole) {
-          onUpdateRole('super_admin');
-        }
-        localStorage.setItem('trailoPS_userRole', 'super_admin');
-      }
-    }
-  }, [members, userRole, onUpdateRole]);
+  // (Removed client-side "sole member => Super Admin" promotion: the server enforces that rule
+  // and App syncs the role from it. On a slow network the roster briefly had one entry, which
+  // promoted ordinary members and let them clear real SOS alarms.)
 
   // Synchronize current user's name, avatar, and role hierarchy with active user session
   useEffect(() => {
@@ -1243,7 +1221,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
     presentUserIds?: string[];
     deniedUserIds?: string[];
   } | null) => {
-    if (!sessionData || !Array.isArray(sessionData.presentUserIds)) return;
+    if (!sessionData || !Array.isArray(sessionData.presentUserIds) || sessionData.active === false) return;
     setMembers((prev) => {
       const next = prev.map((m) => ({
         ...m,

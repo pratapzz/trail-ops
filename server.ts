@@ -4,6 +4,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
+import webpush from 'web-push';
 
 dotenv.config();
 
@@ -220,6 +221,15 @@ interface MissingItemRow {
   created_at: string;
 }
 
+interface PushSubscriptionRow {
+  endpoint: string;
+  keys: { p256dh: string; auth: string };
+  user_id: string;
+  group_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
 interface PersistentDatabase {
   profiles: Record<string, ProfileRow>;
   squad_groups: Record<string, GroupRow>;
@@ -236,6 +246,7 @@ interface PersistentDatabase {
   squad_subgroups: Record<string, SubGroupRow[]>;
   squad_missing_items: Record<string, MissingItemRow[]>;
   squad_expenses: Record<string, ExpenseRow[]>;
+  push_subscriptions: PushSubscriptionRow[];
 }
 
 function sanitizeDb(raw: any): PersistentDatabase {
@@ -290,6 +301,12 @@ function sanitizeDb(raw: any): PersistentDatabase {
     squad_subgroups: raw?.squad_subgroups && typeof raw.squad_subgroups === 'object' ? raw.squad_subgroups : {},
     squad_missing_items: raw?.squad_missing_items && typeof raw.squad_missing_items === 'object' ? raw.squad_missing_items : {},
     squad_expenses: raw?.squad_expenses && typeof raw.squad_expenses === 'object' ? raw.squad_expenses : {},
+    push_subscriptions: Array.isArray(raw?.push_subscriptions)
+      ? raw.push_subscriptions.filter(
+          (s: any): s is PushSubscriptionRow =>
+            Boolean(s && typeof s === 'object' && s.endpoint && s.keys?.p256dh && s.keys?.auth && s.user_id)
+        )
+      : [],
   };
 }
 
@@ -301,9 +318,27 @@ function loadDb(): PersistentDatabase {
     if (!fs.existsSync(MEDIA_DIR)) {
       fs.mkdirSync(MEDIA_DIR, { recursive: true });
     }
-    if (fs.existsSync(DB_FILE)) {
-      const raw = fs.readFileSync(DB_FILE, 'utf-8');
-      const parsed = JSON.parse(raw);
+    // If a crash happened mid-save, the previous good copy is in .bak
+    const source = fs.existsSync(DB_FILE) ? DB_FILE : fs.existsSync(DB_FILE + '.bak') ? DB_FILE + '.bak' : null;
+    if (source) {
+      let parsed: any;
+      try {
+        parsed = JSON.parse(fs.readFileSync(source, 'utf-8'));
+      } catch (parseErr) {
+        // Never start empty on top of real data: keep the broken file, fall back to the last good
+        // copy (.bak), and refuse to run only if that is unusable too.
+        const keep = `${DB_FILE}.corrupt-${Date.now()}`;
+        fs.copyFileSync(source, keep);
+        const bak = `${DB_FILE}.bak`;
+        try {
+          if (source === bak || !fs.existsSync(bak)) throw parseErr;
+          parsed = JSON.parse(fs.readFileSync(bak, 'utf-8'));
+          console.error(`${source} was not valid JSON (copy kept at ${keep}); loaded the previous good copy ${bak}.`);
+        } catch {
+          console.error(`FATAL: ${source} is not valid JSON and no usable .bak exists. A copy was kept at ${keep}.`);
+          process.exit(1);
+        }
+      }
       const cleaned = sanitizeDb(parsed);
       // Persist cleaned structure if null holes existed
       if (
@@ -311,7 +346,7 @@ function loadDb(): PersistentDatabase {
         (Array.isArray(parsed?.squad_join_requests) && parsed.squad_join_requests.length !== cleaned.squad_join_requests.length) ||
         (Array.isArray(parsed?.user_notifications) && parsed.user_notifications.length !== cleaned.user_notifications.length)
       ) {
-        fs.writeFileSync(DB_FILE, JSON.stringify(cleaned, null, 2), 'utf-8');
+        writeDbFileAtomic(cleaned);
       }
       return cleaned;
     }
@@ -334,7 +369,16 @@ function loadDb(): PersistentDatabase {
     squad_subgroups: {},
     squad_missing_items: {},
     squad_expenses: {},
+    push_subscriptions: [],
   };
+}
+
+/** Write to a temp file, keep the previous file as .bak, then rename into place. */
+function writeDbFileAtomic(data: PersistentDatabase): void {
+  const tmp = `${DB_FILE}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(data), 'utf-8');
+  if (fs.existsSync(DB_FILE)) fs.renameSync(DB_FILE, `${DB_FILE}.bak`);
+  fs.renameSync(tmp, DB_FILE);
 }
 
 function saveDb(db: PersistentDatabase): void {
@@ -351,7 +395,20 @@ function saveDb(db: PersistentDatabase): void {
     db.squad_media_vault = (db.squad_media_vault || []).filter((m): m is MediaVaultRow => Boolean(m && m.id && m.group_id));
     db.squad_faculty_drive = (db.squad_faculty_drive || []).filter((d): d is FacultyDriveRow => Boolean(d && d.id && d.group_id));
     db.user_notifications = (db.user_notifications || []).filter((n): n is NotificationRow => Boolean(n && n.user_id));
-    fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), 'utf-8');
+    // Notifications are never pruned elsewhere; keep the newest 200 per user so the file
+    // (rewritten on every change) and the /status scan don't grow without bound.
+    if (db.user_notifications.length > 2000) {
+      const perUser = new Map<string, number>();
+      db.user_notifications = db.user_notifications
+        .slice()
+        .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
+        .filter((n) => {
+          const c = (perUser.get(n.user_id) || 0) + 1;
+          perUser.set(n.user_id, c);
+          return c <= 200;
+        });
+    }
+    writeDbFileAtomic(db);
   } catch (err) {
     console.error('Error saving persistent DB:', err);
   }
@@ -399,10 +456,157 @@ function getSupabaseServerClient(req?: express.Request) {
   const authHeader = req?.headers.authorization;
 
   if (!url || !key) return null;
+  // Client-supplied URLs are only accepted for real Supabase projects (blocks SSRF to other hosts).
+  if (!/^https:\/\/[a-z0-9-]+\.supabase\.co\/?$/i.test(url) && url !== (process.env.VITE_SUPABASE_URL || '').trim()) {
+    return null;
+  }
 
-  return createClient(url, key, {
-    global: authHeader ? { headers: { Authorization: authHeader } } : undefined,
-    auth: { persistSession: false, autoRefreshToken: false },
+  try {
+    return createClient(url, key, {
+      global: authHeader ? { headers: { Authorization: authHeader } } : undefined,
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+  } catch {
+    return null;
+  }
+}
+
+/** Best-effort caller id: verified Supabase user, else the app's x-user-id header, else body/query. */
+function callerIdOf(req: express.Request, authUser: { id: string } | null): string {
+  return String(
+    authUser?.id || req.headers['x-user-id'] || (req.body && req.body.userId) || (req.query && req.query.userId) || ''
+  ).trim();
+}
+
+/**
+ * Role gate for squad actions. Returns true when allowed, otherwise sends 403.
+ * If this server holds no member rows for the group (data lives only in Supabase),
+ * it cannot check, so it allows rather than locking everyone out.
+ */
+function requireGroupRole(
+  res: express.Response,
+  groupIds: Array<string | undefined | null>,
+  callerId: string,
+  roles: string[],
+  group?: { created_by?: string } | null
+): boolean {
+  const ids = groupIds.filter(Boolean) as string[];
+  const members = db.squad_members.filter((m) => m && ids.includes(m.group_id));
+  if (members.length === 0) return true;
+  const me = members.find((m) => m.user_id === callerId);
+  if (me && roles.includes(me.role)) return true;
+  if (callerId && group?.created_by === callerId && roles.includes('super_admin')) return true;
+  res.status(403).json({ success: false, error: 'You do not have permission to do this in this squad.' });
+  return false;
+}
+
+/**
+ * Send one or more broadcast events on a group's Supabase Realtime channel, then
+ * tear the channel down. The old code subscribed a fresh channel on every request
+ * and never removed it, leaking one open WebSocket per SOS / notice / roll call.
+ */
+function broadcastRealtime(
+  req: express.Request,
+  channelIds: string[],
+  messages: { event: string; payload: any }[]
+): void {
+  const sb = getSupabaseServerClient(req);
+  if (!sb) return;
+  for (const cId of Array.from(new Set(channelIds.filter(Boolean)))) {
+    try {
+      const channel = sb.channel(`squad_realtime_${cId}`);
+      let cleaned = false;
+      const cleanup = () => {
+        if (cleaned) return;
+        cleaned = true;
+        clearTimeout(timer);
+        sb.removeChannel(channel).catch(() => {});
+      };
+      const timer = setTimeout(cleanup, 10000);
+      channel.subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          Promise.allSettled(
+            messages.map((m) => channel.send({ type: 'broadcast', event: m.event, payload: m.payload }))
+          ).finally(cleanup);
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+          cleanup();
+        }
+      });
+    } catch {}
+  }
+}
+
+// ----------------------------------------------------------------------------
+// Web Push (VAPID). Lets the server wake a phone with a system notification even
+// when the PWA / browser tab is in the background or closed. Set VAPID_PUBLIC_KEY,
+// VAPID_PRIVATE_KEY and VAPID_SUBJECT in production so keys survive redeploys;
+// otherwise a key pair is generated once and stored in .data/vapid_keys.json.
+// ----------------------------------------------------------------------------
+function loadOrCreateVapidKeys(): { publicKey: string; privateKey: string; subject: string } {
+  const subject = (process.env.VAPID_SUBJECT || 'mailto:admin@trailops.app').trim();
+  const envPub = (process.env.VAPID_PUBLIC_KEY || '').trim();
+  const envPriv = (process.env.VAPID_PRIVATE_KEY || '').trim();
+  if (envPub && envPriv) return { publicKey: envPub, privateKey: envPriv, subject };
+
+  const keyFile = path.join(DATA_DIR, 'vapid_keys.json');
+  try {
+    if (fs.existsSync(keyFile)) {
+      const saved = JSON.parse(fs.readFileSync(keyFile, 'utf-8'));
+      if (saved?.publicKey && saved?.privateKey) {
+        return { publicKey: saved.publicKey, privateKey: saved.privateKey, subject };
+      }
+    }
+  } catch (err) {
+    console.warn('Could not read stored VAPID keys, generating new ones:', err);
+  }
+  const generated = webpush.generateVAPIDKeys();
+  try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(keyFile, JSON.stringify(generated, null, 2), 'utf-8');
+  } catch (err) {
+    console.warn('Could not persist generated VAPID keys:', err);
+  }
+  console.warn(
+    '[push] No VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY env vars set; generated a key pair in .data/vapid_keys.json. ' +
+      'Copy them into your hosting env vars, or every redeploy will invalidate existing push subscriptions.'
+  );
+  return { ...generated, subject };
+}
+
+const vapidKeys = loadOrCreateVapidKeys();
+webpush.setVapidDetails(vapidKeys.subject, vapidKeys.publicKey, vapidKeys.privateKey);
+
+interface PushPayload {
+  kind: 'sos' | 'sos_cleared' | 'rollcall' | 'notice' | 'join_request';
+  title: string;
+  body: string;
+  tag: string;
+  url?: string;
+  requireInteraction?: boolean;
+}
+
+/** Fire-and-forget web push to the given subscriptions; prunes ones the push service says are gone. */
+function deliverPush(targets: PushSubscriptionRow[], payload: PushPayload, ttlSeconds: number): void {
+  if (targets.length === 0) return;
+  const body = JSON.stringify(payload);
+  const dead = new Set<string>();
+  Promise.allSettled(
+    targets.map((t) =>
+      webpush
+        .sendNotification({ endpoint: t.endpoint, keys: t.keys }, body, { TTL: ttlSeconds, urgency: 'high' })
+        .catch((err: any) => {
+          if (err?.statusCode === 404 || err?.statusCode === 410) {
+            dead.add(t.endpoint);
+          } else {
+            console.warn('[push] send failed:', err?.statusCode || '', err?.body || err?.message || err);
+          }
+        })
+    )
+  ).then(() => {
+    if (dead.size > 0) {
+      db.push_subscriptions = db.push_subscriptions.filter((s) => !dead.has(s.endpoint));
+      saveDb(db);
+    }
   });
 }
 
@@ -447,8 +651,39 @@ async function resolveAuthenticatedUser(req: express.Request): Promise<{
   return null;
 }
 
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled promise rejection (server kept running):', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception (server kept running):', err);
+});
+
 async function startServer() {
   const app = express();
+
+  // Express 4 doesn't forward rejected promises from async handlers; without this, one bad
+  // request (e.g. ?code=a&code=b) threw inside a handler and killed the whole server.
+  for (const method of ['get', 'post', 'put', 'patch', 'delete'] as const) {
+    const original = (app as any)[method].bind(app);
+    (app as any)[method] = (route: any, ...handlers: any[]) => {
+      if (method === 'get' && handlers.length === 0) return original(route); // app.get(setting)
+      return original(
+        route,
+        ...handlers.map((h) =>
+          typeof h === 'function' && h.length < 4
+            ? (req: any, res: any, next: any) => {
+                try {
+                  const out = h(req, res, next);
+                  if (out && typeof out.then === 'function') out.catch(next);
+                } catch (err) {
+                  next(err);
+                }
+              }
+            : h
+        )
+      );
+    };
+  }
   app.use(express.json({ limit: '80mb' }));
   app.use(express.urlencoded({ limit: '80mb', extended: true }));
 
@@ -977,19 +1212,14 @@ async function startServer() {
     const authUser = await resolveAuthenticatedUser(req);
     const callerId = authUser?.id || String(body.userId || '');
 
-    let group = await findGroupByIdOrCode(groupId, req);
-    let resolvedId = group?.id || groupId;
-
-    if (!group) {
-      const allGroups = Object.values(db.squad_groups).filter(Boolean);
-      if (allGroups.length > 0 && (groupId === 'default' || groupId === 'grp_current')) {
-        group = allGroups[0];
-        resolvedId = group.id;
-      }
-    }
+    const group = await findGroupByIdOrCode(groupId, req);
+    const resolvedId = group?.id || groupId;
 
     if (!group) {
       res.status(404).json({ error: 'Squad group not found.' });
+      return;
+    }
+    if (!requireGroupRole(res, [resolvedId, groupId, group.code], callerIdOf(req, authUser), ['super_admin', 'admin'], group)) {
       return;
     }
 
@@ -1086,6 +1316,12 @@ async function startServer() {
   app.delete('/api/groups/:groupId', async (req, res) => {
     const { groupId } = req.params;
     const group = await findGroupByIdOrCode(groupId, req);
+    if (!group) {
+      res.status(404).json({ error: 'Squad group not found.' });
+      return;
+    }
+    const delCaller = callerIdOf(req, await resolveAuthenticatedUser(req));
+    if (!requireGroupRole(res, [group.id, groupId, group.code], delCaller, ['super_admin'], group)) return;
     const resolvedId = group?.id || groupId;
     const groupCode = group?.code || '';
 
@@ -1174,7 +1410,7 @@ async function startServer() {
   // 5. GROUP LOOKUP BY CODE (Verifies Genuine Group & Returns Safe Preview)
   // ============================================================================
   app.get('/api/groups/lookup', async (req, res) => {
-    const rawCode = (req.query.code as string) || '';
+    const rawCode = String((Array.isArray(req.query.code) ? req.query.code[0] : req.query.code) || '');
     const cleanCode = normalizeCode(rawCode);
     const authUser = await resolveAuthenticatedUser(req);
     const callerUserId = authUser?.id || ((req.query.userId as string) || '').trim();
@@ -1512,7 +1748,7 @@ async function startServer() {
         // Enforce mandatory Super Admin rule if only 1 member in group
         const groupMembers = db.squad_members.filter((m) => m && m.group_id === grp.id);
         const hasSuperAdmin = groupMembers.some((m) => m && m.role === 'super_admin');
-        if (groupMembers.length === 1 || (!hasSuperAdmin && groupMembers[0]?.user_id === userId)) {
+        if ((groupMembers.length === 1 || (!hasSuperAdmin && groupMembers[0]?.user_id === userId)) && chosen.role !== 'super_admin') {
           chosen.role = 'super_admin';
           saveDb(db);
         }
@@ -1559,7 +1795,6 @@ async function startServer() {
     const body = req.body || {};
     const userId = authUser?.id || (body.userId as string) || '';
     const rawGroup = body.group;
-    const role = (body.role as MemberRow['role']) || 'super_admin';
 
     if (!userId || !rawGroup || !rawGroup.id || !rawGroup.name) {
       res.status(400).json({ success: false, error: 'Missing userId or group payload.' });
@@ -1592,8 +1827,16 @@ async function startServer() {
     let member = db.squad_members.find((m) => m && m.group_id === groupId && m.user_id === userId);
     if (!member) {
       const existingGroupMembers = db.squad_members.filter((m) => m && m.group_id === groupId);
-      const effectiveRole: MemberRow['role'] =
-        existingGroupMembers.length === 0 || group.created_by === userId ? 'super_admin' : role;
+      // Restore exists to rebuild membership after the server's data file was lost. It must not
+      // let a kicked member back in or let anyone pick their own role. Only a group that has no
+      // member rows on this server (i.e. was just rebuilt) accepts restores, and only the
+      // creator comes back as super_admin; everyone else returns as a plain member.
+      if (existingGroupMembers.length > 0 && !(group as any).restored) {
+        res.status(403).json({ success: false, error: 'Not a member of this squad. Ask the Super Admin to approve you again.' });
+        return;
+      }
+      (group as any).restored = true;
+      const effectiveRole: MemberRow['role'] = group.created_by === userId ? 'super_admin' : 'member';
       member = {
         id: crypto.randomUUID(),
         group_id: groupId,
@@ -1662,12 +1905,8 @@ async function startServer() {
       }
     }
 
-    // 3. Fallback for single existing group in DB when 'default', 'grp_current', or local ID is passed
-    const allGroups = Object.values(db.squad_groups).filter(Boolean);
-    if (cleanId === 'default' || cleanId === 'grp_current' || allGroups.length === 1) {
-      if (allGroups.length > 0) return allGroups[0];
-    }
-
+    // No fallback: unknown ids (including 'default') used to resolve to the first squad in the
+    // DB, which leaked that squad's SOS, roll calls and expenses to users with no squad.
     return null;
   }
 
@@ -1692,7 +1931,7 @@ async function startServer() {
 
     // Prevent unauthorized access to private group member list before approval
     let callerMembership = groupMembers.find((m) => m && m.user_id === callerId);
-    if (!callerMembership && callerId && (group.created_by === callerId || groupMembers.length === 0)) {
+    if (!callerMembership && callerId && group.created_by === callerId) {
       callerMembership = {
         id: crypto.randomUUID(),
         group_id: resolvedGroupId,
@@ -1715,7 +1954,7 @@ async function startServer() {
 
     // Mandatory Super Admin invariant: if 1 member or 0 super_admins, promote first member
     const hasSuperAdmin = groupMembers.some((m) => m && m.role === 'super_admin');
-    if (groupMembers.length === 1 || (!hasSuperAdmin && groupMembers.length > 0)) {
+    if ((groupMembers.length === 1 || !hasSuperAdmin) && groupMembers[0] && groupMembers[0].role !== 'super_admin') {
       groupMembers[0].role = 'super_admin';
       saveDb(db);
     }
@@ -1733,7 +1972,8 @@ async function startServer() {
     let dbUpdated = false;
     if (callerId && callerNameParam && !isPlaceholder(callerNameParam)) {
       const existing = db.profiles[callerId];
-      if (!existing || isPlaceholder(existing.full_name) || existing.full_name !== callerNameParam) {
+      // Only fill in a missing/placeholder name; a stale device must not revert a rename.
+      if (!existing || isPlaceholder(existing.full_name)) {
         db.profiles[callerId] = {
           ...existing,
           id: callerId,
@@ -2150,26 +2390,7 @@ async function startServer() {
     saveDb(db);
 
     // 3. Broadcast across Supabase Realtime channel if available
-    const sb = getSupabaseServerClient(req);
-    if (sb) {
-      try {
-        const channel = sb.channel(`squad_realtime_${resolvedGroupId}`);
-        channel.subscribe((status) => {
-          if (status === 'SUBSCRIBED') {
-            channel.send({
-              type: 'broadcast',
-              event: 'notice_broadcast',
-              payload: { groupId: resolvedGroupId, notice },
-            });
-            channel.send({
-              type: 'broadcast',
-              event: 'missing_item_added',
-              payload: { groupId: resolvedGroupId, item: newItem },
-            });
-          }
-        });
-      } catch {}
-    }
+    broadcastRealtime(req, [resolvedGroupId], [{ event: 'notice_broadcast', payload: { groupId: resolvedGroupId, notice } }, { event: 'missing_item_added', payload: { groupId: resolvedGroupId, item: newItem } }]);
 
     res.json({ success: true, item: newItem, notice });
   });
@@ -2554,6 +2775,12 @@ async function startServer() {
       (m) => m && isMatchingGroup(m.group_id) && (m.user_id === memberId || m.id === memberId)
     );
     const targetUserId = targetMember?.user_id || memberId;
+    const kickCaller = callerIdOf(req, await resolveAuthenticatedUser(req));
+    if (!requireGroupRole(res, [resolvedGroupId, groupId, groupCode], kickCaller, ['super_admin', 'admin'], group)) return;
+    if (targetMember?.role === 'super_admin' && targetUserId !== kickCaller) {
+      res.status(403).json({ success: false, error: 'The Super Admin cannot be removed. Transfer the role first.' });
+      return;
+    }
 
     db.squad_members = (db.squad_members || []).filter((m) => {
       if (!m || !isMatchingGroup(m.group_id)) return true;
@@ -2631,16 +2858,10 @@ async function startServer() {
         (m) => m && (m.group_id === resolvedGroupId || m.group_id === group.code || m.group_id === groupId)
       );
       const isMember = groupMembers.some((m) => m && m.user_id === callerId) || group.created_by === callerId;
-      if (!isMember) {
-        db.squad_members.push({
-          id: crypto.randomUUID(),
-          group_id: resolvedGroupId,
-          user_id: callerId,
-          role: groupMembers.length === 0 ? 'super_admin' : 'member',
-          status: 'active',
-          joined_at: new Date().toISOString(),
-        });
-        saveDb(db);
+      // Reading notices used to silently add any caller as a member (bypassing join approval).
+      if (!isMember && groupMembers.length > 0) {
+        res.status(403).json({ error: 'Not a member of this squad.', notices: [], isMember: false });
+        return;
       }
     }
 
@@ -2650,8 +2871,7 @@ async function startServer() {
           n &&
           (n.group_id === resolvedGroupId ||
             n.group_id === group.code ||
-            n.group_id === groupId ||
-            n.group_id === 'default')
+            n.group_id === groupId)
       )
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 
@@ -2674,7 +2894,8 @@ async function startServer() {
     const authorId = authUser?.id || (body.authorId as string) || (body.userId as string) || 'user_self';
 
     let group = await findGroupByIdOrCode(groupId, req);
-    if (!group && (body.groupName || body.name || groupId)) {
+    if (false && !group && (body.groupName || body.name || groupId)) {
+      // Disabled: posting to an unknown id used to create a phantom group.
       const fallbackName = String(body.groupName || body.name || (groupId === 'default' ? 'Pelling trip' : 'Expedition Squad')).trim();
       const fallbackCode = normalizeCode(body.groupCode || body.code || 'SQUAD1');
       const fallbackDest = String(body.groupDestination || body.destination || 'Expedition Base').trim();
@@ -2702,6 +2923,10 @@ async function startServer() {
       (m) => m && (m.group_id === resolvedGroupId || m.group_id === group.code || m.group_id === groupId)
     );
 
+    if (groupMembers.length > 0 && !groupMembers.some((m) => m.user_id === authorId) && group.created_by !== authorId) {
+      res.status(403).json({ error: 'Only squad members can post notices.' });
+      return;
+    }
     if (groupMembers.length === 0 || !groupMembers.some((m) => m.user_id === authorId)) {
       const creatorMember: MemberRow = {
         id: crypto.randomUUID(),
@@ -2776,8 +3001,8 @@ async function startServer() {
       }
     }
 
-    // If squad_members has only author, also deliver notice to all active app user profiles
-    if (notifiedUserIds.size === 0) {
+    // (Removed: when the author was the only member, the notice was sent to every user on the server.)
+    if (false && notifiedUserIds.size === 0) {
       for (const profileUserId of Object.keys(db.profiles || {})) {
         if (profileUserId && profileUserId !== authorId && !notifiedUserIds.has(profileUserId)) {
           notifiedUserIds.add(profileUserId);
@@ -2786,7 +3011,7 @@ async function startServer() {
             user_id: profileUserId,
             group_id: resolvedGroupId,
             type: 'notice_broadcast',
-            title: `📢 [${group.name}] ${notice.title}`,
+            title: `📢 [${group!.name}] ${notice.title}`,
             message: notice.text,
             priority: notice.priority,
             is_read: false,
@@ -2799,24 +3024,15 @@ async function startServer() {
     saveDb(db);
 
     // Broadcast across Supabase Realtime for instant push
-    const sb = getSupabaseServerClient(req);
-    if (sb) {
-      try {
-        const channelsToNotify = Array.from(new Set([resolvedGroupId, groupId].filter(Boolean)));
-        for (const cId of channelsToNotify) {
-          const channel = sb.channel(`squad_realtime_${cId}`);
-          channel.subscribe((status) => {
-            if (status === 'SUBSCRIBED') {
-              channel.send({
-                type: 'broadcast',
-                event: 'notice_broadcast',
-                payload: { groupId: resolvedGroupId, notice },
-              });
-            }
-          });
-        }
-      } catch {}
-    }
+    broadcastRealtime(req, [resolvedGroupId, groupId], [{ event: 'notice_broadcast', payload: { groupId: resolvedGroupId, notice } }]);
+    sendGroupPush(resolvedGroupId, groupId, group, authorId, {
+      kind: 'notice',
+      title: `📢 ${group.name}: ${notice.title}`,
+      body: notice.text.length > 180 ? `${notice.text.slice(0, 177)}…` : notice.text,
+      tag: `notice-${notice.id}`,
+      url: '/',
+      requireInteraction: notice.priority === 'critical',
+    }, 24 * 60 * 60);
 
     res.json({ success: true, notice });
   });
@@ -2982,10 +3198,6 @@ async function startServer() {
         return { groupId: mem.group_id, group: db.squad_groups[mem.group_id] };
       }
     }
-    const allGroups = Object.values(db.squad_groups).filter(Boolean);
-    if (allGroups.length === 1) {
-      return { groupId: allGroups[0].id, group: allGroups[0] };
-    }
     return { groupId: rawGroupId || 'default', group: null };
   }
 
@@ -2997,6 +3209,86 @@ async function startServer() {
       (group?.code && recordGroupId === group.code)
     );
   };
+
+  /**
+   * Push a system notification to every subscribed device of a group's members,
+   * except the user who caused the event. Falls back to the group id stored on
+   * the subscription when this server has no member rows for the group.
+   */
+  const sendGroupPush = (
+    resolvedGroupId: string,
+    rawGroupId: string,
+    group: GroupRow | null,
+    excludeUserId: string | null,
+    payload: PushPayload,
+    ttlSeconds: number
+  ) => {
+    try {
+      const memberIds = new Set(
+        db.squad_members
+          .filter((m) => m && matchesGroup(m.group_id, resolvedGroupId, rawGroupId, group))
+          .map((m) => m.user_id)
+      );
+      const targets = (db.push_subscriptions || []).filter((sub) => {
+        if (excludeUserId && sub.user_id === excludeUserId) return false;
+        if (memberIds.size > 0) return memberIds.has(sub.user_id);
+        return matchesGroup(sub.group_id, resolvedGroupId, rawGroupId, group);
+      });
+      deliverPush(targets, payload, ttlSeconds);
+    } catch (err) {
+      console.warn('[push] group push failed:', err);
+    }
+  };
+
+  app.get('/api/push/public-key', (_req, res) => {
+    res.json({ success: true, publicKey: vapidKeys.publicKey });
+  });
+
+  app.post('/api/push/subscribe', async (req, res) => {
+    const body = req.body || {};
+    const sub = body.subscription || {};
+    const authUser = await resolveAuthenticatedUser(req);
+    const userId = authUser?.id || String(body.userId || '').trim();
+    const endpoint = String(sub.endpoint || '');
+    const p256dh = String(sub.keys?.p256dh || '');
+    const auth = String(sub.keys?.auth || '');
+
+    if (!userId || !/^https:\/\//.test(endpoint) || endpoint.length > 2048 || !p256dh || !auth) {
+      res.status(400).json({ success: false, error: 'Invalid push subscription.' });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const groupId = String(body.groupId || '').trim();
+    if (!db.push_subscriptions) db.push_subscriptions = [];
+    const existing = db.push_subscriptions.find((s) => s.endpoint === endpoint);
+    if (existing) {
+      existing.user_id = userId;
+      existing.group_id = groupId;
+      existing.keys = { p256dh, auth };
+      existing.updated_at = now;
+    } else {
+      db.push_subscriptions.push({
+        endpoint,
+        keys: { p256dh, auth },
+        user_id: userId,
+        group_id: groupId,
+        created_at: now,
+        updated_at: now,
+      });
+    }
+    saveDb(db);
+    res.json({ success: true });
+  });
+
+  app.post('/api/push/unsubscribe', (req, res) => {
+    const endpoint = String(req.body?.endpoint || '');
+    if (endpoint && db.push_subscriptions) {
+      db.push_subscriptions = db.push_subscriptions.filter((s) => s.endpoint !== endpoint);
+      saveDb(db);
+    }
+    res.json({ success: true });
+  });
 
   const toMediaResponse = (m: MediaVaultRow) => ({
     id: m.id,
@@ -3081,21 +3373,7 @@ async function startServer() {
       const responseItem = toMediaResponse(newRow);
 
       // Broadcast over Supabase Realtime if configured
-      const sb = getSupabaseServerClient(req);
-      if (sb) {
-        try {
-          const channel = sb.channel(`squad_realtime_${resolvedGroupId}`);
-          channel.subscribe((status) => {
-            if (status === 'SUBSCRIBED') {
-              channel.send({
-                type: 'broadcast',
-                event: 'media_vault_updated',
-                payload: { groupId: resolvedGroupId, item: responseItem },
-              });
-            }
-          });
-        } catch {}
-      }
+      broadcastRealtime(req, [resolvedGroupId], [{ event: 'media_vault_updated', payload: { groupId: resolvedGroupId, item: responseItem } }]);
 
       res.json({
         success: true,
@@ -3245,8 +3523,8 @@ async function startServer() {
         fs.mkdirSync(MEDIA_DIR, { recursive: true });
       }
 
-      const docId = body.id ? String(body.id) : `fdoc_${crypto.randomUUID()}`;
-      const safeName = rawFileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const docId = body.id && /^[\w-]{1,80}$/.test(String(body.id)) ? String(body.id) : `fdoc_${crypto.randomUUID()}`;
+      const safeName = rawFileName.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/^\.+/, '_');
       const diskFileName = `${docId}_${safeName}`;
       const filePath = path.join(MEDIA_DIR, diskFileName);
 
@@ -3430,7 +3708,12 @@ async function startServer() {
     const authUser = await resolveAuthenticatedUser(req);
     const { groupId: resolvedGroupId, group } = await resolveCanonicalGroupId(groupId, req);
 
-    const callerId = authUser?.id || String(body.userId || body.startedByUserId || '1');
+    const callerId = authUser?.id || String(body.userId || body.startedByUserId || req.headers['x-user-id'] || '');
+    if (!callerId) {
+      res.status(400).json({ success: false, error: 'Missing user.' });
+      return;
+    }
+    if (!requireGroupRole(res, [resolvedGroupId, groupId, group?.code], callerId, ['super_admin', 'admin'], group)) return;
     const startedBy = String(
       body.startedBy ||
       authUser?.fullName ||
@@ -3464,9 +3747,9 @@ async function startServer() {
     );
     for (const m of groupMembers) {
       if (m.user_id === callerId) {
-        m.status = 'active';
+        if (m.status !== 'distress') m.status = 'active';
       } else {
-        m.status = 'standby';
+        if (m.status !== 'distress') m.status = 'standby'; // never hide an active SOS
         // Push notification for every other member
         db.user_notifications.push({
           id: crypto.randomUUID(),
@@ -3485,21 +3768,15 @@ async function startServer() {
 
     saveDb(db);
 
-    const sb = getSupabaseServerClient(req);
-    if (sb) {
-      try {
-        const channel = sb.channel(`squad_realtime_${resolvedGroupId}`);
-        channel.subscribe((status) => {
-          if (status === 'SUBSCRIBED') {
-            channel.send({
-              type: 'broadcast',
-              event: 'rollcall_updated',
-              payload: { groupId: resolvedGroupId, session: newSession },
-            });
-          }
-        });
-      } catch {}
-    }
+    broadcastRealtime(req, [resolvedGroupId], [{ event: 'rollcall_updated', payload: { groupId: resolvedGroupId, session: newSession } }]);
+    sendGroupPush(resolvedGroupId, groupId, group, callerId, {
+      kind: 'rollcall',
+      title: `📢 Attendance check · ${group?.name || 'Squad'}`,
+      body: `${startedBy} started attendance at ${startedAt}. Tap to mark Present or Deny.`,
+      tag: `rollcall-${resolvedGroupId}`,
+      url: '/',
+      requireInteraction: true,
+    }, 30 * 60);
 
     res.json({
       success: true,
@@ -3514,14 +3791,23 @@ async function startServer() {
     const authUser = await resolveAuthenticatedUser(req);
     const { groupId: resolvedGroupId, group } = await resolveCanonicalGroupId(groupId, req);
 
-    const userId = authUser?.id || String(body.userId || '1');
+    const userId = authUser?.id || String(body.userId || req.headers['x-user-id'] || '');
     const responseType = body.response === 'deny' ? 'deny' : 'present';
 
     if (!db.squad_rollcalls) db.squad_rollcalls = {};
     let session = db.squad_rollcalls[resolvedGroupId] || db.squad_rollcalls[groupId];
 
-    if (!session) {
+    if (!session || !session.active) {
       res.status(404).json({ error: 'No active roll call session found.' });
+      return;
+    }
+    if (body.sessionId && session.sessionId && String(body.sessionId) !== session.sessionId) {
+      res.status(409).json({ error: 'That roll call has already ended.' });
+      return;
+    }
+    // Only real squad members can be counted (stops strangers/'1' inflating "present").
+    if (!userId || !requireGroupRole(res, [resolvedGroupId, groupId, group?.code], userId, ['super_admin', 'admin', 'faculty', 'member', 'subgroup_admin'], group)) {
+      if (!userId) res.status(400).json({ error: 'Missing user.' });
       return;
     }
 
@@ -3545,7 +3831,7 @@ async function startServer() {
       (m) => m && matchesGroup(m.group_id, resolvedGroupId, groupId, group)
     );
     for (const m of groupMembers) {
-      if (m.user_id === userId) {
+      if (m.user_id === userId && m.status !== 'distress') {
         m.status = responseType === 'present' ? 'active' : 'standby';
       }
     }
@@ -3553,21 +3839,7 @@ async function startServer() {
     db.squad_rollcalls[resolvedGroupId] = session;
     saveDb(db);
 
-    const sb = getSupabaseServerClient(req);
-    if (sb) {
-      try {
-        const channel = sb.channel(`squad_realtime_${resolvedGroupId}`);
-        channel.subscribe((status) => {
-          if (status === 'SUBSCRIBED') {
-            channel.send({
-              type: 'broadcast',
-              event: 'rollcall_updated',
-              payload: { groupId: resolvedGroupId, session },
-            });
-          }
-        });
-      } catch {}
-    }
+    broadcastRealtime(req, [resolvedGroupId], [{ event: 'rollcall_updated', payload: { groupId: resolvedGroupId, session } }]);
 
     res.json({
       success: true,
@@ -3579,6 +3851,8 @@ async function startServer() {
   app.post('/api/groups/:groupId/rollcall/end', async (req, res) => {
     const { groupId } = req.params;
     const { groupId: resolvedGroupId, group } = await resolveCanonicalGroupId(groupId, req);
+    const endCaller = callerIdOf(req, await resolveAuthenticatedUser(req));
+    if (!requireGroupRole(res, [resolvedGroupId, groupId, group?.code], endCaller, ['super_admin', 'admin'], group)) return;
 
     if (!db.squad_rollcalls) db.squad_rollcalls = {};
     const session = db.squad_rollcalls[resolvedGroupId] || db.squad_rollcalls[groupId];
@@ -3597,31 +3871,14 @@ async function startServer() {
       (m) => m && matchesGroup(m.group_id, resolvedGroupId, groupId, group)
     );
     for (const m of groupMembers) {
-      if (session.presentUserIds.includes(m.user_id)) {
-        m.status = 'active';
-      } else {
-        m.status = 'standby';
-      }
+      if (m.status === 'distress') continue; // never hide an active SOS
+      m.status = session.presentUserIds.includes(m.user_id) ? 'active' : 'standby';
     }
 
     db.squad_rollcalls[resolvedGroupId] = session;
     saveDb(db);
 
-    const sb = getSupabaseServerClient(req);
-    if (sb) {
-      try {
-        const channel = sb.channel(`squad_realtime_${resolvedGroupId}`);
-        channel.subscribe((status) => {
-          if (status === 'SUBSCRIBED') {
-            channel.send({
-              type: 'broadcast',
-              event: 'rollcall_updated',
-              payload: { groupId: resolvedGroupId, session },
-            });
-          }
-        });
-      } catch {}
-    }
+    broadcastRealtime(req, [resolvedGroupId], [{ event: 'rollcall_updated', payload: { groupId: resolvedGroupId, session } }]);
 
     res.json({
       success: true,
@@ -3656,6 +3913,16 @@ async function startServer() {
     );
     const distressedUserRole = String(body.distressedUserRole || 'Squad Member');
     const nowIso = new Date().toISOString();
+    if (!db.squad_sos_alarms) db.squad_sos_alarms = {};
+    const previous = db.squad_sos_alarms[resolvedGroupId];
+    // Same alarm id = a location/battery update to an SOS already raised: don't re-notify everyone.
+    const isUpdate = Boolean(previous?.active && body.id && previous.id === body.id);
+    const validCoords =
+      body.coordinates &&
+      Number.isFinite(Number(body.coordinates.lat)) &&
+      Number.isFinite(Number(body.coordinates.lng))
+        ? { lat: Number(body.coordinates.lat), lng: Number(body.coordinates.lng) }
+        : undefined;
 
     const alarm: SOSAlarmRow = {
       id: body.id || `sos_${Date.now()}`,
@@ -3664,10 +3931,10 @@ async function startServer() {
       distressedUserName,
       distressedUserRole,
       phone: body.phone || db.profiles[distressedUserId]?.phone || '',
-      coordinates: body.coordinates || { lat: 0, lng: 0 },
+      coordinates: validCoords || (isUpdate ? previous?.coordinates : undefined),
       locationLabel: body.locationLabel || undefined,
-      batteryLevel: Number(body.batteryLevel) || 92,
-      timestamp: body.timestamp || nowIso,
+      batteryLevel: Number.isFinite(Number(body.batteryLevel)) ? Number(body.batteryLevel) : undefined,
+      timestamp: isUpdate && previous ? previous.timestamp : body.timestamp || nowIso,
       active: true,
     };
 
@@ -3681,7 +3948,7 @@ async function startServer() {
     for (const m of groupMembers) {
       if (m.user_id === distressedUserId) {
         m.status = 'distress';
-      } else if (m.user_id !== 'user_self') {
+      } else if (m.user_id !== 'user_self' && !isUpdate) {
         db.user_notifications.push({
           id: crypto.randomUUID(),
           user_id: m.user_id,
@@ -3699,21 +3966,20 @@ async function startServer() {
 
     saveDb(db);
 
-    const sb = getSupabaseServerClient(req);
-    if (sb) {
-      try {
-        const channel = sb.channel(`squad_realtime_${resolvedGroupId}`);
-        channel.subscribe((status) => {
-          if (status === 'SUBSCRIBED') {
-            channel.send({
-              type: 'broadcast',
-              event: 'sos_trigger',
-              payload: alarm,
-            });
-          }
-        });
-      } catch {}
-    }
+    broadcastRealtime(req, [resolvedGroupId], [{ event: 'sos_trigger', payload: alarm }]);
+    const sosWhere =
+      alarm.locationLabel ||
+      (alarm.coordinates && (alarm.coordinates.lat || alarm.coordinates.lng)
+        ? `${alarm.coordinates.lat.toFixed(4)}, ${alarm.coordinates.lng.toFixed(4)}`
+        : '');
+    if (!isUpdate) sendGroupPush(resolvedGroupId, groupId, group, distressedUserId, {
+      kind: 'sos',
+      title: `🚨 EMERGENCY SOS · ${distressedUserName}`,
+      body: `${distressedUserName} needs help${sosWhere ? ` near ${sosWhere}` : ''}. Open TrailOPS now.`,
+      tag: `sos-${resolvedGroupId}`,
+      url: '/',
+      requireInteraction: true,
+    }, 6 * 60 * 60);
 
     res.json({ success: true, alarm });
   });
@@ -3721,39 +3987,42 @@ async function startServer() {
   app.delete('/api/groups/:groupId/sos', async (req, res) => {
     const { groupId } = req.params;
     const { groupId: resolvedGroupId, group } = await resolveCanonicalGroupId(groupId, req);
+    const clearCaller = callerIdOf(req, await resolveAuthenticatedUser(req));
+    const current = db.squad_sos_alarms?.[resolvedGroupId] || db.squad_sos_alarms?.[groupId];
+    const isVictim = Boolean(current && clearCaller && current.distressedUserId === clearCaller);
+    if (
+      current &&
+      !isVictim &&
+      !requireGroupRole(res, [resolvedGroupId, groupId, group?.code], clearCaller, ['super_admin', 'admin', 'faculty'], group)
+    ) {
+      return;
+    }
 
     if (db.squad_sos_alarms) {
       delete db.squad_sos_alarms[resolvedGroupId];
       delete db.squad_sos_alarms[groupId];
     }
 
-    // Restore member statuses from distress to active
+    // Restore the distressed member's status (only theirs)
     const groupMembers = db.squad_members.filter(
       (m) => m && matchesGroup(m.group_id, resolvedGroupId, groupId, group)
     );
     for (const m of groupMembers) {
-      if (m.status === 'distress') {
+      if (m.status === 'distress' && (!current || m.user_id === current.distressedUserId)) {
         m.status = 'active';
       }
     }
 
     saveDb(db);
 
-    const sb = getSupabaseServerClient(req);
-    if (sb) {
-      try {
-        const channel = sb.channel(`squad_realtime_${resolvedGroupId}`);
-        channel.subscribe((status) => {
-          if (status === 'SUBSCRIBED') {
-            channel.send({
-              type: 'broadcast',
-              event: 'sos_cleared',
-              payload: { groupId: resolvedGroupId },
-            });
-          }
-        });
-      } catch {}
-    }
+    broadcastRealtime(req, [resolvedGroupId], [{ event: 'sos_cleared', payload: { groupId: resolvedGroupId } }]);
+    sendGroupPush(resolvedGroupId, groupId, group, null, {
+      kind: 'sos_cleared',
+      title: `✅ SOS resolved · ${group?.name || 'Squad'}`,
+      body: 'The emergency alert has been cleared.',
+      tag: `sos-${resolvedGroupId}`,
+      url: '/',
+    }, 60 * 60);
 
     res.json({ success: true });
   });
@@ -3778,7 +4047,8 @@ async function startServer() {
       group: group || null,
       expenses,
       activeSos: activeSos?.active ? activeSos : null,
-      activeRollCall,
+      // Ended sessions used to be returned forever and overrode live member status on clients.
+      activeRollCall: activeRollCall && activeRollCall.active ? activeRollCall : activeRollCall && activeRollCall.endedAt && Date.now() - new Date(activeRollCall.endedAt).getTime() < 5 * 60 * 1000 ? activeRollCall : null,
       totalMembers: Math.max(1, groupMembers.length),
     });
   });
@@ -3800,6 +4070,11 @@ async function startServer() {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
+
+  app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    console.error('Request failed:', err);
+    if (!res.headersSent) res.status(500).json({ success: false, error: 'Server error.' });
+  });
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`TRAIL OPS server running on http://0.0.0.0:${PORT}`);
