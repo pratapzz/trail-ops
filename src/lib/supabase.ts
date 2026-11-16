@@ -2357,7 +2357,14 @@ export async function createGroupNotice(params: {
     });
 
     const data = await res.json().catch(() => null);
-    const notice = (res.ok && data?.success && data?.notice ? data.notice : fallbackNotice) as SquadNoticeRecord;
+    if (!res.ok || !data?.success || !data?.notice) {
+      // Don't pretend it was posted: it used to be saved only on this phone, so nobody else saw it.
+      return {
+        success: false,
+        error: data?.error || 'Could not post the notice. Check your connection and try again.',
+      };
+    }
+    const notice = data.notice as SquadNoticeRecord;
     persistLocalNotice(notice);
 
     // Dispatch local & cross-tab events scoped strictly to this groupId
@@ -2389,16 +2396,8 @@ export async function createGroupNotice(params: {
 
     return { success: true, notice };
   } catch (err: any) {
-    persistLocalNotice(fallbackNotice);
-    window.dispatchEvent(
-      new CustomEvent('trailoPS_group_notices_updated', {
-        detail: { groupId: effectiveGroupId, notice: fallbackNotice },
-      })
-    );
-    return {
-      success: true,
-      notice: fallbackNotice,
-    };
+    void fallbackNotice;
+    return { success: false, error: 'No connection. The notice was not posted; try again when online.' };
   }
 }
 
