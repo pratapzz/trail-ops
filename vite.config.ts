@@ -57,6 +57,8 @@ export default defineConfig(() => {
           navigateFallback: '/index.html',
           navigateFallbackDenylist: [/^\/api\//, /^\/auth\//],
           cleanupOutdatedCaches: true,
+          // Adds the push / notificationclick handlers for background alerts.
+          importScripts: ['push-sw.js'],
           clientsClaim: true,
           skipWaiting: true,
           runtimeCaching: [

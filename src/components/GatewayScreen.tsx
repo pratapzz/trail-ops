@@ -94,6 +94,8 @@ interface GatewayScreenProps {
   activeSquad?: any;
   userRole?: UserRole;
   onSquadJoined?: (group: SquadGroupRecord, role?: UserRole) => void;
+  /** Rendered at the top of the joined-squad Home section (attendance card, alert prompt). */
+  homeTopSlot?: React.ReactNode;
 }
 
 export const GatewayScreen: React.FC<GatewayScreenProps> = ({
@@ -119,6 +121,7 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
   activeSquadId,
   activeSquad,
   onSquadJoined,
+  homeTopSlot,
 }) => {
   const [passcode, setPasscode] = useState(['', '', '', '', '', '']);
   const inputRefs = useRef<Array<HTMLInputElement | null>>([]);
@@ -840,6 +843,8 @@ export const GatewayScreen: React.FC<GatewayScreenProps> = ({
         {/* CONDITION 1: IF GROUP IS JOINED -> SQUAD LIVE COUNTDOWN, TRIP BUDGET BAR, & DRIVE */}
         {hasJoinedGroup ? (
           <section className="space-y-3.5 animate-in fade-in duration-300">
+            {homeTopSlot}
+
             {/* SYNCHRONIZED GROUP BRIEFING TIMER (Auto-removes immediately when countdown reaches zero) */}
             <BriefingCountdownBanner
               briefing={activeBriefing}

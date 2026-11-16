@@ -497,27 +497,8 @@ export const EmergencySOSScreen: React.FC<EmergencySOSScreenProps> = ({
         }
         setIsHolding(false);
         setIsDistressModalOpen(true);
-        startEmergencySiren();
-        triggerSquadSOSAlarm({
-          groupId: activeSquadId || localStorage.getItem('trailoPS_active_squad_id') || 'default',
-          distressedUserId: currentUserId || localStorage.getItem('trailoPS_currentUserId') || '1',
-          distressedUserName: currentUserName || localStorage.getItem('trailoPS_currentUserName') || 'Squad Member',
-          distressedUserRole:
-            userRole === 'super_admin'
-              ? 'Super Admin'
-              : userRole === 'admin'
-              ? 'Admin'
-              : userRole === 'faculty'
-              ? 'Faculty Lead'
-              : 'Squad Member',
-          phone: leads[0]?.phone || '',
-          coordinates:
-            liveCoords.lat !== null && liveCoords.lng !== null
-              ? { lat: liveCoords.lat, lng: liveCoords.lng }
-              : { lat: 27.036, lng: 88.2627 },
-          locationLabel: liveLocationLabel,
-          batteryLevel: 92,
-        });
+        // The distress modal broadcasts the SOS (with the live GPS fix and the user's own
+        // phone). Sending it here too created duplicate alarms with different ids.
         onShowToast('🚨 SOS DISTRESS BEACON ACTIVE! Continuous siren sounding across squad.');
       }
     }, 50);
