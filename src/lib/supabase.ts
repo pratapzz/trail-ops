@@ -1598,57 +1598,13 @@ export async function kickSquadMember(
 }
 
 export async function recoverGroupSuperAdmin(
-  groupId: string,
-  newAdminUserId: string,
-  recoveryKey: string
+  _groupId: string,
+  _newAdminUserId: string,
+  _recoveryKey: string
 ): Promise<{ success: boolean; error?: string }> {
-  if (recoveryKey.trim() !== 'TRAIL-OPS-MASTER-2026') {
-    return { success: false, error: 'Invalid platform recovery authorization key.' };
-  }
-
-  const sb = getSupabase();
-  if (sb && isSupabaseConfigured()) {
-    try {
-      const { error } = await sb.rpc('recover_group_super_admin', {
-        p_group_id: groupId,
-        p_new_admin_user_id: newAdminUserId,
-        p_recovery_key: recoveryKey.trim(),
-      });
-
-      if (error) {
-        // Fallback direct promote
-        await sb
-          .from('squad_members')
-          .update({ role: 'super_admin' })
-          .eq('group_id', groupId)
-          .eq('user_id', newAdminUserId);
-      }
-      return { success: true };
-    } catch (err: any) {
-      return { success: false, error: err.message };
-    }
-  }
-
-  // Local promote
-  try {
-    const localKey = 'trailoPS_squad_members';
-    const local = localStorage.getItem(localKey);
-    if (local) {
-      const parsed = JSON.parse(local);
-      const updated = parsed.map((m: any) => {
-        if (m.id === newAdminUserId || m.name === newAdminUserId) {
-          return { ...m, role: 'Super Admin' };
-        }
-        return m;
-      });
-      localStorage.setItem(localKey, JSON.stringify(updated));
-      window.dispatchEvent(new CustomEvent('trailoPS_squad_members_updated'));
-    }
-  } catch (e) {
-    // ignore
-  }
-
-  return { success: true };
+  // A recovery key hard-coded into the app is readable by anyone, so this path is disabled.
+  // Use "Transfer Super Admin" from the current Super Admin instead.
+  return { success: false, error: 'Recovery keys are disabled. Ask the current Super Admin to transfer the role.' };
 }
 
 // -------------------------------------------------------------
@@ -3259,7 +3215,7 @@ export async function fetchGroupBriefing(groupId: string): Promise<SquadBriefing
 
   // 1. Check server API endpoint
   try {
-    const res = await fetch(`/api/groups/${encodeURIComponent(effectiveGroupId)}/briefing`);
+    const res = await fetch(`/api/groups/${encodeURIComponent(effectiveGroupId)}/briefing`, { headers: await buildApiHeaders() });
     if (res.ok) {
       const data = await res.json();
       if (data?.briefing) {
@@ -3430,6 +3386,7 @@ export async function cancelGroupBriefing(groupId: string): Promise<boolean> {
   try {
     await fetch(`/api/groups/${encodeURIComponent(effectiveGroupId)}/briefing`, {
       method: 'DELETE',
+      headers: await buildApiHeaders(),
     });
   } catch {}
 
@@ -3591,7 +3548,7 @@ export async function uploadProfileAvatar(
 // ============================================================================
 export async function fetchSquadExpenses(groupId: string): Promise<any[]> {
   try {
-    const res = await fetch(`/api/groups/${encodeURIComponent(groupId)}/expenses`);
+    const res = await fetch(`/api/groups/${encodeURIComponent(groupId)}/expenses`, { headers: await buildApiHeaders() });
     if (res.ok) {
       const data = await res.json();
       if (data?.success && Array.isArray(data.expenses)) {
@@ -3644,6 +3601,7 @@ export async function deleteSquadExpense(groupId: string, expenseId: string): Pr
   try {
     const res = await fetch(`/api/groups/${encodeURIComponent(groupId)}/expenses/${encodeURIComponent(expenseId)}`, {
       method: 'DELETE',
+      headers: await buildApiHeaders(),
     });
     return res.ok;
   } catch {
