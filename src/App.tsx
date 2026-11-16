@@ -563,7 +563,9 @@ export default function App() {
           if (liveState.group && liveState.group.id) {
             const srvGroup = liveState.group;
             setActiveSquad((prev) => {
-              if (!prev) return prev;
+              // Only refresh details of the SAME squad. The old server could answer with a
+              // different squad, and merging it here replaced the user's saved squad.
+              if (!prev || (srvGroup.id && prev.id && srvGroup.id !== prev.id)) return prev;
               const prevBanner = prev.banner_url || prev.bannerUrl || '';
               const nextBanner = srvGroup.banner_url || srvGroup.bannerUrl || prevBanner;
               const prevDate = prev.start_date || prev.startDate || '';
