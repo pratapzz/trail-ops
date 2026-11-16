@@ -8,7 +8,7 @@ import webpush from 'web-push';
 
 dotenv.config();
 
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 const DATA_DIR = path.resolve(process.cwd(), '.data');
 const MEDIA_DIR = path.join(DATA_DIR, 'media');
 const DB_FILE = path.join(DATA_DIR, 'trailops_db.json');
