@@ -1513,21 +1513,21 @@ async function startServer() {
       const targetUserId = callerUserId || 'user_self';
       let memberRecord = groupMembers.find((m) => m && m.user_id === targetUserId);
 
-      // If the group has 0 real members left and someone enters its valid code, automatically join them as super_admin without approval
-      if (!memberRecord && realMembers.length === 0) {
+      // Disabled: looking up a code used to make the first caller Super Admin (and creator) of any
+      // squad with no member rows, e.g. every squad right after a server restart.
+      if (false && !memberRecord && realMembers.length === 0) {
         db.squad_members = db.squad_members.filter(
           (m) => !(m && m.group_id === foundGroup!.id && m.user_id === 'user_self')
         );
         const newMember: MemberRow = {
           id: crypto.randomUUID(),
-          group_id: foundGroup.id,
+          group_id: foundGroup!.id,
           user_id: targetUserId,
           role: 'super_admin',
           status: 'active',
           joined_at: new Date().toISOString(),
         };
         db.squad_members.push(newMember);
-        foundGroup.created_by = targetUserId;
         // Clear any old join requests for this user in this group
         db.squad_join_requests = db.squad_join_requests.filter(
           (r) => !(r && r.group_id === foundGroup!.id && r.user_id === targetUserId)
@@ -1619,8 +1619,9 @@ async function startServer() {
       return;
     }
 
-    // 1B. If the group has 0 real members left, automatically join without approval as Super Admin
-    if (realMembers.length === 0) {
+    // 1B. Empty squad (e.g. after a server restart): only its real creator rejoins automatically.
+    //     Everyone else goes through a normal join request.
+    if (realMembers.length === 0 && group.created_by === requesterId) {
       db.squad_members = db.squad_members.filter(
         (m) => !(m && (m.group_id === resolvedGroupId || m.group_id === groupId) && m.user_id === 'user_self')
       );
@@ -1835,7 +1836,13 @@ async function startServer() {
     }
 
     const now = new Date().toISOString();
-    let group = db.squad_groups[groupId];
+    let group = db.squad_groups[groupId] || (await findGroupByIdOrCode(groupId, req)) || undefined;
+    const isCreatorClaim = String(rawGroup.created_by || rawGroup.creator_id || '') === userId;
+    if (!group && !isCreatorClaim) {
+      // Don't let a stale/corrupted device cache re-create a squad the server has never seen.
+      res.status(404).json({ success: false, error: 'Squad not found yet. Ask your Super Admin to open TrailOPS, then try again.' });
+      return;
+    }
     if (!group) {
       group = {
         id: groupId,
@@ -1857,7 +1864,7 @@ async function startServer() {
       // let a kicked member back in or let anyone pick their own role. Only a group that has no
       // member rows on this server (i.e. was just rebuilt) accepts restores, and only the
       // creator comes back as super_admin; everyone else returns as a plain member.
-      if (existingGroupMembers.length > 0 && !(group as any).restored) {
+      if (existingGroupMembers.length > 0 && !(group as any).restored && group.created_by !== userId) {
         res.status(403).json({ success: false, error: 'Not a member of this squad. Ask the Super Admin to approve you again.' });
         return;
       }
