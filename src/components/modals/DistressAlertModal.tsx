@@ -213,7 +213,7 @@ export const DistressAlertModal: React.FC<DistressAlertModalProps> = ({
   const effectiveCoordinates =
     coordinates && coordinates !== 'Location Unavailable'
       ? coordinates
-      : detectedCoords || '27.0360° N, 88.2627° E';
+      : detectedCoords || 'Waiting for GPS fix…';
 
   const effectiveLocationLabel =
     locationLabel && !locationLabel.startsWith('Detecting')
