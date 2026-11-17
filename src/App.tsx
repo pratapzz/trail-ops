@@ -1369,12 +1369,15 @@ export default function App() {
     }
   };
 
-  const handleSetJoinedGroup = (joined: boolean) => {
+  // Hides the squad on this device. Only an explicit "Leave" (leaveOnServer = true) removes the
+  // membership on the server; switching screens, opening the join-code form or a failed roster
+  // check must never kick anyone out of their squad.
+  const handleSetJoinedGroup = (joined: boolean, leaveOnServer = false) => {
     setHasJoinedGroup(joined);
     const effectiveId = currentUserId || localStorage.getItem('trailoPS_currentUserId') || '';
     if (!joined) {
       const targetGroupId = activeSquad?.id || localStorage.getItem('trailoPS_active_squad_id') || '';
-      if (targetGroupId) {
+      if (leaveOnServer && targetGroupId) {
         leaveSquadGroup(targetGroupId, effectiveId || 'user_self').catch(() => {});
       }
       setActiveSquad(null);
@@ -1649,7 +1652,7 @@ export default function App() {
               activeSquad={activeSquad}
               currentUserId={currentUserId}
               onLeaveSquad={() => {
-                handleSetJoinedGroup(false);
+                handleSetJoinedGroup(false, true);
               }}
               onSquadDeleted={() => {
                 handleSetJoinedGroup(false);
