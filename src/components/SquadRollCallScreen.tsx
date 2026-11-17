@@ -115,7 +115,7 @@ interface SquadRollCallScreenProps {
   onNavigate: (screen: ScreenType) => void;
   onShowToast: (message: string) => void;
   hasJoinedGroup: boolean;
-  onSetJoinedGroup: (joined: boolean) => void;
+  onSetJoinedGroup: (joined: boolean, leaveOnServer?: boolean) => void;
   userRole?: UserRole;
   onUpdateRole?: (role: UserRole) => void;
   onOpenFacultyDrive?: () => void;
@@ -2680,7 +2680,7 @@ export const SquadRollCallScreen: React.FC<SquadRollCallScreenProps> = ({
               <button
                 type="button"
                 onClick={() => {
-                  onSetJoinedGroup(false);
+                  onSetJoinedGroup(false, true);
                   onShowToast('You left the squad expedition. Trip gear, Faculty Drive & Splitwise have been removed.');
                 }}
                 className="w-full py-3 rounded-2xl border border-rose-200 bg-rose-50/60 hover:bg-rose-100 text-rose-700 text-xs font-bold flex items-center justify-center gap-1.5 transition-all active:scale-98 cursor-pointer shadow-2xs"
